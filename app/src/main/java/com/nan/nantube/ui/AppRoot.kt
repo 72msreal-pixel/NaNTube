@@ -38,13 +38,12 @@ import com.nan.nantube.data.VideoRepository
 private enum class Tab(val label: String) {
     Main("Main"), Shorts("Short"), Search("Search"), Info("Info");
 
-    val icon: ImageVector
-        get() = when (this) {
-            Main -> LucideHouse
-            Shorts -> Lucide.Clapperboard
-            Search -> Lucide.Search
-            Info -> Lucide.CircleUser
-        }
+    fun icon(selected: Boolean): ImageVector = when (this) {
+        Main -> if (selected) HouseFilled else LucideHouse
+        Shorts -> if (selected) ShortsFilled else ShortsOutline
+        Search -> Lucide.Search
+        Info -> Lucide.CircleUser
+    }
 }
 
 private enum class AddStep { None, Chooser, Code, Web }
@@ -127,7 +126,7 @@ private fun BottomBar(selected: Tab, onSelect: (Tab) -> Unit) {
                     Modifier.weight(1f).clickable { onSelect(t) }.padding(vertical = 8.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Icon(t.icon, null, Modifier.size(26.dp), tint = tint)
+                    Icon(t.icon(t == selected), null, Modifier.size(26.dp), tint = tint)
                     Spacer(Modifier.height(2.dp))
                     Text(t.label, fontSize = 11.sp, color = tint)
                 }

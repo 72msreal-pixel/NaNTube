@@ -45,7 +45,17 @@ import com.composables.icons.lucide.Search
 import com.composables.icons.lucide.Settings
 import com.composables.icons.lucide.ThumbsUp
 import com.composables.icons.lucide.Video
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import coil.compose.AsyncImage
 import com.nan.nantube.data.Account
+import com.nan.nantube.data.VideoItem
+import com.nan.nantube.data.VideoRepository
 
 private data class LibraryItem(
     val title: String,
@@ -70,12 +80,49 @@ fun InfoScreen(
     onSearchClick: () -> Unit,
     onSignIn: () -> Unit
 ) {
+    var watched by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
+    var watchedLoading by remember { mutableStateOf(false) }
+    LaunchedEffect(account?.id) {
+        watched = emptyList()
+        if (account == null) return@LaunchedEffect
+        watchedLoading = true
+        watched = try {
+            VideoRepository.history(account).take(15)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            emptyList()
+        }
+        watchedLoading = false
+    }
     Column(Modifier.fillMaxSize()) {
         TopBar(onAccountClick, onSettingsClick, onSearchClick)
         LazyColumn(Modifier.fillMaxSize()) {
             item { ProfileHeader(account) }
             item {
                 if (account == null) PillButton("Đăng nhập", onSignIn) else PillButton("Xem kênh") { }
+            }
+            item { SectionTitle("Video đã xem", withArrow = true) }
+            item {
+                if (watched.isEmpty()) {
+                    Text(
+                        when {
+                            account == null -> "Đăng nhập để xem lịch sử video."
+                            watchedLoading -> "Đang tải…"
+                            else -> "Chưa có video nào."
+                        },
+                        fontSize = 14.sp,
+                        color = NanColors.TextSecondary,
+                        modifier = Modifier.padding(horizontal = 16.dp)
+                    )
+                } else {
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(watched) { WatchedCard(it) }
+                    }
+                }
             }
             item { SectionTitle("Thư viện") }
             item {
@@ -173,6 +220,62 @@ private fun SectionTitle(text: String, withArrow: Boolean = false) {
         if (withArrow) {
             Spacer(Modifier.width(6.dp))
             Icon(Lucide.ChevronRight, null, Modifier.size(22.dp))
+        }
+    }
+}
+
+@Composable
+private fun WatchedCard(video: VideoItem) {
+    val context = LocalContext.current
+    Column(
+        Modifier.width(162.dp).clickable {
+            try {
+                context.startActivity(
+                    android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(video.watchUrl))
+                        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            } catch (_: Exception) {
+            }
+        }
+    ) {
+        Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(12.dp)).background(NanColors.Surface)) {
+            AsyncImage(
+                model = video.thumbnail,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+            if (video.isShort) {
+                Icon(
+                    Lucide.Clapperboard,
+                    null,
+                    Modifier.align(Alignment.BottomEnd).padding(6.dp).size(28.dp).clip(CircleShape)
+                        .background(Color(0xCC000000)).padding(5.dp)
+                )
+            } else if (video.duration != null) {
+                Text(
+                    video.duration,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(6.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(Color(0xCC000000))
+                        .padding(horizontal = 4.dp, vertical = 1.dp)
+                )
+            }
+        }
+        Text(
+            video.title,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 8.dp)
+        )
+        video.channel?.let {
+            Text(it, fontSize = 12.sp, color = NanColors.TextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }

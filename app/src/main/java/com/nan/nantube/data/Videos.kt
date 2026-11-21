@@ -47,6 +47,12 @@ object VideoRepository {
         return if (onlyShort.isNotEmpty()) onlyShort else list
     }
 
+    /** Video đã xem của tài khoản (cần đăng nhập). */
+    suspend fun history(account: Account?): List<VideoItem> {
+        if (account == null) return emptyList()
+        return parse(InnerTube.call("browse", JSONObject().put("browseId", "FEhistory"), account))
+    }
+
     suspend fun search(query: String, account: Account?): List<VideoItem> =
         parse(InnerTube.call("search", JSONObject().put("query", query).put("params", SEARCH_ANY), account))
 

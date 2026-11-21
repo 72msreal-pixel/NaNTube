@@ -158,6 +158,32 @@ object InnerTube {
         )
     }
 
+    private val SUBS_REGEX = Regex(
+        "(Không có người đăng ký|No subscribers|\\d[\\d.,\\u00a0\\u202f ]*\\s?(?:N|Tr|K|M|B|nghìn|triệu|tỷ)?\\s?(?:người đăng ký|subscribers?))",
+        RegexOption.IGNORE_CASE
+    )
+
+    private fun findSubs(node: Any?): String? {
+        when (node) {
+            is String -> SUBS_REGEX.find(node)?.let { return it.value.trim() }
+            is JSONObject -> {
+                val keys = node.keys()
+                while (keys.hasNext()) findSubs(node.opt(keys.next()))?.let { return it }
+            }
+            is org.json.JSONArray -> for (i in 0 until node.length()) findSubs(node.opt(i))?.let { return it }
+        }
+        return null
+    }
+
+    /** Số người đăng ký của kênh: đổi @handle thành mã kênh rồi đọc phần đầu trang kênh. */
+    suspend fun channelSubs(handle: String, account: Account): String? {
+        val h = if (handle.startsWith("@")) handle else "@$handle"
+        val resolved = call("navigation/resolve_url", JSONObject().put("url", "https://www.youtube.com/$h"), account)
+        val id = findKey(resolved, "browseEndpoint")?.optString("browseId")?.takeIf { it.isNotBlank() } ?: return null
+        val page = call("browse", JSONObject().put("browseId", id), account)
+        return findSubs(page)
+    }
+
     private fun Account.withProfile(p: Profile?) = if (p == null) this else copy(
         name = p.channelName ?: name,
         googleName = p.googleName ?: googleName,
@@ -171,8 +197,20 @@ object InnerTube {
     suspend fun refreshProfiles() {
         for (acc in AccountStore.accounts.toList()) {
             try {
-                val p = profile(acc) ?: continue
-                val updated = acc.withProfile(p)
+                val p = profile(acc)
+                var updated = if (p != null) acc.withProfile(p) else acc
+                if (updated.subs == null) {
+                    updated.handle?.let { h ->
+                        val subs = try {
+                            channelSubs(h, updated)
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                            null
+                        }
+                        if (subs != null) updated = updated.copy(subs = subs)
+                    }
+                }
                 if (updated != acc) AccountStore.replace(updated)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
