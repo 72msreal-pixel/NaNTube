@@ -28,8 +28,18 @@ data class PlaylistOption(
 object PlaylistRepository {
     const val WATCH_LATER = "WL"
 
-    /** Mọi danh sách phát (gồm Xem sau) của tài khoản; [PlaylistOption.saved] cho biết [videoId] đã có trong đó chưa. */
-    suspend fun options(account: Account?, videoId: String): List<PlaylistOption> {
+    /**
+     * Mọi danh sách phát (gồm Xem sau) của tài khoản; [PlaylistOption.saved] cho biết [videoId] đã có trong đó chưa.
+     * Bỏ mục "Âm thanh" (âm thanh Shorts đã lưu do YouTube tự thêm): chỗ đó dành cho danh sách Music của app ([MusicList]).
+     */
+    suspend fun options(account: Account?, videoId: String): List<PlaylistOption> =
+        rawOptions(account, videoId).filterNot { isSoundsList(it) }
+
+    /** Mục "Âm thanh" của YouTube (mã SE, hoặc đúng tên này khi app đang chạy tiếng Việt). */
+    private fun isSoundsList(option: PlaylistOption): Boolean =
+        option.id == "SE" || option.title.trim().equals("Âm thanh", ignoreCase = true)
+
+    private suspend fun rawOptions(account: Account?, videoId: String): List<PlaylistOption> {
         requireNotNull(account) { "Hãy đăng nhập để lưu video" }
         // Meetube chỉ gửi videoIds cho get_add_to_playlist; tài khoản mã thử TV rồi WEB+Bearer.
         val withFlag = JSONObject()
@@ -69,34 +79,16 @@ object PlaylistRepository {
         )
 
     /**
-     * Tạo danh sách mới ([videoId] null = danh sách trống); [privacy] là PRIVATE / UNLISTED / PUBLIC.
-     * Trả mã danh sách mới, hoặc chuỗi rỗng nếu YouTube tạo xong nhưng không trả mã và cũng chưa tìm lại được.
+     * Tạo danh sách mới ([videoId] null = danh sách trống). Trả mã danh sách mới, hoặc chuỗi rỗng nếu YouTube tạo xong
+     * nhưng không trả mã và cũng chưa tìm lại được.
      *
-     * Meetube gọi playlist/create bằng mẫu WEB (tài khoản mã vẫn dùng Bearer) và chỉ gửi title + videoIds,
-     * không đọc kết quả. Ở đây cũng vậy: HTTP thành công là đã tạo; mã danh sách lấy từ phản hồi hoặc
-     * tìm lại theo tên, chứ không coi thiếu playlistId trong phản hồi là lỗi.
+     * Đúng như meetube: một request playlist/create (mẫu WEB + Bearer hoặc cookie, xem [InnerTube.createPlaylist]) chỉ gửi
+     * title + videoIds, không có chế độ hiển thị (YouTube tự đặt riêng tư). HTTP thành công là đã tạo; mã danh sách lấy từ
+     * phản hồi hoặc tìm lại theo tên, chứ không coi thiếu playlistId trong phản hồi là lỗi.
      */
-    suspend fun create(account: Account?, title: String, privacy: String, videoId: String?): String {
+    suspend fun create(account: Account?, title: String, videoId: String?): String {
         requireNotNull(account) { "Hãy đăng nhập để lưu video" }
-        fun body(withPrivacy: Boolean) = JSONObject().put("title", title).also {
-            if (withPrivacy) it.put("privacyStatus", privacy)
-            if (videoId != null) it.put("videoIds", JSONArray().put(videoId))
-        }
-        var failure: Exception? = null
-        var json: JSONObject? = null
-        for (withPrivacy in listOf(true, false)) {
-            try {
-                json = InnerTube.callAny("playlist/create", body(withPrivacy), account, webFirst = true)
-                break
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (e: AuthRejected) {
-                throw e
-            } catch (e: Exception) {
-                if (failure == null) failure = e
-            }
-        }
-        if (json == null) throw failure ?: Exception("Không tạo được danh sách phát")
+        val json = InnerTube.createPlaylist(account, title, videoId)
 
         val id = json.optString("playlistId").ifBlank { null }
         if (id != null) return id

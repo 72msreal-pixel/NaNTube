@@ -47,7 +47,7 @@ object MusicList {
             if (!create || (!force && !attempted.add(account.id))) return@withLock null
 
             val made = try {
-                PlaylistRepository.create(account, TITLE, "PRIVATE", null).ifBlank { null }
+                PlaylistRepository.create(account, TITLE, null).ifBlank { null }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {

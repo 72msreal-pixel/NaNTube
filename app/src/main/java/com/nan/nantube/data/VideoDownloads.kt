@@ -24,13 +24,13 @@ object VideoDownloads {
 
     private class Stream(val url: String, val size: Long, val mime: String, val height: Int, val bitrate: Int)
 
-    private class Plan(val video: Stream, val audio: Stream?, val userAgent: String)
+    private class Plan(val video: Stream, val audio: Stream?)
 
     /** googlevideo từ chối link (403 / 404 / 410): link hết hạn hoặc client lấy link này không được phục vụ. */
     private class Refused(val code: Int) : IOException("Máy chủ video từ chối tải (HTTP $code)")
 
-    /** Một cách lấy link /player; [userAgent] phải trùng với client đã lấy link khi tải. */
-    private class Source(val name: String, val userAgent: String, val load: suspend () -> JSONObject)
+    /** Một cách lấy link /player. */
+    private class Source(val name: String, val load: suspend () -> JSONObject)
 
     /**
      * Thứ tự theo meetube (PhoneSourcePlanner): VISIONOS đứng đầu (link trực tiếp, không cần mã hóa chữ ký hay PO token),
@@ -38,9 +38,9 @@ object VideoDownloads {
      * chỉ có SABR, nên trước đây chọn nó đầu tiên là nguyên nhân tải bị từ chối.
      */
     private fun sources(account: Account?, id: String): List<Source> = listOf(
-        Source("VISIONOS", InnerTube.VISION_UA) { InnerTube.directPlayer(id, vision = true) },
-        Source("ANDROID_VR", InnerTube.VR_UA) { InnerTube.directPlayer(id, vision = false) },
-        Source("ACCOUNT", InnerTube.callUserAgent(account)) {
+        Source("VISIONOS") { InnerTube.directPlayer(id, vision = true) },
+        Source("ANDROID_VR") { InnerTube.directPlayer(id, vision = false) },
+        Source("ACCOUNT") {
             InnerTube.call("player", JSONObject().put("videoId", id), account)
         }
     )
@@ -48,9 +48,10 @@ object VideoDownloads {
     suspend fun download(context: Context, account: Account?, video: VideoItem, onProgress: (Int) -> Unit): String =
         withContext(Dispatchers.IO) {
             var failure: Exception? = null
+            var reason: String? = null
             // Như DownloadJob của meetube: link bị từ chối thì đổi client, lấy link mới, tải lại; không thử lại đúng link cũ.
             for (source in sources(account, video.id)) {
-                val plan = readPlan(source) ?: continue
+                val plan = readPlan(source) { reason = "${source.name}: $it" } ?: continue
                 try {
                     probePlan(plan)
                 } catch (e: CancellationException) {
@@ -63,12 +64,12 @@ object VideoDownloads {
                 try {
                     val total = plan.video.size + (plan.audio?.size ?: 0L)
                     val videoPart = File(work, "video.part")
-                    fetch(plan.video, videoPart, plan.userAgent) { onProgress(percent(it, total)) }
+                    fetch(plan.video, videoPart) { onProgress(percent(it, total)) }
                     val result = if (plan.audio == null) {
                         videoPart
                     } else {
                         val audioPart = File(work, "audio.part")
-                        fetch(plan.audio, audioPart, plan.userAgent) { onProgress(percent(plan.video.size + it, total)) }
+                        fetch(plan.audio, audioPart) { onProgress(percent(plan.video.size + it, total)) }
                         File(work, "joined.mp4").also { MediaJoiner.join(videoPart, audioPart, it) }
                     }
                     val name = fileName(video)
@@ -84,13 +85,16 @@ object VideoDownloads {
             if (last is Refused) {
                 throw IOException("YouTube từ chối link tải của video này (HTTP ${last.code}). Thử lại sau hoặc chọn video khác.")
             }
-            throw last ?: IllegalStateException("YouTube không cung cấp bản MP4 tải trực tiếp cho video này")
+            throw last ?: IllegalStateException(
+                reason?.let { "YouTube không cung cấp bản MP4 tải trực tiếp cho video này ($it)" }
+                    ?: "YouTube không cung cấp bản MP4 tải trực tiếp cho video này"
+            )
         }
 
     /** Hỏi thử 2 byte đầu của luồng video và âm thanh: link bị từ chối thì bỏ plan này ngay, khỏi tải dở rồi mới biết. */
     private fun probePlan(plan: Plan) {
-        probe(plan.video.url, plan.userAgent)
-        plan.audio?.let { probe(it.url, plan.userAgent) }
+        probe(plan.video.url)
+        plan.audio?.let { probe(it.url) }
     }
 
     private fun percent(done: Long, total: Long): Int = if (total <= 0) 0 else (done * 100 / total).toInt().coerceIn(0, 100)
@@ -100,28 +104,40 @@ object VideoDownloads {
         return "$clean-${video.id}.mp4"
     }
 
-    private suspend fun readPlan(source: Source): Plan? {
+    /** Đọc /player của [source] thành kế hoạch tải; không dùng được thì trả null kèm lý do qua [why] (hiện trong thông báo lỗi). */
+    private suspend fun readPlan(source: Source, why: (String) -> Unit): Plan? {
         val json = try {
             source.load()
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            why(e.message ?: "không kết nối được")
             return null
         }
         if (json.dig("videoDetails", "isLive") == true || json.dig("videoDetails", "isUpcoming") == true) {
             error("Không tải được video đang hoặc sắp phát trực tiếp")
         }
-        if (json.dig("playabilityStatus", "status") != "OK") return null
-        val data = json.optJSONObject("streamingData") ?: return null
+        val status = json.dig("playabilityStatus", "status") as? String
+        if (status != "OK") {
+            val detail = json.dig("playabilityStatus", "reason") as? String
+            why(listOfNotNull(status, detail).joinToString(" - ").ifBlank { "không có dữ liệu phát" })
+            return null
+        }
+        val data = json.optJSONObject("streamingData")
+        if (data == null) {
+            why("không có streamingData")
+            return null
+        }
         val adaptive = streams(data.optJSONArray("adaptiveFormats"))
         val video = adaptive.filter { it.mime.startsWith("video/mp4") && "avc1" in it.mime && it.height <= MAX_HEIGHT }
             .maxByOrNull { it.height }
         val audio = adaptive.filter { it.mime.startsWith("audio/mp4") }.maxByOrNull { it.bitrate }
-        if (video != null && audio != null) return Plan(video, audio, source.userAgent)
+        if (video != null && audio != null) return Plan(video, audio)
         val muxed = streams(data.optJSONArray("formats"))
             .filter { it.mime.startsWith("video/mp4") }
             .maxByOrNull { it.height }
-        return muxed?.let { Plan(it, null, source.userAgent) }
+        if (muxed == null) why("không có link MP4 trực tiếp (chỉ có luồng mã hóa/SABR)")
+        return muxed?.let { Plan(it, null) }
     }
 
     private fun streams(formats: JSONArray?): List<Stream> {
@@ -138,12 +154,12 @@ object VideoDownloads {
         }
     }
 
-    private fun fetch(stream: Stream, target: File, userAgent: String, onBytes: (Long) -> Unit) {
+    private fun fetch(stream: Stream, target: File, onBytes: (Long) -> Unit) {
         target.outputStream().use { out ->
             var offset = 0L
             while (offset < stream.size) {
                 val end = minOf(offset + CHUNK_BYTES, stream.size) - 1
-                val bytes = readRange(stream.url, offset, end, userAgent)
+                val bytes = readRange(stream.url, offset, end)
                 if (bytes.isEmpty()) throw IOException("Máy chủ video trả dữ liệu rỗng")
                 out.write(bytes)
                 offset += bytes.size
@@ -153,11 +169,11 @@ object VideoDownloads {
     }
 
     /** Lỗi mạng thoáng qua thì thử lại đúng đoạn đó (có chờ); link bị từ chối thì dừng để đổi client. */
-    private fun readRange(url: String, start: Long, end: Long, userAgent: String): ByteArray {
+    private fun readRange(url: String, start: Long, end: Long): ByteArray {
         var failure: IOException? = null
         repeat(MAX_ATTEMPTS) { attempt ->
             try {
-                return requestRange(url, start, end, userAgent)
+                return requestRange(url, start, end)
             } catch (e: Refused) {
                 throw e
             } catch (e: IOException) {
@@ -173,13 +189,13 @@ object VideoDownloads {
         throw failure ?: IOException("Không tải được dữ liệu video")
     }
 
-    /** Dùng đúng tiêu đề Range như StreamFetcher của meetube (không dùng tham số range= trên URL). */
-    private fun requestRange(url: String, start: Long, end: Long, userAgent: String): ByteArray {
+    /** Dùng đúng tiêu đề Range và UA media như StreamFetcher của meetube (không dùng tham số range= trên URL). */
+    private fun requestRange(url: String, start: Long, end: Long): ByteArray {
         val conn = URL(url).openConnection() as HttpURLConnection
         try {
             conn.connectTimeout = 15_000
             conn.readTimeout = 30_000
-            conn.setRequestProperty("User-Agent", userAgent)
+            conn.setRequestProperty("User-Agent", InnerTube.MEDIA_UA)
             conn.setRequestProperty("Range", "bytes=$start-$end")
             val code = conn.responseCode
             if (code == 403 || code == 404 || code == 410) throw Refused(code)
@@ -194,12 +210,12 @@ object VideoDownloads {
         }
     }
 
-    private fun probe(url: String, userAgent: String) {
+    private fun probe(url: String) {
         val conn = URL(url).openConnection() as HttpURLConnection
         try {
             conn.connectTimeout = 15_000
             conn.readTimeout = 20_000
-            conn.setRequestProperty("User-Agent", userAgent)
+            conn.setRequestProperty("User-Agent", InnerTube.MEDIA_UA)
             conn.setRequestProperty("Range", "bytes=0-1")
             val code = conn.responseCode
             if (code == 403 || code == 404 || code == 410) throw Refused(code)

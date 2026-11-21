@@ -72,6 +72,7 @@ import com.composables.icons.lucide.Download
 import com.composables.icons.lucide.Lucide
 import com.nan.nantube.DownloadService
 import com.nan.nantube.data.Account
+import com.nan.nantube.data.MusicList
 import com.nan.nantube.data.PlaylistOption
 import com.nan.nantube.data.PlaylistRepository
 import com.nan.nantube.data.TvPlayback
@@ -206,6 +207,14 @@ private fun SheetHandle() {
     }
 }
 
+/** Đặt danh sách Music của app ([musicId]) ngay sau "Xem sau" (chỗ của mục "Âm thanh" cũ); không có trong danh sách YouTube trả thì giữ nguyên. */
+private fun withMusicList(list: List<PlaylistOption>, musicId: String?): List<PlaylistOption> {
+    val music = list.firstOrNull { it.id == musicId } ?: return list
+    val rest = list.filter { it.id != musicId }
+    val watchLater = rest.firstOrNull()?.takeIf { it.id == PlaylistRepository.WATCH_LATER }
+    return if (watchLater != null) listOf(watchLater, music) + rest.drop(1) else listOf(music) + rest
+}
+
 /**
  * Bảng "Lưu vào…" trượt từ đáy: mỗi danh sách phát một dòng, chạm để lưu / bỏ lưu video
  * (dấu trang đặc = đã lưu), và nút "Danh sách phát mới".
@@ -225,7 +234,15 @@ fun SaveToPlaylistSheet(video: VideoItem, account: Account?, onDismiss: () -> Un
 
     LaunchedEffect(video.id, account?.id) {
         try {
-            options = PlaylistRepository.options(account, video.id)
+            // Danh sách Music của app (tìm theo tên, chưa có thì tạo một lần) nằm ngay sau "Xem sau", thay chỗ mục "Âm thanh" của YouTube.
+            val musicId = try {
+                MusicList.id(account, create = true, force = true)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+            options = withMusicList(PlaylistRepository.options(account, video.id), musicId)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -384,26 +401,17 @@ private fun PlaylistChoiceRow(option: PlaylistOption, coverUrl: String?, saved: 
 
 // ---- Hộp thoại "Danh sách phát mới" ---------------------------------------------------------
 
-private enum class PrivacyChoice(val api: String, val label: String, val hint: String, val icon: ImageVector) {
-    Public("PUBLIC", "Công khai", "Mọi người có thể tìm kiếm và xem", GlobeIcon),
-    Unlisted("UNLISTED", "Không công khai", "Bất kỳ ai có đường liên kết đều có thể xem", LinkIcon),
-    Private("PRIVATE", "Riêng tư", "Chỉ bạn mới có thể xem", LockIcon)
-}
-
 @Composable
 private fun NewPlaylistDialog(video: VideoItem, account: Account?, onClose: () -> Unit, onCreated: () -> Unit) {
     val context = LocalContext.current
-    val focus = LocalFocusManager.current
     var title by remember { mutableStateOf("") }
-    var privacy by remember { mutableStateOf(PrivacyChoice.Private) }
-    var showPrivacy by remember { mutableStateOf(false) }
     var creating by remember { mutableStateOf(false) }
     var focused by remember { mutableStateOf(false) }
     val requester = remember { FocusRequester() }
     val field = RoundedCornerShape(12.dp)
     val canCreate = title.isNotBlank() && !creating
 
-    BackHandler(enabled = !showPrivacy, onBack = onClose)
+    BackHandler(onBack = onClose)
     LaunchedEffect(Unit) { requester.requestFocus() }
 
     fun create() {
@@ -412,7 +420,7 @@ private fun NewPlaylistDialog(video: VideoItem, account: Account?, onClose: () -
         creating = true
         editScope.launch {
             try {
-                PlaylistRepository.create(account, name, privacy.api, video.id)
+                PlaylistRepository.create(account, name, video.id)
                 showToast(context, "Đã lưu vào $name")
                 onCreated()
             } catch (e: CancellationException) {
@@ -467,26 +475,6 @@ private fun NewPlaylistDialog(video: VideoItem, account: Account?, onClose: () -
                     )
                 }
 
-                Spacer(Modifier.height(16.dp))
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .clip(field)
-                        .border(1.dp, NanColors.Divider, field)
-                        .clickable {
-                            focus.clearFocus()
-                            showPrivacy = true
-                        }
-                        .padding(start = 16.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Chế độ hiển thị", fontSize = 14.sp, lineHeight = 18.sp, color = NanColors.TextSecondary)
-                        Text(privacy.label, fontSize = 16.sp, color = Color.White)
-                    }
-                    Icon(Lucide.ChevronDown, null, Modifier.size(24.dp), tint = Color.White)
-                }
-
                 Row(
                     Modifier.fillMaxWidth().padding(top = 24.dp),
                     horizontalArrangement = Arrangement.End,
@@ -523,55 +511,6 @@ private fun NewPlaylistDialog(video: VideoItem, account: Account?, onClose: () -
                     }
                 }
             }
-        }
-        if (showPrivacy) {
-            PrivacySheet(
-                current = privacy,
-                onPick = { privacy = it; showPrivacy = false },
-                onDismiss = { showPrivacy = false }
-            )
-        }
-    }
-}
-
-/** Bảng "Đặt chế độ hiển thị" (Công khai / Không công khai / Riêng tư) mở từ hộp thoại tạo danh sách. */
-@Composable
-private fun PrivacySheet(current: PrivacyChoice, onPick: (PrivacyChoice) -> Unit, onDismiss: () -> Unit) {
-    BackHandler(onBack = onDismiss)
-    Box(Modifier.fillMaxSize().background(SheetScrim).plainClickable(onDismiss)) {
-        Column(
-            Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
-                .background(NanColors.Popup)
-                .plainClickable { }
-                .navigationBarsPadding()
-        ) {
-            SheetHandle()
-            Text(
-                "Đặt chế độ hiển thị",
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Medium,
-                color = Color.White,
-                modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp)
-            )
-            HorizontalDivider(color = NanColors.Divider)
-            PrivacyChoice.entries.forEach { option ->
-                Row(
-                    Modifier.fillMaxWidth().clickable { onPick(option) }.padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(option.icon, null, Modifier.size(24.dp), tint = Color.White)
-                    Spacer(Modifier.width(16.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(option.label, fontSize = 18.sp, fontWeight = FontWeight.Medium, color = Color.White)
-                        Text(option.hint, fontSize = 14.sp, color = NanColors.TextSecondary)
-                    }
-                    if (option == current) Icon(Lucide.Check, null, Modifier.size(24.dp), tint = Color.White)
-                }
-            }
-            Spacer(Modifier.height(8.dp))
         }
     }
 }
