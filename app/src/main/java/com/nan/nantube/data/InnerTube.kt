@@ -116,36 +116,85 @@ object InnerTube {
 
     // ---- Lấy thông tin tài khoản sau khi đăng nhập ------------------------------------------
 
+    /** Thông tin hiển thị lấy từ accounts_list (tên Google, email, kênh đang chọn, số người đăng ký). */
+    class Profile(
+        val googleName: String?,
+        val email: String?,
+        val channelName: String?,
+        val handle: String?,
+        val subs: String?,
+        val photo: String?
+    )
+
+    suspend fun profile(account: Account): Profile? {
+        val body = JSONObject().put(
+            "accountReadMask",
+            JSONObject().put("returnOwner", true).put("returnBrandAccounts", true).put("returnPersonaAccounts", false)
+        )
+        val json = call("account/accounts_list", body, account)
+        val header = findKey(json, "googleAccountHeaderRenderer")
+        val items = findAllKeys(json, "accountItem")
+        val item = items.firstOrNull { it.optBoolean("isSelected") } ?: items.firstOrNull()
+        var email = header?.let { ytText(it.opt("email")) }
+        var handle = item?.let { ytText(it.opt("channelHandle")) }
+        var subs: String? = null
+        // accountByline có thể là email, @handle hoặc số người đăng ký tuỳ loại tài khoản.
+        val byline = item?.let { ytText(it.opt("accountByline")) }
+        if (byline != null) {
+            when {
+                byline.startsWith("@") -> if (handle == null) handle = byline
+                byline.contains("@") -> if (email == null) email = byline
+                else -> subs = byline
+            }
+        }
+        if (header == null && item == null) return null
+        return Profile(
+            googleName = header?.let { ytText(it.opt("name")) },
+            email = email,
+            channelName = item?.let { ytText(it.opt("accountName")) },
+            handle = handle,
+            subs = subs,
+            photo = item?.dig("accountPhoto", "thumbnails", 0, "url") as? String
+        )
+    }
+
+    private fun Account.withProfile(p: Profile?) = if (p == null) this else copy(
+        name = p.channelName ?: name,
+        googleName = p.googleName ?: googleName,
+        email = p.email ?: email,
+        handle = p.handle ?: handle,
+        subs = p.subs ?: subs,
+        photo = p.photo ?: photo
+    )
+
+    /** Làm mới thông tin hiển thị của mọi tài khoản đã đăng nhập (lỗi thì giữ dữ liệu cũ). */
+    suspend fun refreshProfiles() {
+        for (acc in AccountStore.accounts.toList()) {
+            try {
+                val p = profile(acc) ?: continue
+                val updated = acc.withProfile(p)
+                if (updated != acc) AccountStore.replace(updated)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (_: Exception) {
+            }
+        }
+    }
+
     /** Tài khoản đăng nhập bằng mã: hỏi accounts_list bằng token vừa nhận. */
     suspend fun accountForTokens(tokens: OAuthTokens): Account {
         val temp = Account(
             id = "code-" + tokens.accessToken.take(12), kind = LoginKind.CODE, name = "Tài khoản YouTube",
             accessToken = tokens.accessToken, refreshToken = tokens.refreshToken, expiresAt = tokens.expiresAt
         )
-        var name: String? = null
-        var email: String? = null
-        var handle: String? = null
-        var photo: String? = null
-        try {
-            val body = JSONObject().put(
-                "accountReadMask",
-                JSONObject().put("returnOwner", true).put("returnBrandAccounts", true).put("returnPersonaAccounts", false)
-            )
-            val json = call("account/accounts_list", body, temp)
-            val items = findAllKeys(json, "accountItem")
-            val item = items.firstOrNull { it.optBoolean("isSelected") } ?: items.firstOrNull()
-            if (item != null) {
-                name = ytText(item.opt("accountName"))
-                email = ytText(item.opt("accountByline"))?.takeIf { it.contains("@") && !it.startsWith("@") }
-                handle = ytText(item.opt("channelHandle"))
-                    ?: ytText(item.opt("accountByline"))?.takeIf { it.startsWith("@") }
-                photo = item.dig("accountPhoto", "thumbnails", 0, "url") as? String
-            }
+        val full = try {
+            temp.withProfile(profile(temp))
         } catch (_: Exception) {
-            // Không lấy được tên thì vẫn đăng nhập được với tên mặc định.
+            temp // Không lấy được tên thì vẫn đăng nhập được với tên mặc định.
         }
-        val stable = (email ?: handle ?: name)?.let { "code-" + it.lowercase() } ?: temp.id
-        return temp.copy(id = stable, name = name ?: temp.name, email = email, handle = handle, photo = photo)
+        val stable = (full.email ?: full.handle ?: full.name.takeIf { it != temp.name })
+            ?.let { "code-" + it.lowercase() } ?: temp.id
+        return full.copy(id = stable)
     }
 
     /** Tài khoản web ở ô [slot]; null nếu ô đó không có tài khoản. */
@@ -157,10 +206,16 @@ object InnerTube {
         val email = ytText(header.opt("email"))
         val handle = ytText(header.opt("channelHandle"))
         val photo = header.dig("accountPhoto", "thumbnails", 0, "url") as? String
-        val key = (email ?: handle ?: name).lowercase()
-        return Account(
-            id = "web-$key", kind = LoginKind.WEB, name = name, handle = handle, email = email,
+        val base = Account(
+            id = "web-", kind = LoginKind.WEB, name = name, handle = handle, email = email,
             photo = photo, authUser = slot
         )
+        val full = try {
+            base.withProfile(profile(base.copy(id = "web-$slot")))
+        } catch (_: Exception) {
+            base
+        }
+        val key = (full.email ?: full.handle ?: full.name).lowercase()
+        return full.copy(id = "web-$key")
     }
 }
