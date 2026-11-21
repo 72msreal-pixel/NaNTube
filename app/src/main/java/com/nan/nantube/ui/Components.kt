@@ -23,10 +23,12 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
 import com.composables.icons.lucide.Lucide
 import com.composables.icons.lucide.Play
 
@@ -54,7 +56,7 @@ fun MoreButton(modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun Avatar(letter: String, size: Dp, modifier: Modifier = Modifier) {
+fun Avatar(letter: String, size: Dp, modifier: Modifier = Modifier, photoUrl: String? = null) {
     Box(
         modifier
             .size(size)
@@ -63,6 +65,15 @@ fun Avatar(letter: String, size: Dp, modifier: Modifier = Modifier) {
         contentAlignment = Alignment.Center
     ) {
         Text(letter, fontSize = (size.value * 0.42f).sp, fontWeight = FontWeight.Bold)
+        if (!photoUrl.isNullOrBlank()) {
+            // Ảnh tải xong sẽ phủ lên chữ cái; lỗi mạng thì chữ cái vẫn còn đó.
+            AsyncImage(
+                model = if (photoUrl.startsWith("//")) "https:$photoUrl" else photoUrl,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
     }
 }
 

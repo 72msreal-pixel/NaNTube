@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -24,54 +25,102 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.composables.icons.lucide.CircleUser
+import com.composables.icons.lucide.Clapperboard
 import com.composables.icons.lucide.Lucide
+import com.composables.icons.lucide.Search
+import com.nan.nantube.data.AccountStore
+import com.nan.nantube.data.VideoRepository
 
-private enum class Screen { Info, Settings }
+private enum class Tab(val label: String) {
+    Main("Main"), Shorts("Short"), Search("Search"), Info("Info");
+
+    val icon: ImageVector
+        get() = when (this) {
+            Main -> LucideHouse
+            Shorts -> Lucide.Clapperboard
+            Search -> Lucide.Search
+            Info -> Lucide.CircleUser
+        }
+}
+
+private enum class AddStep { None, Chooser, Code, Web }
 
 @Composable
 fun AppRoot() {
-    var screen by remember { mutableStateOf(Screen.Info) }
+    var tab by remember { mutableStateOf(Tab.Main) }
+    var showSettings by remember { mutableStateOf(false) }
     var showAccounts by remember { mutableStateOf(false) }
+    var addStep by remember { mutableStateOf(AddStep.None) }
+    var query by remember { mutableStateOf("") }
 
+    val account = AccountStore.selected
+    val mainFeed = remember { FeedState { acc, _ -> VideoRepository.home(acc) } }
+    val shortsFeed = remember { FeedState { acc, _ -> VideoRepository.shorts(acc) } }
+    val searchFeed = remember { FeedState { acc, q -> VideoRepository.search(q, acc) } }
+
+    // Back: đóng lớp trên cùng trước, rồi mới về tab Main.
+    BackHandler(enabled = tab != Tab.Main) { tab = Tab.Main }
+    BackHandler(enabled = showSettings) { showSettings = false }
     BackHandler(enabled = showAccounts) { showAccounts = false }
-    BackHandler(enabled = !showAccounts && screen == Screen.Settings) { screen = Screen.Info }
 
     Surface(Modifier.fillMaxSize(), color = NanColors.Background, contentColor = Color.White) {
         Box(Modifier.fillMaxSize()) {
             Column(Modifier.fillMaxSize()) {
                 Box(Modifier.weight(1f)) {
-                    when (screen) {
-                        Screen.Info -> InfoScreen(
+                    when {
+                        tab == Tab.Info && showSettings -> SettingsScreen(onBack = { showSettings = false })
+                        tab == Tab.Info -> InfoScreen(
+                            account = account,
                             onAccountClick = { showAccounts = true },
-                            onSettingsClick = { screen = Screen.Settings }
+                            onSettingsClick = { showSettings = true },
+                            onSearchClick = { tab = Tab.Search }
                         )
-                        Screen.Settings -> SettingsScreen(onBack = { screen = Screen.Info })
+                        tab == Tab.Main -> MainFeedScreen(mainFeed, account)
+                        tab == Tab.Shorts -> ShortsFeedScreen(shortsFeed, account)
+                        else -> SearchScreen(searchFeed, account, query) { query = it }
                     }
                 }
-                BottomBar(onInfoClick = { screen = Screen.Info })
+                BottomBar(selected = tab, onSelect = {
+                    tab = it
+                    if (it == Tab.Info) showSettings = false
+                })
             }
             if (showAccounts) {
-                AccountPopup(onDismiss = { showAccounts = false })
+                AccountPopup(onDismiss = { showAccounts = false }, onAdd = { addStep = AddStep.Chooser })
+            }
+            when (addStep) {
+                AddStep.None -> Unit
+                AddStep.Chooser -> AddAccountChooser(
+                    onDismiss = { addStep = AddStep.None },
+                    onManual = { addStep = AddStep.Web },
+                    onCode = { addStep = AddStep.Code }
+                )
+                AddStep.Code -> CodeSignInScreen(onSuccess = { addStep = AddStep.None }, onClose = { addStep = AddStep.None })
+                AddStep.Web -> WebSignInScreen(onSuccess = { addStep = AddStep.None }, onClose = { addStep = AddStep.None })
             }
         }
     }
 }
 
 @Composable
-private fun BottomBar(onInfoClick: () -> Unit) {
+private fun BottomBar(selected: Tab, onSelect: (Tab) -> Unit) {
     Column(Modifier.fillMaxWidth().background(NanColors.Background)) {
         HorizontalDivider(color = NanColors.Surface)
-        Column(Modifier.fillMaxWidth().navigationBarsPadding()) {
-            Column(
-                Modifier.fillMaxWidth().clickable(onClick = onInfoClick).padding(vertical = 8.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Icon(Lucide.CircleUser, null, Modifier.size(26.dp))
-                Spacer(Modifier.height(2.dp))
-                Text("Info", fontSize = 11.sp)
+        Row(Modifier.fillMaxWidth().navigationBarsPadding()) {
+            Tab.entries.forEach { t ->
+                val tint = if (t == selected) Color.White else NanColors.TextSecondary
+                Column(
+                    Modifier.weight(1f).clickable { onSelect(t) }.padding(vertical = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Icon(t.icon, null, Modifier.size(26.dp), tint = tint)
+                    Spacer(Modifier.height(2.dp))
+                    Text(t.label, fontSize = 11.sp, color = tint)
+                }
             }
         }
     }

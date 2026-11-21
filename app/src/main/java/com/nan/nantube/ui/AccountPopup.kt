@@ -10,11 +10,14 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -30,12 +33,31 @@ import androidx.compose.ui.unit.sp
 import com.composables.icons.lucide.Check
 import com.composables.icons.lucide.Lucide
 import com.composables.icons.lucide.Plus
+import com.nan.nantube.data.Account
+import com.nan.nantube.data.AccountStore
 
-private data class SampleAccount(val email: String, val channel: String, val subs: String)
+/** Một dòng tài khoản trong popup: dữ liệu thật khi đã đăng nhập, dữ liệu mẫu khi chưa. */
+private data class PopupAccount(
+    val line: String,
+    val channel: String,
+    val details: List<String>,
+    val photo: String? = null,
+    val onClick: (() -> Unit)? = null
+)
 
-private val otherAccounts = listOf(
-    SampleAccount("taikhoan2@example.com", "Kênh mẫu 2", "12 người đăng ký"),
-    SampleAccount("taikhoan3@example.com", "Kênh mẫu 3", "Không có người đăng ký")
+private val sampleCurrent = PopupAccount("nan@example.com", "NaN User", listOf("@nantube", "0 người đăng ký"))
+
+private val sampleOthers = listOf(
+    PopupAccount("taikhoan2@example.com", "Kênh mẫu 2", listOf("12 người đăng ký")),
+    PopupAccount("taikhoan3@example.com", "Kênh mẫu 3", listOf("Không có người đăng ký"))
+)
+
+private fun Account.toPopup(onClick: (() -> Unit)? = null) = PopupAccount(
+    line = secondary ?: "Tài khoản ${if (kind == com.nan.nantube.data.LoginKind.CODE) "đăng nhập bằng mã" else "Google"}",
+    channel = name,
+    details = if (email != null) listOfNotNull(handle) else emptyList(),
+    photo = photo,
+    onClick = onClick
 )
 
 private val bottomActions = listOf(
@@ -46,7 +68,12 @@ private val bottomActions = listOf(
 )
 
 @Composable
-fun AccountPopup(onDismiss: () -> Unit) {
+fun AccountPopup(onDismiss: () -> Unit, onAdd: () -> Unit) {
+    val real = AccountStore.selected
+    val current = real?.toPopup() ?: sampleCurrent
+    val others = if (real == null) sampleOthers else AccountStore.accounts
+        .filter { it.id != real.id }
+        .map { acc -> acc.toPopup { AccountStore.select(acc.id) } }
     Box(Modifier.fillMaxSize().background(Color(0x99000000)).plainClickable(onDismiss)) {
         Column(
             Modifier
@@ -63,25 +90,28 @@ fun AccountPopup(onDismiss: () -> Unit) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text("Tài khoản", fontSize = 22.sp, modifier = Modifier.weight(1f))
-                Icon(Lucide.Plus, null, Modifier.size(28.dp))
+                Icon(
+                    Lucide.Plus,
+                    null,
+                    Modifier.offset(x = 8.dp).size(44.dp).clip(CircleShape).clickable(onClick = onAdd).padding(8.dp)
+                )
             }
 
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
                 Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
-                    Text("NaN User", fontSize = 18.sp)
-                    Text("nan@example.com", fontSize = 18.sp, color = NanColors.TextSecondary)
+                    Text(current.channel, fontSize = 18.sp)
+                    Text(current.line, fontSize = 18.sp, color = NanColors.TextSecondary)
                 }
                 HorizontalDivider(Modifier.padding(horizontal = 20.dp), color = NanColors.Divider)
                 Row(
                     Modifier.fillMaxWidth().padding(20.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Avatar("N", 48.dp)
+                    Avatar(current.channel.take(1).uppercase(), 48.dp, photoUrl = current.photo)
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
-                        Text("NaN User", fontSize = 18.sp)
-                        Text("@nantube", fontSize = 14.sp, color = NanColors.TextSecondary)
-                        Text("0 người đăng ký", fontSize = 14.sp, color = NanColors.TextSecondary)
+                        Text(current.channel, fontSize = 18.sp)
+                        current.details.forEach { Text(it, fontSize = 14.sp, color = NanColors.TextSecondary) }
                     }
                     Icon(Lucide.Check, null, Modifier.size(24.dp), tint = NanColors.Blue)
                 }
@@ -100,22 +130,24 @@ fun AccountPopup(onDismiss: () -> Unit) {
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.padding(20.dp)
                 )
-                otherAccounts.forEach { acc ->
-                    Text(
-                        acc.email,
-                        fontSize = 18.sp,
-                        color = NanColors.TextSoft,
-                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
-                    )
-                    Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Avatar(acc.channel.take(1), 44.dp)
-                        Spacer(Modifier.width(12.dp))
-                        Column {
-                            Text(acc.channel, fontSize = 18.sp)
-                            Text(acc.subs, fontSize = 14.sp, color = NanColors.TextSecondary)
+                others.forEach { acc ->
+                    Column(Modifier.fillMaxWidth().then(if (acc.onClick != null) Modifier.clickable(onClick = acc.onClick) else Modifier)) {
+                        Text(
+                            acc.line,
+                            fontSize = 18.sp,
+                            color = NanColors.TextSoft,
+                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+                        )
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Avatar(acc.channel.take(1).uppercase(), 44.dp, photoUrl = acc.photo)
+                            Spacer(Modifier.width(12.dp))
+                            Column {
+                                Text(acc.channel, fontSize = 18.sp)
+                                acc.details.forEach { Text(it, fontSize = 14.sp, color = NanColors.TextSecondary) }
+                            }
                         }
                     }
                 }

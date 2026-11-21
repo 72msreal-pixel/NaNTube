@@ -45,6 +45,7 @@ import com.composables.icons.lucide.Search
 import com.composables.icons.lucide.Settings
 import com.composables.icons.lucide.ThumbsUp
 import com.composables.icons.lucide.Video
+import com.nan.nantube.data.Account
 
 private data class SampleVideo(
     val title: String,
@@ -77,11 +78,11 @@ private val libraryItems = listOf(
 )
 
 @Composable
-fun InfoScreen(onAccountClick: () -> Unit, onSettingsClick: () -> Unit) {
+fun InfoScreen(account: Account?, onAccountClick: () -> Unit, onSettingsClick: () -> Unit, onSearchClick: () -> Unit) {
     Column(Modifier.fillMaxSize()) {
-        TopBar(onAccountClick, onSettingsClick)
+        TopBar(onAccountClick, onSettingsClick, onSearchClick)
         LazyColumn(Modifier.fillMaxSize()) {
-            item { ProfileHeader() }
+            item { ProfileHeader(account) }
             item { ViewChannelButton() }
             item { SectionTitle("Video đã xem", withArrow = true) }
             item {
@@ -111,7 +112,7 @@ fun InfoScreen(onAccountClick: () -> Unit, onSettingsClick: () -> Unit) {
 }
 
 @Composable
-private fun TopBar(onAccountClick: () -> Unit, onSettingsClick: () -> Unit) {
+private fun TopBar(onAccountClick: () -> Unit, onSettingsClick: () -> Unit, onSearchClick: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -144,7 +145,7 @@ private fun TopBar(onAccountClick: () -> Unit, onSettingsClick: () -> Unit) {
                     .padding(horizontal = 5.dp, vertical = 1.dp)
             )
         }
-        TopIcon(Lucide.Search) { }
+        TopIcon(Lucide.Search, onSearchClick)
         TopIcon(Lucide.Settings, onSettingsClick)
     }
 }
@@ -160,16 +161,17 @@ private fun TopIcon(icon: ImageVector, onClick: () -> Unit) {
 }
 
 @Composable
-private fun ProfileHeader() {
+private fun ProfileHeader(account: Account?) {
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Avatar("N", 72.dp)
+        Avatar((account?.name ?: "NaN User").take(1).uppercase(), 72.dp, photoUrl = account?.photo)
         Spacer(Modifier.width(16.dp))
         Column {
-            Text("NaN User", fontSize = 24.sp, fontWeight = FontWeight.Bold)
-            Text("@nantube", fontSize = 14.sp, color = NanColors.TextSecondary)
+            Text(account?.name ?: "NaN User", fontSize = 24.sp, fontWeight = FontWeight.Bold)
+            val sub = if (account == null) "@nantube" else account.handle ?: account.email
+            if (sub != null) Text(sub, fontSize = 14.sp, color = NanColors.TextSecondary)
         }
     }
 }
