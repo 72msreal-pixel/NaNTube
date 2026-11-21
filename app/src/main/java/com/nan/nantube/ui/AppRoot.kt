@@ -32,6 +32,7 @@ import com.composables.icons.lucide.CircleUser
 import com.composables.icons.lucide.Lucide
 import com.composables.icons.lucide.Search
 import com.nan.nantube.data.AccountStore
+import com.nan.nantube.data.VideoItem
 import com.nan.nantube.data.VideoRepository
 
 private enum class Tab(val label: String) {
@@ -53,6 +54,7 @@ fun AppRoot() {
     var showSettings by remember { mutableStateOf(false) }
     var showHistory by remember { mutableStateOf(false) }
     var openList by remember { mutableStateOf<OpenList?>(null) }
+    var saveVideo by remember { mutableStateOf<VideoItem?>(null) }
     var showAccounts by remember { mutableStateOf(false) }
     var addStep by remember { mutableStateOf(AddStep.None) }
     var query by remember { mutableStateOf("") }
@@ -96,6 +98,7 @@ fun AppRoot() {
                             covers = libraryCovers,
                             onOpenHistory = { showHistory = true },
                             onOpenList = { openList = it },
+                            onSaveToPlaylist = { saveVideo = it },
                             onAccountClick = { showAccounts = true },
                             onSettingsClick = { showSettings = true },
                             onSearchClick = { tab = Tab.Search },
@@ -112,6 +115,9 @@ fun AppRoot() {
                     openList = null
                     if (it == Tab.Info) showSettings = false
                 })
+            }
+            saveVideo?.let { video ->
+                SaveToPlaylistSheet(video, account, onDismiss = { saveVideo = null })
             }
             if (showAccounts) {
                 AccountPopup(

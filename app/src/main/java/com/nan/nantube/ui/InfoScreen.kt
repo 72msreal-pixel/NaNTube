@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -111,6 +112,7 @@ fun InfoScreen(
     onSearchClick: () -> Unit,
     onOpenHistory: () -> Unit,
     onOpenList: (OpenList) -> Unit,
+    onSaveToPlaylist: (VideoItem) -> Unit,
     onSignIn: () -> Unit
 ) {
     // Mỗi lần vào Info lấy lịch sử mới (người dùng vừa xem video bên ngoài); cái cũ vẫn hiện trong lúc chờ.
@@ -173,7 +175,7 @@ fun InfoScreen(
                             contentPadding = PaddingValues(horizontal = 16.dp),
                             horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            items(shown, key = { it.id }) { WatchedCard(it) }
+                            items(shown, key = { it.id }) { WatchedCard(it, account, onSaveToPlaylist) }
                         }
                     }
                 }
@@ -337,7 +339,7 @@ private fun SectionTitle(text: String, withArrow: Boolean = false, onClick: (() 
 }
 
 @Composable
-private fun WatchedCard(video: VideoItem) {
+private fun WatchedCard(video: VideoItem, account: Account?, onSaveToPlaylist: (VideoItem) -> Unit) {
     val context = LocalContext.current
     Column(
         Modifier.width(162.dp).clickable {
@@ -374,14 +376,21 @@ private fun WatchedCard(video: VideoItem) {
             }
             WatchProgress(video.progress)
         }
-        Text(
-            video.title,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Medium,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(top = 8.dp)
-        )
+        // Tiêu đề chừa chỗ bên phải cho nút ba chấm (menu của video), như thẻ video của YouTube.
+        Box(Modifier.fillMaxWidth().padding(top = 8.dp)) {
+            Text(
+                video.title,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(end = 22.dp)
+            )
+            VideoMoreButton(
+                video, account, onSaveToPlaylist,
+                Modifier.align(Alignment.TopEnd).offset(x = 10.dp, y = (-6).dp)
+            )
+        }
         video.channel?.let {
             Text(it, fontSize = 12.sp, color = NanColors.TextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
@@ -395,7 +404,7 @@ private fun LibraryChip(text: String, selected: Boolean = false, dropdown: Boole
             .clip(RoundedCornerShape(8.dp))
             .background(if (selected) Color(0xFFF1F1F1) else NanColors.Surface)
             .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            .padding(horizontal = 12.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(text, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = if (selected) Color.Black else Color.White)

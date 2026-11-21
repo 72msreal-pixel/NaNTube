@@ -43,9 +43,9 @@ fun Modifier.plainClickable(onClick: () -> Unit): Modifier = composed {
 }
 
 @Composable
-fun MoreButton(modifier: Modifier = Modifier) {
+fun MoreButton(modifier: Modifier = Modifier, width: Dp = 36.dp, onClick: () -> Unit = {}) {
     Box(
-        modifier.size(36.dp).clip(CircleShape).clickable { },
+        modifier.size(width = width, height = 36.dp).clip(CircleShape).clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
         Canvas(Modifier.size(width = 16.dp, height = 4.dp)) {
