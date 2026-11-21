@@ -56,6 +56,8 @@ fun AppRoot() {
     var showAccounts by remember { mutableStateOf(false) }
     var addStep by remember { mutableStateOf(AddStep.None) }
     var query by remember { mutableStateOf("") }
+    var webHint by remember { mutableStateOf<String?>(null) }
+
 
     val account = AccountStore.selected
     val mainFeed = remember { FeedState { acc, _ -> VideoRepository.home(acc) } }
@@ -77,7 +79,8 @@ fun AppRoot() {
                             account = account,
                             onAccountClick = { showAccounts = true },
                             onSettingsClick = { showSettings = true },
-                            onSearchClick = { tab = Tab.Search }
+                            onSearchClick = { tab = Tab.Search },
+                            onSignIn = { showAccounts = true; addStep = AddStep.Chooser }
                         )
                         tab == Tab.Main -> MainFeedScreen(mainFeed, account)
                         tab == Tab.Shorts -> ShortsFeedScreen(shortsFeed, account)
@@ -90,17 +93,24 @@ fun AppRoot() {
                 })
             }
             if (showAccounts) {
-                AccountPopup(onDismiss = { showAccounts = false }, onAdd = { addStep = AddStep.Chooser })
+                AccountPopup(
+                    onDismiss = { showAccounts = false },
+                    onAdd = { addStep = AddStep.Chooser }
+                )
             }
             when (addStep) {
                 AddStep.None -> Unit
                 AddStep.Chooser -> AddAccountChooser(
                     onDismiss = { addStep = AddStep.None },
-                    onManual = { addStep = AddStep.Web },
+                    onManual = { webHint = null; addStep = AddStep.Web },
                     onCode = { addStep = AddStep.Code }
                 )
                 AddStep.Code -> CodeSignInScreen(onSuccess = { addStep = AddStep.None }, onClose = { addStep = AddStep.None })
-                AddStep.Web -> WebSignInScreen(onSuccess = { addStep = AddStep.None }, onClose = { addStep = AddStep.None })
+                AddStep.Web -> WebSignInScreen(
+                    loginHint = webHint,
+                    onSuccess = { addStep = AddStep.None; webHint = null },
+                    onClose = { addStep = AddStep.None; webHint = null }
+                )
             }
         }
     }

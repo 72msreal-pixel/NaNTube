@@ -12,6 +12,11 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
+import androidx.browser.customtabs.CustomTabsClient
+import androidx.browser.customtabs.CustomTabsIntent
+import androidx.compose.runtime.DisposableEffect
+import com.nan.nantube.MainActivity
+import com.nan.nantube.SignInKeepaliveService
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -167,6 +172,8 @@ fun CodeSignInScreen(onSuccess: () -> Unit, onClose: () -> Unit) {
     var state by remember { mutableStateOf<CodeState>(CodeState.Loading) }
     var copied by remember { mutableStateOf(false) }
 
+    DisposableEffect(Unit) { onDispose { SignInKeepaliveService.stop(context) } }
+
     // Mỗi lần "Thử lại" là một mã mới; thoát màn hình thì coroutine bị huỷ, dừng poll.
     LaunchedEffect(attempt) {
         state = CodeState.Loading
@@ -177,6 +184,16 @@ fun CodeSignInScreen(onSuccess: () -> Unit, onClose: () -> Unit) {
             val tokens = DeviceCodeAuth.awaitTokens(code)
             state = CodeState.Finishing
             AccountStore.upsert(InnerTube.accountForTokens(tokens))
+            SignInKeepaliveService.stop(context)
+            // Giống success auto-return của meetube: mở lại MainActivity (CLEAR_TOP|SINGLE_TOP) để
+            // đóng Custom Tab đang nằm trên app trong cùng task, đưa người dùng về thẳng đây.
+            try {
+                context.startActivity(
+                    Intent(context, MainActivity::class.java)
+                        .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                )
+            } catch (_: Exception) {
+            }
             onSuccess()
         } catch (e: CancellationException) {
             throw e
@@ -230,7 +247,12 @@ fun CodeSignInScreen(onSuccess: () -> Unit, onClose: () -> Unit) {
                             color = NanColors.TextSecondary
                         )
                         Spacer(Modifier.height(28.dp))
-                        PillButton("Mở trang xác nhận") { openInBrowser(context, s.code.fullUrl) }
+                        PillButton("Mở trang xác nhận") {
+                            // Custom Tab ghim vào trình duyệt, nằm trong task của app (không bị app YouTube chặn link),
+                            // kèm service giữ mạng để poll vẫn chạy khi trang duyệt phủ lên.
+                            openInBrowserTab(context, s.code.fullUrl)
+                            SignInKeepaliveService.start(context)
+                        }
                         Spacer(Modifier.height(24.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             CircularProgressIndicator(
@@ -258,10 +280,26 @@ fun CodeSignInScreen(onSuccess: () -> Unit, onClose: () -> Unit) {
 }
 
 /**
- * Giống Utils.openLinkInBrowserTab của meetube: ghim đúng trình duyệt mặc định để app YouTube
- * (nếu có) không chặn link và kéo người dùng sang task khác.
+ * Giống Utils.openLinkInBrowserTab của meetube: Custom Tab ghim vào một trình duyệt thật để app YouTube
+ * (nếu có) không chặn link, và trang nằm trong task của app nên đóng lại được khi đăng nhập xong.
  */
-private fun openInBrowser(context: Context, url: String) {
+fun openInBrowserTab(context: Context, url: String) {
+    try {
+        val pkg = CustomTabsClient.getPackageName(context, null)
+        if (pkg == null) {
+            openInBrowser(context, url)
+            return
+        }
+        val tab = CustomTabsIntent.Builder().build()
+        tab.intent.setPackage(pkg)
+        tab.launchUrl(context, Uri.parse(url))
+    } catch (_: Exception) {
+        openInBrowser(context, url)
+    }
+}
+
+/** Mở link bằng trình duyệt mặc định (không dùng Custom Tab). */
+fun openInBrowser(context: Context, url: String) {
     val uri = Uri.parse(url)
     try {
         val intent = Intent(Intent.ACTION_VIEW, uri).addCategory(Intent.CATEGORY_BROWSABLE)
@@ -290,7 +328,7 @@ private const val MAX_SLOTS = 10
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-fun WebSignInScreen(onSuccess: () -> Unit, onClose: () -> Unit) {
+fun WebSignInScreen(loginHint: String?, onSuccess: () -> Unit, onClose: () -> Unit) {
     val scope = rememberCoroutineScope()
     // Đã có tài khoản web thì thêm vào cùng phiên (giữ cookie cũ), chưa có thì làm sạch rồi đăng nhập mới.
     val adding = remember { AccountStore.accounts.any { it.kind == LoginKind.WEB } }
@@ -343,6 +381,7 @@ fun WebSignInScreen(onSuccess: () -> Unit, onClose: () -> Unit) {
             try {
                 val account = findNewWebAccount() ?: throw IllegalStateException()
                 AccountStore.upsert(account)
+                loginHint?.let { AccountStore.dropPending(it) }
                 onSuccess()
             } catch (e: CancellationException) {
                 throw e
@@ -394,7 +433,11 @@ fun WebSignInScreen(onSuccess: () -> Unit, onClose: () -> Unit) {
                                         ): Boolean = request.url.scheme != "https"
                                     }
                                     web = this
-                                    loadUrl(if (adding) WEB_ADD_URL else WEB_SIGN_IN_URL)
+                                    val base = if (adding) WEB_ADD_URL else WEB_SIGN_IN_URL
+                                    loadUrl(
+                                        if (loginHint.isNullOrBlank()) base
+                                        else base + "&Email=" + Uri.encode(loginHint) + "&login_hint=" + Uri.encode(loginHint)
+                                    )
                                 }
                             },
                             onRelease = {

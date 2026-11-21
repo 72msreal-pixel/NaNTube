@@ -47,27 +47,12 @@ import com.composables.icons.lucide.ThumbsUp
 import com.composables.icons.lucide.Video
 import com.nan.nantube.data.Account
 
-private data class SampleVideo(
-    val title: String,
-    val channel: String,
-    val colors: List<Color>,
-    val duration: String? = null,
-    val isShort: Boolean = false,
-    val progress: Float = 0f
-)
-
 private data class LibraryItem(
     val title: String,
     val subtitle: String?,
     val icon: ImageVector,
     val colors: List<Color>,
     val hasMenu: Boolean = true
-)
-
-private val watchedVideos = listOf(
-    SampleVideo("Video mẫu số 1", "Kênh mẫu", listOf(Color(0xFF1E88E5), Color(0xFF0D47A1)), duration = "8:04", progress = 0.3f),
-    SampleVideo("Short mẫu số 2", "Kênh mẫu", listOf(Color(0xFF8D6E63), Color(0xFF3E2723)), isShort = true, progress = 0.2f),
-    SampleVideo("Short mẫu số 3", "Kênh mẫu", listOf(Color(0xFF43A047), Color(0xFF1B5E20)), isShort = true, progress = 0.1f)
 )
 
 private val libraryItems = listOf(
@@ -78,20 +63,19 @@ private val libraryItems = listOf(
 )
 
 @Composable
-fun InfoScreen(account: Account?, onAccountClick: () -> Unit, onSettingsClick: () -> Unit, onSearchClick: () -> Unit) {
+fun InfoScreen(
+    account: Account?,
+    onAccountClick: () -> Unit,
+    onSettingsClick: () -> Unit,
+    onSearchClick: () -> Unit,
+    onSignIn: () -> Unit
+) {
     Column(Modifier.fillMaxSize()) {
         TopBar(onAccountClick, onSettingsClick, onSearchClick)
         LazyColumn(Modifier.fillMaxSize()) {
             item { ProfileHeader(account) }
-            item { ViewChannelButton() }
-            item { SectionTitle("Video đã xem", withArrow = true) }
             item {
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    items(watchedVideos) { WatchedCard(it) }
-                }
+                if (account == null) PillButton("Đăng nhập", onSignIn) else PillButton("Xem kênh") { }
             }
             item { SectionTitle("Thư viện") }
             item {
@@ -131,20 +115,7 @@ private fun TopBar(onAccountClick: () -> Unit, onSettingsClick: () -> Unit, onSe
             Icon(Lucide.ChevronDown, null, Modifier.size(18.dp))
         }
         Spacer(Modifier.weight(1f))
-        Box {
-            TopIcon(Lucide.Bell) { }
-            Text(
-                "9+",
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(top = 2.dp)
-                    .clip(RoundedCornerShape(50))
-                    .background(Color(0xFFE5191B))
-                    .padding(horizontal = 5.dp, vertical = 1.dp)
-            )
-        }
+        TopIcon(Lucide.Bell) { }
         TopIcon(Lucide.Search, onSearchClick)
         TopIcon(Lucide.Settings, onSettingsClick)
     }
@@ -166,18 +137,18 @@ private fun ProfileHeader(account: Account?) {
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Avatar((account?.name ?: "NaN User").take(1).uppercase(), 72.dp, photoUrl = account?.photo)
+        Avatar((account?.name ?: "?").take(1).uppercase(), 72.dp, photoUrl = account?.photo)
         Spacer(Modifier.width(16.dp))
         Column {
-            Text(account?.name ?: "NaN User", fontSize = 24.sp, fontWeight = FontWeight.Bold)
-            val sub = if (account == null) "@nantube" else account.handle ?: account.email
+            Text(account?.name ?: "Chưa đăng nhập", fontSize = 24.sp, fontWeight = FontWeight.Bold)
+            val sub = account?.let { it.handle ?: it.email }
             if (sub != null) Text(sub, fontSize = 14.sp, color = NanColors.TextSecondary)
         }
     }
 }
 
 @Composable
-private fun ViewChannelButton() {
+private fun PillButton(text: String, onClick: () -> Unit) {
     Box(
         Modifier
             .padding(horizontal = 16.dp)
@@ -185,10 +156,10 @@ private fun ViewChannelButton() {
             .height(40.dp)
             .clip(RoundedCornerShape(50))
             .background(Color(0xFFF1F1F1))
-            .clickable { },
+            .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        Text("Xem kênh", color = Color.Black, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+        Text(text, color = Color.Black, fontSize = 14.sp, fontWeight = FontWeight.Medium)
     }
 }
 
@@ -202,38 +173,6 @@ private fun SectionTitle(text: String, withArrow: Boolean = false) {
         if (withArrow) {
             Spacer(Modifier.width(6.dp))
             Icon(Lucide.ChevronRight, null, Modifier.size(22.dp))
-        }
-    }
-}
-
-@Composable
-private fun WatchedCard(video: SampleVideo) {
-    Column(Modifier.width(162.dp)) {
-        ThumbPlaceholder(
-            colors = video.colors,
-            modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f),
-            duration = video.duration,
-            cornerIcon = if (video.isShort) Lucide.Clapperboard else null,
-            progress = video.progress
-        )
-        Row(Modifier.padding(top = 8.dp)) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    video.title,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    video.channel,
-                    fontSize = 12.sp,
-                    color = NanColors.TextSecondary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            MoreButton()
         }
     }
 }

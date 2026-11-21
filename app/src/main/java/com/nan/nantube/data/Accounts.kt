@@ -1,6 +1,8 @@
 package com.nan.nantube.data
 
+import android.accounts.AccountManager
 import android.content.Context
+import android.webkit.CookieManager
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -23,6 +25,10 @@ data class Account(
     val email: String? = null,
     val photo: String? = null,
     val authUser: Int = 0,
+    /** Tên tài khoản Google (khác tên kênh), hiện ở đầu popup như app YouTube. */
+    val googleName: String? = null,
+    /** Chuỗi số người đăng ký của kênh, đã định dạng sẵn ("288 người đăng ký"). */
+    val subs: String? = null,
     val accessToken: String? = null,
     val refreshToken: String? = null,
     val expiresAt: Long = 0L
@@ -37,9 +43,20 @@ object AccountStore {
     private var appContext: Context? = null
 
     val accounts = mutableStateListOf<Account>()
+
+    /** Email Google có trên máy nhưng chưa đăng nhập vào app: hiện ở cuối danh sách. */
+    val pending = mutableStateListOf<String>()
+
+    /** Email người dùng đã xoá khỏi danh sách, để lần quét tài khoản trên máy không thêm lại. */
+    private val hidden = mutableSetOf<String>()
     private var selectedId by mutableStateOf<String?>(null)
 
-    val selected: Account? get() = accounts.firstOrNull { it.id == selectedId } ?: accounts.firstOrNull()
+    /** Đang dùng "tài khoản khách" (chưa đăng nhập): [selected] trả về null dù đã có tài khoản trong danh sách. */
+    var guest by mutableStateOf(false)
+        private set
+
+    val selected: Account?
+        get() = if (guest) null else accounts.firstOrNull { it.id == selectedId } ?: accounts.firstOrNull()
 
     fun init(context: Context) {
         if (appContext != null) return
@@ -52,14 +69,105 @@ object AccountStore {
             // Dữ liệu hỏng thì coi như chưa đăng nhập.
         }
         selectedId = prefs.getString("selected", null)
+        guest = prefs.getBoolean("guest", false)
+        readStrings(prefs.getString("pending", "[]")).forEach { pending.add(it) }
+        hidden.addAll(readStrings(prefs.getString("hidden", "[]")))
     }
+
+    private fun readStrings(json: String?): List<String> = try {
+        val arr = JSONArray(json ?: "[]")
+        (0 until arr.length()).map { arr.getString(it) }
+    } catch (_: Exception) {
+        emptyList()
+    }
+
+    private fun norm(email: String) = email.trim().lowercase()
+
+    private fun isSignedIn(email: String) = accounts.any { it.email?.let { e -> norm(e) } == norm(email) }
 
     /** Thêm mới hoặc cập nhật (theo id) rồi chọn luôn tài khoản đó. */
     fun upsert(account: Account) {
         val i = accounts.indexOfFirst { it.id == account.id }
         if (i >= 0) accounts[i] = account else accounts.add(account)
         selectedId = account.id
+        guest = false
+        account.email?.let { e -> pending.removeAll { norm(it) == norm(e) } }
         persist()
+    }
+
+    /** Đăng xuất = xoá hẳn tài khoản khỏi app. Hết tài khoản web thì dọn luôn cookie của WebView. */
+    fun remove(id: String) {
+        val acc = accounts.firstOrNull { it.id == id } ?: return
+        accounts.remove(acc)
+        if (selectedId == id) selectedId = accounts.firstOrNull()?.id
+        if (accounts.none { it.kind == LoginKind.WEB }) {
+            try {
+                CookieManager.getInstance().removeAllCookies(null)
+                CookieManager.getInstance().flush()
+            } catch (_: Exception) {
+            }
+        }
+        persist()
+    }
+
+    /** Đổi chỗ tài khoản [fromId] sang vị trí của [toId] (dùng khi kéo thả). */
+    fun move(fromId: String, toId: String) {
+        val from = accounts.indexOfFirst { it.id == fromId }
+        val to = accounts.indexOfFirst { it.id == toId }
+        if (from < 0 || to < 0 || from == to) return
+        accounts.add(to, accounts.removeAt(from))
+        persist()
+    }
+
+    /** Thêm email trên máy (người dùng tự chọn) vào danh sách chưa đăng nhập. */
+    fun addPending(email: String) {
+        val e = email.trim()
+        if (e.isEmpty()) return
+        hidden.remove(norm(e))
+        if (!isSignedIn(e) && pending.none { norm(it) == norm(e) }) pending.add(e)
+        persist()
+    }
+
+    /** Bỏ email khỏi danh sách chưa đăng nhập vì đã đăng nhập xong (không ẩn vĩnh viễn). */
+    fun dropPending(email: String) {
+        if (pending.removeAll { norm(it) == norm(email) }) persist()
+    }
+
+    /** Cập nhật thông tin hiển thị của tài khoản đã có, không đổi tài khoản đang chọn. */
+    fun replace(account: Account) {
+        val i = accounts.indexOfFirst { it.id == account.id }
+        if (i < 0) return
+        accounts[i] = account
+        account.email?.let { e -> pending.removeAll { norm(it) == norm(e) } }
+        persist()
+    }
+
+    var permissionAsked: Boolean
+        get() = appContext?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)?.getBoolean("permAsked", false) ?: false
+        set(v) {
+            appContext?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)?.edit()?.putBoolean("permAsked", v)?.apply()
+        }
+
+    fun removePending(email: String) {
+        pending.removeAll { norm(it) == norm(email) }
+        hidden.add(norm(email))
+        persist()
+    }
+
+    /** Quét các tài khoản Google app nhìn thấy được trên máy (Android 8+ chỉ thấy tài khoản người dùng đã cấp quyền qua bảng chọn). */
+    fun refreshDeviceAccounts(context: Context) {
+        try {
+            val found = AccountManager.get(context).getAccountsByType("com.google").map { it.name }
+            var changed = false
+            for (e in found) {
+                if (norm(e) in hidden || isSignedIn(e) || pending.any { norm(it) == norm(e) }) continue
+                pending.add(e)
+                changed = true
+            }
+            if (changed) persist()
+        } catch (_: Exception) {
+            // Không có quyền xem tài khoản: bỏ qua, người dùng vẫn thêm được qua bảng chọn.
+        }
     }
 
     /** Cập nhật token (khi refresh) mà không đổi tài khoản đang chọn. */
@@ -70,8 +178,14 @@ object AccountStore {
         persist()
     }
 
+    fun useGuest() {
+        guest = true
+        persist()
+    }
+
     fun select(id: String) {
         selectedId = id
+        guest = false
         persist()
     }
 
@@ -82,6 +196,9 @@ object AccountStore {
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putString("accounts", arr.toString())
             .putString("selected", selectedId)
+            .putBoolean("guest", guest)
+            .putString("pending", JSONArray(pending.toList()).toString())
+            .putString("hidden", JSONArray(hidden.toList()).toString())
             .apply()
     }
 
@@ -89,6 +206,7 @@ object AccountStore {
         .put("id", a.id).put("kind", a.kind.name).put("name", a.name)
         .put("handle", a.handle ?: JSONObject.NULL).put("email", a.email ?: JSONObject.NULL)
         .put("photo", a.photo ?: JSONObject.NULL).put("authUser", a.authUser)
+        .put("googleName", a.googleName ?: JSONObject.NULL).put("subs", a.subs ?: JSONObject.NULL)
         .put("accessToken", a.accessToken ?: JSONObject.NULL)
         .put("refreshToken", a.refreshToken ?: JSONObject.NULL)
         .put("expiresAt", a.expiresAt)
@@ -101,6 +219,8 @@ object AccountStore {
         email = o.optString("email").takeIf { it.isNotBlank() && it != "null" },
         photo = o.optString("photo").takeIf { it.isNotBlank() && it != "null" },
         authUser = o.optInt("authUser", 0),
+        googleName = o.optString("googleName").takeIf { it.isNotBlank() && it != "null" },
+        subs = o.optString("subs").takeIf { it.isNotBlank() && it != "null" },
         accessToken = o.optString("accessToken").takeIf { it.isNotBlank() && it != "null" },
         refreshToken = o.optString("refreshToken").takeIf { it.isNotBlank() && it != "null" },
         expiresAt = o.optLong("expiresAt", 0L)
