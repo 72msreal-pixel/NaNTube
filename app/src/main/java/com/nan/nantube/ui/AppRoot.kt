@@ -1,6 +1,11 @@
 package com.nan.nantube.ui
 
+import android.accounts.Account as DeviceAccount
+import android.accounts.AccountManager
+import android.app.Activity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -56,6 +61,14 @@ fun AppRoot() {
     var showAccounts by remember { mutableStateOf(false) }
     var addStep by remember { mutableStateOf(AddStep.None) }
     var query by remember { mutableStateOf("") }
+    var webHint by remember { mutableStateOf<String?>(null) }
+
+    // Bảng chọn tài khoản Google có sẵn trên máy: chọn xong thì thêm vào cuối danh sách (chưa đăng nhập).
+    val devicePicker = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
+        if (res.resultCode == Activity.RESULT_OK) {
+            res.data?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)?.let { AccountStore.addPending(it) }
+        }
+    }
 
     val account = AccountStore.selected
     val mainFeed = remember { FeedState { acc, _ -> VideoRepository.home(acc) } }
@@ -77,7 +90,8 @@ fun AppRoot() {
                             account = account,
                             onAccountClick = { showAccounts = true },
                             onSettingsClick = { showSettings = true },
-                            onSearchClick = { tab = Tab.Search }
+                            onSearchClick = { tab = Tab.Search },
+                            onSignIn = { showAccounts = true; addStep = AddStep.Chooser }
                         )
                         tab == Tab.Main -> MainFeedScreen(mainFeed, account)
                         tab == Tab.Shorts -> ShortsFeedScreen(shortsFeed, account)
@@ -90,17 +104,34 @@ fun AppRoot() {
                 })
             }
             if (showAccounts) {
-                AccountPopup(onDismiss = { showAccounts = false }, onAdd = { addStep = AddStep.Chooser })
+                AccountPopup(
+                    onDismiss = { showAccounts = false },
+                    onAdd = { addStep = AddStep.Chooser },
+                    onSignInPending = { email -> webHint = email; addStep = AddStep.Web }
+                )
             }
             when (addStep) {
                 AddStep.None -> Unit
                 AddStep.Chooser -> AddAccountChooser(
                     onDismiss = { addStep = AddStep.None },
-                    onManual = { addStep = AddStep.Web },
-                    onCode = { addStep = AddStep.Code }
+                    onManual = { webHint = null; addStep = AddStep.Web },
+                    onCode = { addStep = AddStep.Code },
+                    onDevice = {
+                        addStep = AddStep.None
+                        val allowable: java.util.ArrayList<DeviceAccount>? = null
+                        devicePicker.launch(
+                            AccountManager.newChooseAccountIntent(
+                                null, allowable, arrayOf("com.google"), null, null, null, null
+                            )
+                        )
+                    }
                 )
                 AddStep.Code -> CodeSignInScreen(onSuccess = { addStep = AddStep.None }, onClose = { addStep = AddStep.None })
-                AddStep.Web -> WebSignInScreen(onSuccess = { addStep = AddStep.None }, onClose = { addStep = AddStep.None })
+                AddStep.Web -> WebSignInScreen(
+                    loginHint = webHint,
+                    onSuccess = { addStep = AddStep.None; webHint = null },
+                    onClose = { addStep = AddStep.None; webHint = null }
+                )
             }
         }
     }

@@ -76,7 +76,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 // ------------------------------------------------------------------------------------------
 
 @Composable
-fun AddAccountChooser(onDismiss: () -> Unit, onManual: () -> Unit, onCode: () -> Unit) {
+fun AddAccountChooser(onDismiss: () -> Unit, onManual: () -> Unit, onCode: () -> Unit, onDevice: () -> Unit) {
     BackHandler(onBack = onDismiss)
     Box(
         Modifier.fillMaxSize().background(Color(0x99000000)).plainClickable(onDismiss),
@@ -97,6 +97,7 @@ fun AddAccountChooser(onDismiss: () -> Unit, onManual: () -> Unit, onCode: () ->
             )
             ChooserRow(Lucide.User, "Tự nhập Gmail", "Đăng nhập ngay trên trang của Google", onManual)
             ChooserRow(Lucide.Tv, "Dùng mã", "Lấy mã rồi nhập tại yt.be/activate", onCode)
+            ChooserRow(Lucide.User, "Chọn từ tài khoản trên máy", "Thêm email Google có sẵn, đăng nhập sau", onDevice)
         }
     }
 }
@@ -261,7 +262,7 @@ fun CodeSignInScreen(onSuccess: () -> Unit, onClose: () -> Unit) {
  * Giống Utils.openLinkInBrowserTab của meetube: ghim đúng trình duyệt mặc định để app YouTube
  * (nếu có) không chặn link và kéo người dùng sang task khác.
  */
-private fun openInBrowser(context: Context, url: String) {
+fun openInBrowser(context: Context, url: String) {
     val uri = Uri.parse(url)
     try {
         val intent = Intent(Intent.ACTION_VIEW, uri).addCategory(Intent.CATEGORY_BROWSABLE)
@@ -290,7 +291,7 @@ private const val MAX_SLOTS = 10
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-fun WebSignInScreen(onSuccess: () -> Unit, onClose: () -> Unit) {
+fun WebSignInScreen(loginHint: String?, onSuccess: () -> Unit, onClose: () -> Unit) {
     val scope = rememberCoroutineScope()
     // Đã có tài khoản web thì thêm vào cùng phiên (giữ cookie cũ), chưa có thì làm sạch rồi đăng nhập mới.
     val adding = remember { AccountStore.accounts.any { it.kind == LoginKind.WEB } }
@@ -394,7 +395,11 @@ fun WebSignInScreen(onSuccess: () -> Unit, onClose: () -> Unit) {
                                         ): Boolean = request.url.scheme != "https"
                                     }
                                     web = this
-                                    loadUrl(if (adding) WEB_ADD_URL else WEB_SIGN_IN_URL)
+                                    val base = if (adding) WEB_ADD_URL else WEB_SIGN_IN_URL
+                                    loadUrl(
+                                        if (loginHint.isNullOrBlank()) base
+                                        else base + "&Email=" + Uri.encode(loginHint) + "&login_hint=" + Uri.encode(loginHint)
+                                    )
                                 }
                             },
                             onRelease = {
