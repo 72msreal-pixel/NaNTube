@@ -175,6 +175,13 @@ object InnerTube {
         return null
     }
 
+    /** Mã kênh (UC…) từ @handle, null nếu không đổi được. */
+    suspend fun channelId(handle: String, account: Account): String? {
+        val h = if (handle.startsWith("@")) handle else "@$handle"
+        val resolved = call("navigation/resolve_url", JSONObject().put("url", "https://www.youtube.com/$h"), account)
+        return findKey(resolved, "browseEndpoint")?.optString("browseId")?.takeIf { it.isNotBlank() }
+    }
+
     /** Số người đăng ký của kênh: đổi @handle thành mã kênh rồi đọc phần đầu trang kênh. */
     suspend fun channelSubs(handle: String, account: Account): String? {
         val h = if (handle.startsWith("@")) handle else "@$handle"

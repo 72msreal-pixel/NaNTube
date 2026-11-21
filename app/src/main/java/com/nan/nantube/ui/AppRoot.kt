@@ -52,6 +52,8 @@ private enum class AddStep { None, Chooser, Code, Web }
 fun AppRoot() {
     var tab by remember { mutableStateOf(Tab.Main) }
     var showSettings by remember { mutableStateOf(false) }
+    var showHistory by remember { mutableStateOf(false) }
+    var openList by remember { mutableStateOf<OpenList?>(null) }
     var showAccounts by remember { mutableStateOf(false) }
     var addStep by remember { mutableStateOf(AddStep.None) }
     var query by remember { mutableStateOf("") }
@@ -62,10 +64,15 @@ fun AppRoot() {
     val mainFeed = remember { FeedState { acc, _ -> VideoRepository.home(acc) } }
     val shortsFeed = remember { FeedState { acc, _ -> VideoRepository.shorts(acc) } }
     val searchFeed = remember { FeedState { acc, q -> VideoRepository.search(q, acc) } }
+    // Lịch sử dùng chung: hàng "Video đã xem" ở Info và trang Video đã xem đầy đủ cùng một danh sách.
+    val historyFeed = remember { HistoryFeed { acc -> VideoRepository.historyPage(acc) } }
+    val libraryCovers = remember { LibraryCovers() }
 
     // Back: đóng lớp trên cùng trước, rồi mới về tab Main.
     BackHandler(enabled = tab != Tab.Main) { tab = Tab.Main }
     BackHandler(enabled = showSettings) { showSettings = false }
+    BackHandler(enabled = showHistory && tab == Tab.Info) { showHistory = false }
+    BackHandler(enabled = openList != null && tab == Tab.Info) { openList = null }
     BackHandler(enabled = showAccounts) { showAccounts = false }
 
     Surface(Modifier.fillMaxSize(), color = NanColors.Background, contentColor = Color.White) {
@@ -74,8 +81,22 @@ fun AppRoot() {
                 Box(Modifier.weight(1f)) {
                     when {
                         tab == Tab.Info && showSettings -> SettingsScreen(onBack = { showSettings = false })
+                        tab == Tab.Info && openList != null -> PlaylistScreen(
+                            list = openList!!,
+                            account = account,
+                            onBack = { openList = null }
+                        )
+                        tab == Tab.Info && showHistory -> HistoryScreen(
+                            base = historyFeed,
+                            account = account,
+                            onBack = { showHistory = false }
+                        )
                         tab == Tab.Info -> InfoScreen(
                             account = account,
+                            history = historyFeed,
+                            covers = libraryCovers,
+                            onOpenHistory = { showHistory = true },
+                            onOpenList = { openList = it },
                             onAccountClick = { showAccounts = true },
                             onSettingsClick = { showSettings = true },
                             onSearchClick = { tab = Tab.Search },
@@ -88,6 +109,8 @@ fun AppRoot() {
                 }
                 BottomBar(selected = tab, onSelect = {
                     tab = it
+                    showHistory = false
+                    openList = null
                     if (it == Tab.Info) showSettings = false
                 })
             }

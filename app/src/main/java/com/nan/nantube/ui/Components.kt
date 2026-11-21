@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -84,15 +85,26 @@ fun ThumbPlaceholder(
     modifier: Modifier = Modifier,
     duration: String? = null,
     cornerIcon: ImageVector? = null,
-    progress: Float = 0f
+    progress: Float = 0f,
+    /** Ảnh bìa (video đầu tiên của danh sách); chưa có hoặc lỗi thì vẫn thấy nền màu bên dưới. */
+    imageUrl: String? = null
 ) {
     Box(modifier.clip(RoundedCornerShape(12.dp)).background(Brush.linearGradient(colors))) {
-        Icon(
-            Lucide.Play,
-            null,
-            Modifier.align(Alignment.Center).size(26.dp),
-            tint = Color.White.copy(alpha = 0.55f)
-        )
+        if (imageUrl.isNullOrBlank()) {
+            Icon(
+                Lucide.Play,
+                null,
+                Modifier.align(Alignment.Center).size(26.dp),
+                tint = Color.White.copy(alpha = 0.55f)
+            )
+        } else {
+            AsyncImage(
+                model = imageUrl,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
         if (cornerIcon != null) {
             Box(
                 Modifier
@@ -128,4 +140,17 @@ fun ThumbPlaceholder(
             )
         }
     }
+}
+
+/** Thanh đỏ mỏng dưới ảnh bìa thể hiện phần đã xem (0..1); không vẽ gì nếu chưa xem. */
+@Composable
+fun BoxScope.WatchProgress(progress: Float) {
+    if (progress <= 0f) return
+    Box(
+        Modifier
+            .align(Alignment.BottomStart)
+            .fillMaxWidth(progress.coerceAtMost(1f))
+            .height(3.dp)
+            .background(Color.Red)
+    )
 }

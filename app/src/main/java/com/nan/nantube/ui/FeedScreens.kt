@@ -89,7 +89,7 @@ class FeedState(private val loader: suspend (Account?, String) -> List<VideoItem
     }
 }
 
-private fun openVideo(context: android.content.Context, video: VideoItem) {
+fun openVideo(context: android.content.Context, video: VideoItem) {
     try {
         context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(video.watchUrl)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     } catch (_: Exception) {

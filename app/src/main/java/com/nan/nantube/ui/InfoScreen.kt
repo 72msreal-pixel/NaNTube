@@ -46,6 +46,9 @@ import com.composables.icons.lucide.Settings
 import com.composables.icons.lucide.ThumbsUp
 import com.composables.icons.lucide.Video
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -55,46 +58,65 @@ import androidx.compose.ui.platform.LocalContext
 import coil.compose.AsyncImage
 import com.nan.nantube.data.Account
 import com.nan.nantube.data.VideoItem
-import com.nan.nantube.data.VideoRepository
 
 private data class LibraryItem(
     val title: String,
     val subtitle: String?,
     val icon: ImageVector,
     val colors: List<Color>,
-    val hasMenu: Boolean = true
+    val hasMenu: Boolean = true,
+    /** Khóa trong [LibraryCovers]: ảnh bìa = video đầu tiên của danh sách này. Null = không có ảnh bìa. */
+    val coverKey: String? = null
 )
 
 private val libraryItems = listOf(
-    LibraryItem("Video đã thích", "Riêng tư", Lucide.ThumbsUp, listOf(Color(0xFF4A1F2E), Color(0xFF14070C))),
-    LibraryItem("Xem sau", "Riêng tư", Lucide.Clock, listOf(Color(0xFF7A7A7A), Color(0xFF2E2E2E))),
-    LibraryItem("Video của bạn", null, Lucide.Video, listOf(Color(0xFF3A3F2A), Color(0xFF12140D)), hasMenu = false),
+    LibraryItem("Video đã thích", "Riêng tư", Lucide.ThumbsUp, listOf(Color(0xFF4A1F2E), Color(0xFF14070C)), coverKey = LibraryCovers.LIST_LIKED),
+    LibraryItem("Xem sau", "Riêng tư", Lucide.Clock, listOf(Color(0xFF7A7A7A), Color(0xFF2E2E2E)), coverKey = LibraryCovers.LIST_LATER),
+    LibraryItem("Video của bạn", null, Lucide.Video, listOf(Color(0xFF3A3F2A), Color(0xFF12140D)), hasMenu = false, coverKey = LibraryCovers.LIST_UPLOADS),
     LibraryItem("Danh sách phát mới", "Riêng tư", Lucide.ListVideo, listOf(Color(0xFF5E4BA8), Color(0xFF1B1533)))
 )
+
+/** Hàng "Video đã xem" ở Info: tối đa 20 video, mỗi lần vuốt tới cuối hiện thêm 4. Muốn xem nữa thì mở trang Video đã xem. */
+private const val HISTORY_ROW_MAX = 20
+private const val HISTORY_ROW_STEP = 4
 
 @Composable
 fun InfoScreen(
     account: Account?,
+    history: HistoryFeed,
+    covers: LibraryCovers,
     onAccountClick: () -> Unit,
     onSettingsClick: () -> Unit,
     onSearchClick: () -> Unit,
+    onOpenHistory: () -> Unit,
+    onOpenList: (OpenList) -> Unit,
     onSignIn: () -> Unit
 ) {
-    var watched by remember { mutableStateOf<List<VideoItem>>(emptyList()) }
-    var watchedLoading by remember { mutableStateOf(false) }
-    LaunchedEffect(account?.id) {
-        watched = emptyList()
-        if (account == null) return@LaunchedEffect
-        watchedLoading = true
-        watched = try {
-            VideoRepository.history(account).take(15)
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (_: Exception) {
-            emptyList()
+    // Mỗi lần vào Info lấy lịch sử mới (người dùng vừa xem video bên ngoài); cái cũ vẫn hiện trong lúc chờ.
+    LaunchedEffect(account?.id) { history.refresh(account) }
+    LaunchedEffect(account?.id) { covers.load(account) }
+
+    // Hàng đã xem: lấy tối đa 20 video đầu, hiện 4 trước, chạm cuối hàng thì hiện thêm 4.
+    var visible by remember(account?.id) { mutableIntStateOf(HISTORY_ROW_STEP) }
+    val rowItems = history.items.take(HISTORY_ROW_MAX)
+    val shown = rowItems.take(visible)
+    val rowState = rememberLazyListState()
+    val atEnd by remember(rowState) {
+        derivedStateOf {
+            val last = rowState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            last >= 0 && last >= rowState.layoutInfo.totalItemsCount - 1
         }
-        watchedLoading = false
     }
+    LaunchedEffect(atEnd, shown.size, rowItems.size, history.hasMore, history.loading) {
+        if (!atEnd) return@LaunchedEffect
+        if (shown.size < rowItems.size) {
+            visible = minOf(visible + HISTORY_ROW_STEP, HISTORY_ROW_MAX)
+        } else if (rowItems.size < HISTORY_ROW_MAX && history.hasMore && !history.loading) {
+            // Trang đầu của YouTube chưa đủ 20 video: lấy thêm trang kế.
+            history.loadMore(account)
+        }
+    }
+
     Column(Modifier.fillMaxSize()) {
         TopBar(onAccountClick, onSettingsClick, onSearchClick)
         LazyColumn(Modifier.fillMaxSize()) {
@@ -102,13 +124,14 @@ fun InfoScreen(
             item {
                 if (account == null) PillButton("Đăng nhập", onSignIn) else PillButton("Xem kênh") { }
             }
-            item { SectionTitle("Video đã xem", withArrow = true) }
+            item { SectionTitle("Video đã xem", withArrow = true, onClick = if (account != null) onOpenHistory else null) }
             item {
-                if (watched.isEmpty()) {
+                if (shown.isEmpty()) {
                     Text(
                         when {
                             account == null -> "Đăng nhập để xem lịch sử video."
-                            watchedLoading -> "Đang tải…"
+                            history.loading -> "Đang tải…"
+                            history.error != null -> history.error.orEmpty()
                             else -> "Chưa có video nào."
                         },
                         fontSize = 14.sp,
@@ -117,10 +140,11 @@ fun InfoScreen(
                     )
                 } else {
                     LazyRow(
+                        state = rowState,
                         contentPadding = PaddingValues(horizontal = 16.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        items(watched) { WatchedCard(it) }
+                        items(shown, key = { it.id }) { WatchedCard(it) }
                     }
                 }
             }
@@ -136,7 +160,11 @@ fun InfoScreen(
                     item { LibraryChip("Âm nhạc") }
                 }
             }
-            items(libraryItems) { LibraryRow(it) }
+            items(libraryItems) { item ->
+                LibraryRow(item, item.coverKey?.let { covers.covers[it] }) {
+                    if (account != null && item.coverKey != null) onOpenList(OpenList(item.coverKey, item.title))
+                }
+            }
             item { Spacer(Modifier.height(16.dp)) }
         }
     }
@@ -211,9 +239,12 @@ private fun PillButton(text: String, onClick: () -> Unit) {
 }
 
 @Composable
-private fun SectionTitle(text: String, withArrow: Boolean = false) {
+private fun SectionTitle(text: String, withArrow: Boolean = false, onClick: (() -> Unit)? = null) {
     Row(
-        Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 24.dp, bottom = 12.dp),
+        Modifier
+            .fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(start = 16.dp, end = 16.dp, top = 24.dp, bottom = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(text, fontSize = 20.sp, fontWeight = FontWeight.Bold)
@@ -240,7 +271,7 @@ private fun WatchedCard(video: VideoItem) {
     ) {
         Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(12.dp)).background(NanColors.Surface)) {
             AsyncImage(
-                model = video.thumbnail,
+                model = video.coverThumbnail,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
@@ -265,6 +296,7 @@ private fun WatchedCard(video: VideoItem) {
                         .padding(horizontal = 4.dp, vertical = 1.dp)
                 )
             }
+            WatchProgress(video.progress)
         }
         Text(
             video.title,
@@ -299,9 +331,9 @@ private fun LibraryChip(text: String, dropdown: Boolean = false) {
 }
 
 @Composable
-private fun LibraryRow(item: LibraryItem) {
+private fun LibraryRow(item: LibraryItem, coverUrl: String?, onClick: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().clickable { }.padding(horizontal = 16.dp, vertical = 8.dp),
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(Modifier.width(164.dp)) {
@@ -316,7 +348,8 @@ private fun LibraryRow(item: LibraryItem) {
             ThumbPlaceholder(
                 colors = item.colors,
                 modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f),
-                cornerIcon = item.icon
+                cornerIcon = item.icon,
+                imageUrl = coverUrl
             )
         }
         Column(Modifier.weight(1f).padding(horizontal = 16.dp)) {
