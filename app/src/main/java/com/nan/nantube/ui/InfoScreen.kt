@@ -115,6 +115,7 @@ fun InfoScreen(
     onSaveToPlaylist: (VideoItem) -> Unit,
     onSignIn: () -> Unit
 ) {
+    val context = LocalContext.current
     // Mỗi lần vào Info lấy lịch sử mới (người dùng vừa xem video bên ngoài); cái cũ vẫn hiện trong lúc chờ.
     LaunchedEffect(account?.id) { history.refresh(account) }
     LaunchedEffect(account?.id) { covers.load(account) }
@@ -175,7 +176,7 @@ fun InfoScreen(
                             contentPadding = PaddingValues(horizontal = 16.dp),
                             horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            items(shown, key = { it.id }) { WatchedCard(it, account, onSaveToPlaylist) }
+                            items(shown, key = { it.id }) { WatchedCard(it, account, onSaveToPlaylist) { video -> history.remove(account, video.id) } }
                         }
                     }
                 }
@@ -203,7 +204,13 @@ fun InfoScreen(
                 }
                 items(rows, key = { it.key }) { item ->
                     LibraryRow(item, covers.covers[item.key]) {
-                        if (account != null && LibraryCovers.isRemote(item.key)) onOpenList(OpenList(item.key, item.title))
+                        if (item.key == LibraryCovers.LIST_DOWNLOADS) {
+                            try {
+                                context.startActivity(android.content.Intent(android.app.DownloadManager.ACTION_VIEW_DOWNLOADS))
+                            } catch (_: android.content.ActivityNotFoundException) {
+                                android.widget.Toast.makeText(context, "Máy không có ứng dụng mở nội dung đã tải", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                        } else if (account != null && LibraryCovers.isRemote(item.key)) onOpenList(OpenList(item.key, item.title))
                     }
                 }
                 item { Spacer(Modifier.height(16.dp)) }
@@ -339,7 +346,7 @@ private fun SectionTitle(text: String, withArrow: Boolean = false, onClick: (() 
 }
 
 @Composable
-private fun WatchedCard(video: VideoItem, account: Account?, onSaveToPlaylist: (VideoItem) -> Unit) {
+private fun WatchedCard(video: VideoItem, account: Account?, onSaveToPlaylist: (VideoItem) -> Unit, onRemoved: (VideoItem) -> Unit) {
     val context = LocalContext.current
     Column(
         Modifier.width(162.dp).clickable {
@@ -388,7 +395,8 @@ private fun WatchedCard(video: VideoItem, account: Account?, onSaveToPlaylist: (
             )
             VideoMoreButton(
                 video, account, onSaveToPlaylist,
-                Modifier.align(Alignment.TopEnd).offset(x = 10.dp, y = (-6).dp)
+                Modifier.align(Alignment.TopEnd).offset(x = 10.dp, y = (-6).dp),
+                onRemoved = onRemoved
             )
         }
         video.channel?.let {

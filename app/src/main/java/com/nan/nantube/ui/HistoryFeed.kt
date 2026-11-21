@@ -17,7 +17,7 @@ import kotlinx.coroutines.launch
  * Dùng chung cho hàng "Video đã xem" ở Info (chỉ lấy tối đa 20 cái đầu) và cho trang Video đã xem đầy đủ,
  * nên mở trang đầy đủ là thấy ngay những gì hàng đã tải.
  */
-class HistoryFeed(private val firstPage: suspend (Account?) -> VideoPage) {
+class HistoryFeed(private val forHistory: Boolean = false, private val firstPage: suspend (Account?) -> VideoPage) {
     var items by mutableStateOf<List<VideoItem>>(emptyList())
         private set
     var chips by mutableStateOf<List<HistoryChip>>(emptyList())
@@ -34,6 +34,14 @@ class HistoryFeed(private val firstPage: suspend (Account?) -> VideoPage) {
     var loadedKey: String? = null
         private set
 
+    private var removed = emptySet<String>()
+
+    fun remove(account: Account?, id: String) {
+        if (loadedKey != account?.id) return
+        removed = removed + id
+        items = items.filterNot { it.id == id }
+    }
+
     val hasMore: Boolean get() = continuation != null
 
     /**
@@ -43,6 +51,7 @@ class HistoryFeed(private val firstPage: suspend (Account?) -> VideoPage) {
         val key = account?.id ?: ""
         if (loadedKey != null && loadedKey != key) {
             items = emptyList()
+            removed = emptySet()
             chips = emptyList()
             continuation = null
         }
@@ -50,7 +59,7 @@ class HistoryFeed(private val firstPage: suspend (Account?) -> VideoPage) {
         error = null
         try {
             val page = firstPage(account)
-            items = page.items
+            items = page.items.filterNot { it.id in removed }
             continuation = page.continuation
             total = page.total
             if (page.chips.isNotEmpty() || loadedKey != key) chips = page.chips
@@ -70,9 +79,9 @@ class HistoryFeed(private val firstPage: suspend (Account?) -> VideoPage) {
         if (loading || loadingMore) return
         loadingMore = true
         try {
-            val page = VideoRepository.continuePage(account, token)
+            val page = VideoRepository.continuePage(account, token, history = forHistory)
             val seen = items.mapTo(HashSet()) { it.id }
-            items = items + page.items.filter { seen.add(it.id) }
+            items = items + page.items.filter { it.id !in removed && seen.add(it.id) }
             continuation = page.continuation
         } catch (e: CancellationException) {
             throw e

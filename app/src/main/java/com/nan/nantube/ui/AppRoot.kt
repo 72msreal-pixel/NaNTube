@@ -66,7 +66,7 @@ fun AppRoot() {
     val shortsFeed = remember { FeedState { acc, _ -> VideoRepository.shorts(acc) } }
     val searchFeed = remember { FeedState { acc, q -> VideoRepository.search(q, acc) } }
     // Lịch sử dùng chung: hàng "Video đã xem" ở Info và trang Video đã xem đầy đủ cùng một danh sách.
-    val historyFeed = remember { HistoryFeed { acc -> VideoRepository.historyPage(acc) } }
+    val historyFeed = remember { HistoryFeed(forHistory = true) { acc -> VideoRepository.historyPage(acc) } }
     val libraryCovers = remember { LibraryCovers() }
 
     // Back: đóng lớp trên cùng trước, rồi mới về tab Main.

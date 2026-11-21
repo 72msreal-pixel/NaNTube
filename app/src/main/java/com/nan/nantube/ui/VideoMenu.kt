@@ -29,6 +29,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.HorizontalDivider
@@ -57,6 +60,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -69,6 +73,8 @@ import com.composables.icons.lucide.Lucide
 import com.nan.nantube.data.Account
 import com.nan.nantube.data.PlaylistOption
 import com.nan.nantube.data.PlaylistRepository
+import com.nan.nantube.data.TvPlayback
+import com.nan.nantube.data.VideoDownloads
 import com.nan.nantube.data.VideoItem
 import com.nan.nantube.data.VideoRepository
 import kotlinx.coroutines.CancellationException
@@ -101,11 +107,14 @@ fun VideoMoreButton(
     video: VideoItem,
     account: Account?,
     onSaveToPlaylist: (VideoItem) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onRemoved: (VideoItem) -> Unit
 ) {
     val context = LocalContext.current
     var open by remember { mutableStateOf(false) }
-    val notYet = "Tính năng này NaNTube chưa có"
+    var showCast by remember { mutableStateOf(false) }
+    var removing by remember { mutableStateOf(false) }
+    var downloading by remember { mutableStateOf(false) }
 
     Box(modifier) {
         MoreButton(width = 32.dp) { open = true }
@@ -118,7 +127,7 @@ fun VideoMoreButton(
         ) {
             MenuRow(CastIcon, "Phát trên thiết bị khác") {
                 open = false
-                showToast(context, notYet)
+                showCast = true
             }
             MenuRow(Lucide.Clock, "Lưu vào danh sách Xem sau") {
                 open = false
@@ -139,7 +148,21 @@ fun VideoMoreButton(
             }
             MenuRow(Lucide.Download, "Tải xuống") {
                 open = false
-                showToast(context, notYet)
+                if (!downloading) {
+                    downloading = true
+                    editScope.launch {
+                        try {
+                            VideoDownloads.enqueue(context.applicationContext, account, video)
+                            showToast(context, "Đã đưa video vào hàng đợi tải")
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                            showToast(context, "Không tải được video hoặc YouTube không cung cấp MP4 trực tiếp")
+                        } finally {
+                            downloading = false
+                        }
+                    }
+                }
             }
             MenuRow(ShareIcon, "Chia sẻ") {
                 open = false
@@ -149,14 +172,31 @@ fun VideoMoreButton(
                         .putExtra(Intent.EXTRA_TEXT, video.watchUrl)
                     context.startActivity(Intent.createChooser(send, null))
                 } catch (_: Exception) {
+                    showToast(context, "Không mở được trình chia sẻ")
                 }
             }
             MenuRow(TrashIcon, "Xóa khỏi danh sách video đã xem") {
                 open = false
-                showToast(context, notYet)
+                if (!removing) {
+                    removing = true
+                    editScope.launch {
+                        try {
+                            VideoRepository.removeFromHistory(account, video)
+                            onRemoved(video)
+                            showToast(context, "Đã xóa khỏi danh sách video đã xem")
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            showToast(context, e.message ?: "Không xóa được video khỏi lịch sử")
+                        } finally {
+                            removing = false
+                        }
+                    }
+                }
             }
         }
     }
+    if (showCast) TvCodeDialog(video) { showCast = false }
 }
 
 @Composable
@@ -553,4 +593,53 @@ private fun PrivacySheet(current: PrivacyChoice, onPick: (PrivacyChoice) -> Unit
             Spacer(Modifier.height(8.dp))
         }
     }
+}
+
+@Composable
+private fun TvCodeDialog(video: VideoItem, onDismiss: () -> Unit) {
+    val context = LocalContext.current.applicationContext
+    var code by remember { mutableStateOf("") }
+    var sending by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val ready = !sending && code.length == 12
+    fun send() {
+        if (!ready || sending) return
+        sending = true
+        error = null
+        editScope.launch {
+            try {
+                TvPlayback.play(code, video.id)
+                showToast(context, "Đã gửi lệnh phát tới TV")
+                onDismiss()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                error = "Không phát được trên TV. Kiểm tra mã TV và kết nối mạng rồi thử lại."
+            } finally {
+                sending = false
+            }
+        }
+    }
+    AlertDialog(
+        onDismissRequest = { if (!sending) onDismiss() },
+        containerColor = NanColors.Popup,
+        title = { Text("Phát trên thiết bị khác") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Trên YouTube của TV, mở Cài đặt → Liên kết bằng mã TV.")
+                OutlinedTextField(
+                    value = code,
+                    onValueChange = { code = it.filter { ch -> ch in '0'..'9' }.take(12) },
+                    label = { Text("Mã TV") },
+                    singleLine = true,
+                    enabled = !sending,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { send() })
+                )
+                error?.let { Text(it, color = NanColors.TextSoft) }
+            }
+        },
+        confirmButton = { TextButton(enabled = ready, onClick = { send() }) { Text(if (sending) "Đang kết nối…" else "Phát") } },
+        dismissButton = { TextButton(enabled = !sending, onClick = onDismiss) { Text("Hủy") } }
+    )
 }

@@ -29,10 +29,9 @@ object PlaylistRepository {
 
     /** Mọi danh sách phát (gồm Xem sau) của tài khoản; [PlaylistOption.saved] cho biết [videoId] đã có trong đó chưa. */
     suspend fun options(account: Account?, videoId: String): List<PlaylistOption> {
-        if (account == null) return emptyList()
+        requireNotNull(account) { "Hãy đăng nhập để lưu video" }
         val body = JSONObject()
             .put("videoIds", JSONArray().put(videoId))
-            .put("excludeWatchLater", false)
         return parseOptions(InnerTube.call("playlist/get_add_to_playlist", body, account))
     }
 
@@ -50,6 +49,7 @@ object PlaylistRepository {
 
     /** Tạo danh sách mới chứa sẵn [videoId]; [privacy] là PRIVATE / UNLISTED / PUBLIC. Trả mã danh sách mới. */
     suspend fun create(account: Account?, title: String, privacy: String, videoId: String): String {
+        requireNotNull(account) { "Hãy đăng nhập để lưu video" }
         val body = JSONObject()
             .put("title", title)
             .put("privacyStatus", privacy)
@@ -59,10 +59,11 @@ object PlaylistRepository {
     }
 
     private suspend fun edit(account: Account?, playlistId: String, action: JSONObject) {
+        requireNotNull(account) { "Hãy đăng nhập để lưu video" }
         val body = JSONObject().put("playlistId", playlistId).put("actions", JSONArray().put(action))
         val json = InnerTube.call("browse/edit_playlist", body, account)
         val status = json.optString("status")
-        if (status.isNotBlank() && status != "STATUS_SUCCEEDED") {
+        if (status != "STATUS_SUCCEEDED") {
             throw Exception("YouTube không cập nhật được danh sách phát")
         }
     }

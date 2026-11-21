@@ -13,7 +13,9 @@ data class VideoItem(
     /** Tiêu đề nhóm (vd "Hôm nay", "29 thg 10") mà YouTube xếp video này vào, dùng cho trang Video đã xem. */
     val section: String? = null,
     /** Đã xem bao nhiêu phần (0..1) để vẽ thanh đỏ dưới ảnh bìa. */
-    val progress: Float = 0f
+    val progress: Float = 0f,
+    val historyFeedbackToken: String? = null,
+    val historyPanel: HistoryChip? = null
 ) {
     /** Ảnh bìa lấy thẳng từ CDN theo id: luôn dùng được, khỏi phụ thuộc cấu trúc JSON từng loại. */
     val thumbnail: String
@@ -90,12 +92,12 @@ object VideoRepository {
         if (account == null) return VideoPage(emptyList(), null)
         val body = JSONObject().put("browseId", "FEhistory")
         if (!query.isNullOrBlank()) body.put("query", query)
-        return parsePage(InnerTube.call("browse", body, account), withChips = query.isNullOrBlank())
+        return parsePage(InnerTube.call("browse", body, account), withChips = query.isNullOrBlank(), history = true)
     }
 
     /** Trang kế của mọi danh sách phân trang (lịch sử, playlist, chip lọc) theo token continuation. */
-    suspend fun continuePage(account: Account?, token: String): VideoPage =
-        parsePage(InnerTube.call("browse", JSONObject().put("continuation", token), account), withChips = false)
+    suspend fun continuePage(account: Account?, token: String, history: Boolean = false): VideoPage =
+        parsePage(InnerTube.call("browse", JSONObject().put("continuation", token), account), withChips = false, history = history)
 
     /** Trang đầu của một playlist (WL, LL, UU…); trang kế lấy bằng [continuePage]. */
     suspend fun playlistPage(account: Account?, playlistId: String): VideoPage {
@@ -120,17 +122,60 @@ object VideoRepository {
     suspend fun search(query: String, account: Account?): List<VideoItem> =
         parse(InnerTube.call("search", JSONObject().put("query", query).put("params", SEARCH_ANY), account))
 
+    suspend fun removeFromHistory(account: Account?, video: VideoItem) {
+        requireNotNull(account) { "Hãy đăng nhập để xóa video đã xem" }
+        val token = video.historyFeedbackToken ?: video.historyPanel?.let { panel ->
+            val body = JSONObject().put("panelId", panel.label).put("params", panel.token)
+            historyToken(InnerTube.call("get_panel", body, account))
+        } ?: error("YouTube không trả thao tác xóa cho video này")
+        val body = JSONObject().put("feedbackTokens", JSONArray().put(token))
+        val result = InnerTube.call("feedback", body, account)
+        check(result.dig("feedbackResponses", 0, "isProcessed") == true) {
+            "YouTube chưa xác nhận xóa video khỏi lịch sử"
+        }
+    }
+
+    private fun historyAction(item: VideoItem?, renderer: JSONObject, history: Boolean): VideoItem? {
+        if (item == null || !history) return item
+        val panel = findKey(renderer, "getPanelEndpoint")
+        val id = panel?.optString("panelId").orEmpty()
+        val params = panel?.optString("params").orEmpty()
+        return item.copy(
+            historyFeedbackToken = historyToken(renderer),
+            historyPanel = if (id.isNotBlank() && params.isNotBlank()) HistoryChip(id, params) else null
+        )
+    }
+
+    private fun historyToken(renderer: JSONObject): String? {
+        val entries = findAllKeys(renderer, "menuServiceItemRenderer") + findAllKeys(renderer, "listItemViewModel")
+        val remove = entries.firstNotNullOfOrNull { entry ->
+            val title = (ytText(entry.opt("text")) ?: ytText(entry.opt("title"))).orEmpty().lowercase()
+            val icon = findKey(entry, "icon")?.optString("iconType").orEmpty()
+            if ((title.contains("lịch sử") || title.contains("video đã xem")) &&
+                (title.contains("xóa") || title.contains("xoá")) ||
+                title.contains("remove from watch history") || title.contains("remove from history") ||
+                icon == "REMOVE_FROM_WATCH_HISTORY") {
+                findKey(entry, "feedbackEndpoint")?.optString("feedbackToken")?.takeIf { it.isNotBlank() }
+            } else null
+        }
+        if (remove != null) return remove
+        // Trong trang lịch sử, menu TV cũ chỉ có một feedback endpoint ẩn thẻ.
+        val endpoints = findAllKeys(renderer, "feedbackEndpoint")
+        return endpoints.singleOrNull()?.takeIf { it.dig("uiActions", "hideEnclosingContainer") == true }
+            ?.optString("feedbackToken")?.takeIf { it.isNotBlank() }
+    }
+
     // ---- Parser -------------------------------------------------------------------------
 
-    fun parse(root: JSONObject): List<VideoItem> {
+    fun parse(root: JSONObject, history: Boolean = false): List<VideoItem> {
         val out = LinkedHashMap<String, VideoItem>()
-        walk(root, out, null)
+        walk(root, out, null, history)
         return out.values.toList()
     }
 
-    fun parsePage(root: JSONObject, withChips: Boolean, withCount: Boolean = false): VideoPage =
+    fun parsePage(root: JSONObject, withChips: Boolean, withCount: Boolean = false, history: Boolean = false): VideoPage =
         VideoPage(
-            parse(root), findContinuation(root),
+            parse(root, history), findContinuation(root),
             if (withChips) findChips(root) else emptyList(),
             if (withCount) findVideoCount(root) else null
         )
@@ -210,7 +255,7 @@ object VideoRepository {
         "videoRenderer", "gridVideoRenderer", "compactVideoRenderer", "playlistVideoRenderer"
     )
 
-    private fun walk(node: Any?, out: MutableMap<String, VideoItem>, section: String?) {
+    private fun walk(node: Any?, out: MutableMap<String, VideoItem>, section: String?, history: Boolean) {
         when (node) {
             is JSONObject -> {
                 val keys = node.keys()
@@ -219,21 +264,21 @@ object VideoRepository {
                     val v = node.opt(k)
                     if (v is JSONObject) {
                         when {
-                            k in VIDEO_KEYS -> add(out, classic(v), section)
-                            k == "reelItemRenderer" -> add(out, reel(v), section)
-                            k == "shortsLockupViewModel" -> add(out, shortsLockup(v), section)
-                            k == "lockupViewModel" -> add(out, lockup(v), section)
-                            k == "tileRenderer" -> add(out, tile(v), section)
+                            k in VIDEO_KEYS -> add(out, historyAction(classic(v), v, history), section)
+                            k == "reelItemRenderer" -> add(out, historyAction(reel(v), v, history), section)
+                            k == "shortsLockupViewModel" -> add(out, historyAction(shortsLockup(v), v, history), section)
+                            k == "lockupViewModel" -> add(out, historyAction(lockup(v), v, history), section)
+                            k == "tileRenderer" -> add(out, historyAction(tile(v), v, history), section)
                             k == "itemSectionRenderer" || k == "shelfRenderer" ->
-                                walk(v, out, sectionTitle(v) ?: section)
-                            else -> walk(v, out, section)
+                                walk(v, out, sectionTitle(v) ?: section, history)
+                            else -> walk(v, out, section, history)
                         }
                     } else {
-                        walk(v, out, section)
+                        walk(v, out, section, history)
                     }
                 }
             }
-            is JSONArray -> for (i in 0 until node.length()) walk(node.opt(i), out, section)
+            is JSONArray -> for (i in 0 until node.length()) walk(node.opt(i), out, section, history)
         }
     }
 

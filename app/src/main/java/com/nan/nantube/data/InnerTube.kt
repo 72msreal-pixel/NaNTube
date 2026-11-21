@@ -49,6 +49,29 @@ object InnerTube {
         }
     }
 
+    internal const val VISION_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
+    internal const val VR_UA = "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
+
+    // Client phát URL trực tiếp theo profile /player trong MediaServiceCore của Meetube.
+    internal suspend fun directPlayer(videoId: String, vision: Boolean): JSONObject {
+        val version = if (vision) "1.02" else "1.65.10"
+        val client = JSONObject().put("hl", "vi").put("gl", "VN")
+            .put("clientName", if (vision) "VISIONOS" else "ANDROID_VR").put("clientVersion", version)
+            .put("osName", if (vision) "visionOS" else "Android")
+            .put("osVersion", if (vision) "26.5.23O471" else "12L")
+            .put("deviceMake", if (vision) "Apple" else "Oculus")
+            .put("deviceModel", if (vision) "RealityDevice17,1" else "Quest 3")
+        if (!vision) client.put("androidSdkVersion", 32)
+        val body = JSONObject().put("videoId", videoId).put("context", JSONObject().put("client", client))
+        val res = Http.postJson(BASE + "player?prettyPrint=false&key=$WEB_KEY", body, mapOf(
+            "User-Agent" to if (vision) VISION_UA else VR_UA,
+            "X-YouTube-Client-Name" to if (vision) "101" else "28",
+            "X-YouTube-Client-Version" to version
+        ))
+        check(res.code in 200..299) { "Không đọc được dữ liệu video" }
+        return JSONObject(res.body)
+    }
+
     private fun context(tv: Boolean): JSONObject {
         val client = JSONObject()
             .put("hl", "vi").put("gl", "VN")
