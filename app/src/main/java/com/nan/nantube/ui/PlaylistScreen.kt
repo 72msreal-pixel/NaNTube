@@ -59,6 +59,7 @@ import com.composables.icons.lucide.ArrowLeft
 import com.composables.icons.lucide.Lucide
 import com.composables.icons.lucide.Play
 import com.nan.nantube.data.Account
+import com.nan.nantube.data.VideoItem
 
 
 /** Một mục thư viện được mở ra: [key] là LibraryCovers.LIST_*. */
@@ -71,7 +72,7 @@ private enum class ListKind { All, Video, Shorts }
  * ảnh bìa = video đầu, tên, chủ sở hữu, nút Phát tất cả, chip Tất cả/Video/Shorts, danh sách tải tiếp khi vuốt.
  */
 @Composable
-fun PlaylistScreen(list: OpenList, account: Account?, onBack: () -> Unit) {
+fun PlaylistScreen(list: OpenList, account: Account?, onSaveToPlaylist: (VideoItem) -> Unit, onBack: () -> Unit) {
     val context = LocalContext.current
     val feed = remember(list.key, account?.id) {
         HistoryFeed { acc -> LibraryCovers.page(list.key, acc) }
@@ -250,7 +251,7 @@ fun PlaylistScreen(list: OpenList, account: Account?, onBack: () -> Unit) {
                             modifier = Modifier.fillMaxWidth().padding(32.dp)
                         )
                     }
-                    else -> items(shown, key = { it.id }) { HistoryVideoRow(it) }
+                    else -> items(shown, key = { it.id }) { HistoryVideoRow(it, account, onSaveToPlaylist) }
                 }
                 if (feed.loadingMore) {
                     item(key = "more") {

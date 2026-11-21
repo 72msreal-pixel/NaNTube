@@ -70,11 +70,11 @@ import com.composables.icons.lucide.ChevronDown
 import com.composables.icons.lucide.Clock
 import com.composables.icons.lucide.Download
 import com.composables.icons.lucide.Lucide
+import com.nan.nantube.DownloadService
 import com.nan.nantube.data.Account
 import com.nan.nantube.data.PlaylistOption
 import com.nan.nantube.data.PlaylistRepository
 import com.nan.nantube.data.TvPlayback
-import com.nan.nantube.data.VideoDownloads
 import com.nan.nantube.data.VideoItem
 import com.nan.nantube.data.VideoRepository
 import kotlinx.coroutines.CancellationException
@@ -108,13 +108,11 @@ fun VideoMoreButton(
     account: Account?,
     onSaveToPlaylist: (VideoItem) -> Unit,
     modifier: Modifier = Modifier,
-    onRemoved: (VideoItem) -> Unit
+    onRemoved: ((VideoItem) -> Unit)? = null
 ) {
     val context = LocalContext.current
     var open by remember { mutableStateOf(false) }
     var showCast by remember { mutableStateOf(false) }
-    var removing by remember { mutableStateOf(false) }
-    var downloading by remember { mutableStateOf(false) }
 
     Box(modifier) {
         MoreButton(width = 32.dp) { open = true }
@@ -131,15 +129,8 @@ fun VideoMoreButton(
             }
             MenuRow(Lucide.Clock, "Lưu vào danh sách Xem sau") {
                 open = false
-                editScope.launch {
-                    try {
-                        PlaylistRepository.add(account, "WL", video.id)
-                        showToast(context, "Đã lưu vào Xem sau")
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        showToast(context, e.message ?: "Không lưu được video")
-                    }
+                runAction(context, "Đã lưu vào Xem sau", "Không lưu được video") {
+                    PlaylistRepository.addToWatchLater(account, video.id)
                 }
             }
             MenuRow(BookmarkOutline, "Lưu vào danh sách phát") {
@@ -148,21 +139,8 @@ fun VideoMoreButton(
             }
             MenuRow(Lucide.Download, "Tải xuống") {
                 open = false
-                if (!downloading) {
-                    downloading = true
-                    editScope.launch {
-                        try {
-                            VideoDownloads.enqueue(context.applicationContext, account, video)
-                            showToast(context, "Đã đưa video vào hàng đợi tải")
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (_: Exception) {
-                            showToast(context, "Không tải được video hoặc YouTube không cung cấp MP4 trực tiếp")
-                        } finally {
-                            downloading = false
-                        }
-                    }
-                }
+                DownloadService.start(context.applicationContext, account?.id, video)
+                showToast(context, "Đang chuẩn bị tải video")
             }
             MenuRow(ShareIcon, "Chia sẻ") {
                 open = false
@@ -175,28 +153,31 @@ fun VideoMoreButton(
                     showToast(context, "Không mở được trình chia sẻ")
                 }
             }
-            MenuRow(TrashIcon, "Xóa khỏi danh sách video đã xem") {
-                open = false
-                if (!removing) {
-                    removing = true
-                    editScope.launch {
-                        try {
-                            VideoRepository.removeFromHistory(account, video)
-                            onRemoved(video)
-                            showToast(context, "Đã xóa khỏi danh sách video đã xem")
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            showToast(context, e.message ?: "Không xóa được video khỏi lịch sử")
-                        } finally {
-                            removing = false
-                        }
+            if (onRemoved != null) {
+                MenuRow(TrashIcon, "Xóa khỏi danh sách video đã xem") {
+                    open = false
+                    runAction(context, "Đã xóa khỏi danh sách video đã xem", "Không xóa được video khỏi lịch sử") {
+                        VideoRepository.removeFromHistory(account, video)
+                        onRemoved(video)
                     }
                 }
             }
         }
     }
     if (showCast) TvCodeDialog(video) { showCast = false }
+}
+
+private fun runAction(context: Context, success: String, failure: String, block: suspend () -> Unit) {
+    editScope.launch {
+        try {
+            block()
+            showToast(context, success)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            showToast(context, e.message ?: failure)
+        }
+    }
 }
 
 @Composable
@@ -613,8 +594,8 @@ private fun TvCodeDialog(video: VideoItem, onDismiss: () -> Unit) {
                 onDismiss()
             } catch (e: CancellationException) {
                 throw e
-            } catch (_: Exception) {
-                error = "Không phát được trên TV. Kiểm tra mã TV và kết nối mạng rồi thử lại."
+            } catch (e: Exception) {
+                error = e.message ?: "Không phát được trên TV. Kiểm tra mã TV và kết nối mạng rồi thử lại."
             } finally {
                 sending = false
             }

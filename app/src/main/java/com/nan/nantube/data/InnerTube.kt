@@ -41,12 +41,7 @@ object InnerTube {
 
         val res = Http.postJson(url, body, headers)
         if (res.code == 401 || (tv && res.code == 403)) throw AuthRejected()
-        if (res.code !in 200..299) throw Exception("YouTube trả lỗi HTTP ${res.code}")
-        return try {
-            JSONObject(res.body)
-        } catch (_: Exception) {
-            throw Exception("Phản hồi không đọc được")
-        }
+        return res.requireJson()
     }
 
     internal const val VISION_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
@@ -97,12 +92,13 @@ object InnerTube {
 
     private const val ORIGIN = "https://www.youtube.com"
 
-    fun webCookies(): Map<String, String> {
-        val raw = try {
-            CookieManager.getInstance().getCookie(ORIGIN)
-        } catch (_: Exception) {
-            null
-        } ?: return emptyMap()
+    private fun rawCookies(origin: String): String? = try {
+        CookieManager.getInstance().getCookie(origin)
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun parseCookies(raw: String): Map<String, String> {
         val out = LinkedHashMap<String, String>()
         raw.split(";").forEach { p ->
             val i = p.indexOf('=')
@@ -111,26 +107,24 @@ object InnerTube {
         return out
     }
 
+    fun webCookies(): Map<String, String> = rawCookies(ORIGIN)?.let(::parseCookies) ?: emptyMap()
+
     fun isWebSignedIn(): Boolean {
         val c = webCookies()
         return c.containsKey("SAPISID") || c.containsKey("__Secure-3PAPISID")
     }
 
-    private fun webAuthHeaders(authUser: Int): Map<String, String> {
-        val raw = try {
-            CookieManager.getInstance().getCookie(ORIGIN)
-        } catch (_: Exception) {
-            null
-        } ?: return emptyMap()
-        val cookies = webCookies()
+    internal fun webAuthHeaders(authUser: Int, origin: String = ORIGIN): Map<String, String> {
+        val raw = rawCookies(origin) ?: return emptyMap()
+        val cookies = parseCookies(raw)
         val sapisid = cookies["SAPISID"] ?: cookies["__Secure-3PAPISID"] ?: return mapOf("Cookie" to raw)
         val ts = System.currentTimeMillis() / 1000
-        val hash = sha1("$ts $sapisid $ORIGIN")
+        val hash = sha1("$ts $sapisid $origin")
         return mapOf(
             "Cookie" to raw,
             "Authorization" to "SAPISIDHASH ${ts}_$hash",
             "X-Goog-AuthUser" to authUser.toString(),
-            "X-Origin" to ORIGIN
+            "X-Origin" to origin
         )
     }
 

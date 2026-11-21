@@ -61,8 +61,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 /** Giữ kết quả của một tab để đổi tab qua lại không phải tải lại. */
-class FeedState(private val loader: suspend (Account?, String) -> List<VideoItem>) {
-    var items by mutableStateOf<List<VideoItem>>(emptyList())
+class FeedState<T>(private val loader: suspend (Account?, String) -> List<T>) {
+    var items by mutableStateOf<List<T>>(emptyList())
         private set
     var loading by mutableStateOf(false)
         private set
@@ -89,16 +89,18 @@ class FeedState(private val loader: suspend (Account?, String) -> List<VideoItem
     }
 }
 
-fun openVideo(context: android.content.Context, video: VideoItem) {
+fun openLink(context: android.content.Context, url: String) {
     try {
-        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(video.watchUrl)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     } catch (_: Exception) {
         // Máy không có app mở link thì bỏ qua.
     }
 }
 
+fun openVideo(context: android.content.Context, video: VideoItem) = openLink(context, video.watchUrl)
+
 @Composable
-fun MainFeedScreen(state: FeedState, account: Account?) {
+fun MainFeedScreen(state: FeedState<VideoItem>, account: Account?, onSaveToPlaylist: (VideoItem) -> Unit) {
     val scope = rememberCoroutineScope()
     val key = (account?.id ?: "") + "|"
     LaunchedEffect(key) { if (state.loadedKey != key) state.load(account) }
@@ -106,14 +108,14 @@ fun MainFeedScreen(state: FeedState, account: Account?) {
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         FeedBody(state, onRetry = { scope.launch { state.load(account) } }) {
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 8.dp, bottom = 16.dp)) {
-                items(state.items, key = { it.id }) { VideoCard(it) }
+                items(state.items, key = { it.id }) { VideoCard(it, account, onSaveToPlaylist) }
             }
         }
     }
 }
 
 @Composable
-fun ShortsFeedScreen(state: FeedState, account: Account?) {
+fun ShortsFeedScreen(state: FeedState<VideoItem>, account: Account?, onSaveToPlaylist: (VideoItem) -> Unit) {
     val scope = rememberCoroutineScope()
     val key = (account?.id ?: "") + "|"
     LaunchedEffect(key) { if (state.loadedKey != key) state.load(account) }
@@ -127,14 +129,20 @@ fun ShortsFeedScreen(state: FeedState, account: Account?) {
                 horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp),
                 verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(16.dp)
             ) {
-                items(state.items, key = { it.id }) { ShortCard(it) }
+                items(state.items, key = { it.id }) { ShortCard(it, account, onSaveToPlaylist) }
             }
         }
     }
 }
 
 @Composable
-fun SearchScreen(state: FeedState, account: Account?, query: String, onQueryChange: (String) -> Unit) {
+fun SearchScreen(
+    state: FeedState<VideoItem>,
+    account: Account?,
+    query: String,
+    onSaveToPlaylist: (VideoItem) -> Unit,
+    onQueryChange: (String) -> Unit
+) {
     val scope = rememberCoroutineScope()
     val focus = LocalFocusManager.current
     fun search() {
@@ -146,33 +154,7 @@ fun SearchScreen(state: FeedState, account: Account?, query: String, onQueryChan
     }
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
-        val pill = RoundedCornerShape(50)
-        Row(
-            Modifier
-                .padding(horizontal = 12.dp, vertical = 8.dp)
-                .fillMaxWidth()
-                .height(44.dp)
-                .clip(pill)
-                .border(1.dp, NanColors.Divider, pill)
-                .padding(horizontal = 14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(Lucide.Search, null, Modifier.size(20.dp), tint = NanColors.TextSecondary)
-            Spacer(Modifier.width(10.dp))
-            Box(Modifier.weight(1f)) {
-                if (query.isEmpty()) Text("Tìm kiếm", fontSize = 16.sp, color = NanColors.TextSecondary)
-                BasicTextField(
-                    value = query,
-                    onValueChange = onQueryChange,
-                    singleLine = true,
-                    textStyle = TextStyle(color = Color.White, fontSize = 16.sp),
-                    cursorBrush = SolidColor(Color.White),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                    keyboardActions = KeyboardActions(onSearch = { search() }),
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-        }
+        SearchBox(query, "Tìm kiếm", onQueryChange) { search() }
         if (state.loadedKey == null && !state.loading && state.error == null) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text("Nhập từ khóa để tìm video", color = NanColors.TextSecondary, fontSize = 14.sp)
@@ -180,16 +162,47 @@ fun SearchScreen(state: FeedState, account: Account?, query: String, onQueryChan
         } else {
             FeedBody(state, onRetry = { search() }) {
                 LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 4.dp, bottom = 16.dp)) {
-                    items(state.items, key = { it.id }) { VideoCard(it) }
+                    items(state.items, key = { it.id }) { VideoCard(it, account, onSaveToPlaylist) }
                 }
             }
         }
     }
 }
 
+@Composable
+fun SearchBox(query: String, placeholder: String, onQueryChange: (String) -> Unit, onSearch: () -> Unit) {
+    val pill = RoundedCornerShape(50)
+    Row(
+        Modifier
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .fillMaxWidth()
+            .height(44.dp)
+            .clip(pill)
+            .border(1.dp, NanColors.Divider, pill)
+            .padding(horizontal = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(Lucide.Search, null, Modifier.size(20.dp), tint = NanColors.TextSecondary)
+        Spacer(Modifier.width(10.dp))
+        Box(Modifier.weight(1f)) {
+            if (query.isEmpty()) Text(placeholder, fontSize = 16.sp, color = NanColors.TextSecondary)
+            BasicTextField(
+                value = query,
+                onValueChange = onQueryChange,
+                singleLine = true,
+                textStyle = TextStyle(color = Color.White, fontSize = 16.sp),
+                cursorBrush = SolidColor(Color.White),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { onSearch() }),
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+    }
+}
+
 /** Khung chung: đang tải / lỗi + Thử lại / danh sách. */
 @Composable
-private fun FeedBody(state: FeedState, onRetry: () -> Unit, list: @Composable () -> Unit) {
+fun FeedBody(state: FeedState<*>, onRetry: () -> Unit, list: @Composable () -> Unit) {
     when {
         state.loading && state.items.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             CircularProgressIndicator(color = Color.White, strokeWidth = 3.dp, modifier = Modifier.size(36.dp))
@@ -219,7 +232,7 @@ private fun subtitle(video: VideoItem): String =
     listOfNotNull(video.channel, video.views).joinToString(" · ")
 
 @Composable
-private fun VideoCard(video: VideoItem) {
+private fun VideoCard(video: VideoItem, account: Account?, onSaveToPlaylist: (VideoItem) -> Unit) {
     val context = LocalContext.current
     Column(
         Modifier
@@ -274,13 +287,13 @@ private fun VideoCard(video: VideoItem) {
                     )
                 }
             }
-            MoreButton()
+            VideoMoreButton(video, account, onSaveToPlaylist)
         }
     }
 }
 
 @Composable
-private fun ShortCard(video: VideoItem) {
+private fun ShortCard(video: VideoItem, account: Account?, onSaveToPlaylist: (VideoItem) -> Unit) {
     val context = LocalContext.current
     Column(Modifier.fillMaxWidth().clickable { openVideo(context, video) }) {
         Box(
@@ -297,16 +310,20 @@ private fun ShortCard(video: VideoItem) {
                 modifier = Modifier.fillMaxSize()
             )
         }
-        Text(
-            video.title,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Medium,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(top = 8.dp)
-        )
-        video.views?.let {
-            Text(it, fontSize = 12.sp, color = NanColors.TextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Row(Modifier.padding(top = 8.dp)) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    video.title,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                video.views?.let {
+                    Text(it, fontSize = 12.sp, color = NanColors.TextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            VideoMoreButton(video, account, onSaveToPlaylist)
         }
     }
 }

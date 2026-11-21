@@ -86,7 +86,7 @@ private sealed interface HistoryRow {
  * vuốt tới cuối thì tải trang kế (continuation) cho tới hết.
  */
 @Composable
-fun HistoryScreen(base: HistoryFeed, account: Account?, onBack: () -> Unit) {
+fun HistoryScreen(base: HistoryFeed, account: Account?, onSaveToPlaylist: (VideoItem) -> Unit, onBack: () -> Unit) {
     var searching by remember { mutableStateOf(false) }
     var typed by remember { mutableStateOf("") }
     var applied by remember { mutableStateOf("") }
@@ -270,7 +270,10 @@ fun HistoryScreen(base: HistoryFeed, account: Account?, onBack: () -> Unit) {
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 20.dp, bottom = 8.dp)
                         )
-                        is HistoryRow.Video -> HistoryVideoRow(row.item)
+                        is HistoryRow.Video -> HistoryVideoRow(row.item, account, onSaveToPlaylist) {
+                            base.remove(account, it.id)
+                            if (feed !== base) feed.remove(account, it.id)
+                        }
                     }
                 }
                 if (feed.loadingMore) {
@@ -305,7 +308,12 @@ fun VerticalDots() {
 }
 
 @Composable
-fun HistoryVideoRow(video: VideoItem) {
+fun HistoryVideoRow(
+    video: VideoItem,
+    account: Account?,
+    onSaveToPlaylist: (VideoItem) -> Unit,
+    onRemoved: ((VideoItem) -> Unit)? = null
+) {
     val context = LocalContext.current
     Row(
         Modifier.fillMaxWidth().clickable { openVideo(context, video) }.padding(horizontal = 16.dp, vertical = 6.dp)
@@ -355,6 +363,6 @@ fun HistoryVideoRow(video: VideoItem) {
                 Text(it, fontSize = 12.sp, color = NanColors.TextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
-        MoreButton()
+        VideoMoreButton(video, account, onSaveToPlaylist, onRemoved = onRemoved)
     }
 }

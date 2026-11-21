@@ -26,13 +26,22 @@ data class PlaylistOption(
  * và cùng cách meetube làm: lấy danh sách theo videoId, rồi add/remove từng video.
  */
 object PlaylistRepository {
+    const val WATCH_LATER = "WL"
 
     /** Mọi danh sách phát (gồm Xem sau) của tài khoản; [PlaylistOption.saved] cho biết [videoId] đã có trong đó chưa. */
     suspend fun options(account: Account?, videoId: String): List<PlaylistOption> {
         requireNotNull(account) { "Hãy đăng nhập để lưu video" }
         val body = JSONObject()
             .put("videoIds", JSONArray().put(videoId))
+            .put("excludeWatchLater", false)
         return parseOptions(InnerTube.call("playlist/get_add_to_playlist", body, account))
+    }
+
+    suspend fun addToWatchLater(account: Account?, videoId: String) {
+        val all = options(account, videoId)
+        val watchLater = all.firstOrNull { it.id == WATCH_LATER } ?: all.firstOrNull()
+        if (watchLater?.saved == true) return
+        add(account, watchLater?.id ?: WATCH_LATER, videoId)
     }
 
     suspend fun add(account: Account?, playlistId: String, videoId: String) =

@@ -9,7 +9,23 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
-class HttpResult(val code: Int, val body: String)
+class HttpResult(val code: Int, val body: String) {
+    fun requireJson(): JSONObject {
+        if (code !in 200..299) {
+            val reason = try {
+                JSONObject(body).dig("error", "message") as? String
+            } catch (_: Exception) {
+                null
+            }
+            throw Exception("YouTube trả lỗi HTTP $code" + (reason?.let { ": $it" } ?: ""))
+        }
+        return try {
+            JSONObject(body)
+        } catch (_: Exception) {
+            throw Exception("Phản hồi không đọc được")
+        }
+    }
+}
 
 /** Mạng tối giản bằng HttpURLConnection, không thêm thư viện. Luôn chạy trên Dispatchers.IO. */
 object Http {

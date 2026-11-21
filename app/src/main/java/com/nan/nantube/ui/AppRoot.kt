@@ -30,17 +30,19 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.composables.icons.lucide.CircleUser
 import com.composables.icons.lucide.Lucide
+import com.composables.icons.lucide.Music
 import com.composables.icons.lucide.Search
 import com.nan.nantube.data.AccountStore
 import com.nan.nantube.data.VideoItem
 import com.nan.nantube.data.VideoRepository
 
 private enum class Tab(val label: String) {
-    Main("Main"), Shorts("Short"), Search("Search"), Info("Info");
+    Main("Main"), Shorts("Short"), Music("Music"), Search("Search"), Info("Info");
 
     fun icon(selected: Boolean): ImageVector = when (this) {
         Main -> if (selected) HouseFilled else LucideHouse
         Shorts -> if (selected) ShortsFilled else ShortsOutline
+        Music -> Lucide.Music
         Search -> Lucide.Search
         Info -> Lucide.CircleUser
     }
@@ -58,6 +60,7 @@ fun AppRoot() {
     var showAccounts by remember { mutableStateOf(false) }
     var addStep by remember { mutableStateOf(AddStep.None) }
     var query by remember { mutableStateOf("") }
+    var musicQuery by remember { mutableStateOf("") }
     var webHint by remember { mutableStateOf<String?>(null) }
 
 
@@ -65,6 +68,7 @@ fun AppRoot() {
     val mainFeed = remember { FeedState { acc, _ -> VideoRepository.home(acc) } }
     val shortsFeed = remember { FeedState { acc, _ -> VideoRepository.shorts(acc) } }
     val searchFeed = remember { FeedState { acc, q -> VideoRepository.search(q, acc) } }
+    val musicState = remember { musicFeed() }
     // Lịch sử dùng chung: hàng "Video đã xem" ở Info và trang Video đã xem đầy đủ cùng một danh sách.
     val historyFeed = remember { HistoryFeed(forHistory = true) { acc -> VideoRepository.historyPage(acc) } }
     val libraryCovers = remember { LibraryCovers() }
@@ -85,11 +89,13 @@ fun AppRoot() {
                         tab == Tab.Info && openList != null -> PlaylistScreen(
                             list = openList!!,
                             account = account,
+                            onSaveToPlaylist = { saveVideo = it },
                             onBack = { openList = null }
                         )
                         tab == Tab.Info && showHistory -> HistoryScreen(
                             base = historyFeed,
                             account = account,
+                            onSaveToPlaylist = { saveVideo = it },
                             onBack = { showHistory = false }
                         )
                         tab == Tab.Info -> InfoScreen(
@@ -104,9 +110,10 @@ fun AppRoot() {
                             onSearchClick = { tab = Tab.Search },
                             onSignIn = { showAccounts = true; addStep = AddStep.Chooser }
                         )
-                        tab == Tab.Main -> MainFeedScreen(mainFeed, account)
-                        tab == Tab.Shorts -> ShortsFeedScreen(shortsFeed, account)
-                        else -> SearchScreen(searchFeed, account, query) { query = it }
+                        tab == Tab.Main -> MainFeedScreen(mainFeed, account) { saveVideo = it }
+                        tab == Tab.Shorts -> ShortsFeedScreen(shortsFeed, account) { saveVideo = it }
+                        tab == Tab.Music -> MusicScreen(musicState, account, musicQuery, { saveVideo = it }) { musicQuery = it }
+                        else -> SearchScreen(searchFeed, account, query, { saveVideo = it }) { query = it }
                     }
                 }
                 BottomBar(selected = tab, onSelect = {

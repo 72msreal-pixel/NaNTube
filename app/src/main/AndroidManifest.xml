@@ -3,6 +3,7 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- Để tìm được trình duyệt hỗ trợ Custom Tabs (Android 11+ hạn chế nhìn thấy app khác). -->
@@ -39,6 +40,11 @@
             android:name=".SignInKeepaliveService"
             android:exported="false"
             android:foregroundServiceType="shortService" />
+
+        <service
+            android:name=".DownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 
 </manifest>

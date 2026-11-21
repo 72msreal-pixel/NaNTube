@@ -1,6 +1,6 @@
 # NaNTube
 
-Bản test giao diện. Thanh dưới có 4 tab: Main, Short, Search, Info.
+Bản test giao diện. Thanh dưới có 5 tab: Main, Short, Music, Search, Info.
 
 ## Đăng nhập
 Nút "+" trong popup Tài khoản có 2 cách:
@@ -8,6 +8,17 @@ Nút "+" trong popup Tài khoản có 2 cách:
 - **Dùng mã**: OAuth device-code kiểu YouTube TV (theo `YTSignInPresenter` của meetube): lấy mã, nhập ở yt.be/activate, app tự poll token mỗi vài giây.
 
 Video ở Main/Short/Search mới chỉ là danh sách tạm (chưa phát trong app), bấm vào sẽ mở link YouTube.
+
+## Menu ba chấm
+Có ở Main, Short, Search, Music, Video đã xem và các danh sách. Các mục:
+- **Phát trên thiết bị khác**: nhập mã TV 12 số (YouTube TV > Cài đặt > Liên kết bằng mã TV), app gọi `pairing/get_screen` rồi `bc/bind` của Lounge để TV phát video.
+- **Lưu vào danh sách Xem sau**: lấy danh sách từ `playlist/get_add_to_playlist` (mục đầu là Xem sau, đúng cách meetube làm) rồi thêm video.
+- **Lưu vào danh sách phát**: bảng chọn danh sách, tạo danh sách mới.
+- **Tải xuống**: `DownloadService` tải video + audio H.264/AAC theo từng đoạn 10 MB, ghép bằng MediaMuxer (`MediaJoiner`, theo `MediaMuxHelper` của meetube) rồi lưu vào thư mục Tải xuống.
+- **Xóa khỏi danh sách video đã xem**: chỉ hiện ở trang Video đã xem.
+
+## Music
+Tab Music dùng InnerTube của YouTube Music (WEB_REMIX, theo `MusicApi` của meetube): trang chủ, tìm bài hát, mở album/danh sách/nghệ sĩ. Đăng nhập bằng "Tự nhập Gmail" thì trang chủ là của tài khoản; đăng nhập bằng mã thì xem như khách. Bấm bài hát sẽ mở music.youtube.com.
 
 ## Trang Info
 - Hàng "Video đã xem": tối đa 20 video, hiện 4 cái đầu, mỗi lần vuốt tới cuối hàng hiện thêm 4 (logic theo hàng History ở trang You của meetube, `MobileBrowseActivity.showYouHistory`). Bấm tiêu đề "Video đã xem" để mở trang lịch sử đầy đủ (tìm kiếm, chip lọc, nhóm theo ngày, tự tải trang kế khi vuốt xuống).
