@@ -29,6 +29,8 @@ import org.json.JSONObject
 object VideoDownloads {
     private const val CHUNK_BYTES = 10L * 1024 * 1024
     private const val MAX_HEIGHT = 1080
+    private const val PLAYBACK_MAX_HEIGHT = 720
+    private const val PLAYBACK_KEEP = 24
     private const val MAX_ATTEMPTS = 4
     private const val METADATA_PREFS = "download_metadata"
     // Android có thể thêm " (1)" vào tên nếu tải lại một video đã tồn tại.
@@ -83,7 +85,7 @@ object VideoDownloads {
 
     private class Stream(val url: String, val size: Long, val mime: String, val height: Int, val bitrate: Int)
 
-    private class Plan(val video: Stream, val audio: Stream?)
+    private class Plan(val video: Stream, val audio: Stream?, val details: JSONObject? = null)
 
     /** googlevideo từ chối link (403 / 404 / 410): link hết hạn hoặc client lấy link này không được phục vụ. */
     private class Refused(val code: Int) : IOException("Máy chủ video từ chối tải (HTTP $code)")
@@ -104,55 +106,92 @@ object VideoDownloads {
         }
     )
 
+    /**
+     * Lấy link, tải (có chia đoạn) và ghép video + âm thanh thành một tệp MP4 nằm trong [work].
+     * Dùng chung cho nút Tải xuống và trình phát Shorts trong app. [onMeta] nhận thông tin kênh của video.
+     */
+    private suspend fun produce(
+        account: Account?, video: VideoItem, maxHeight: Int, work: File,
+        onMeta: (JSONObject) -> Unit, onProgress: (Int) -> Unit
+    ): File {
+        var failure: Exception? = null
+        var reason: String? = null
+        // Như DownloadJob của meetube: link bị từ chối thì đổi client, lấy link mới, tải lại; không thử lại đúng link cũ.
+        for (source in sources(account, video.id)) {
+            val plan = readPlan(source, maxHeight) { reason = "${source.name}: $it" } ?: continue
+            plan.details?.let(onMeta)
+            try {
+                probePlan(plan)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                failure = e
+                continue
+            }
+            try {
+                val total = plan.video.size + (plan.audio?.size ?: 0L)
+                val videoPart = File(work, "video.part")
+                fetch(plan.video, videoPart) { onProgress(percent(it, total)) }
+                if (plan.audio == null) return videoPart
+                val audioPart = File(work, "audio.part")
+                fetch(plan.audio, audioPart) { onProgress(percent(plan.video.size + it, total)) }
+                return File(work, "joined.mp4").also { MediaJoiner.join(videoPart, audioPart, it) }
+            } catch (e: Refused) {
+                failure = e
+            }
+        }
+        val last = failure
+        if (last is Refused) {
+            throw IOException("YouTube từ chối link của video này (HTTP ${last.code}). Thử lại sau hoặc chọn video khác.")
+        }
+        throw last ?: IllegalStateException(
+            reason?.let { "YouTube không cung cấp bản MP4 trực tiếp cho video này ($it)" }
+                ?: "YouTube không cung cấp bản MP4 trực tiếp cho video này"
+        )
+    }
+
     suspend fun download(context: Context, account: Account?, video: VideoItem, onProgress: (Int) -> Unit): String =
         withContext(Dispatchers.IO) {
-            var failure: Exception? = null
-            var reason: String? = null
-            // Như DownloadJob của meetube: link bị từ chối thì đổi client, lấy link mới, tải lại; không thử lại đúng link cũ.
-            for (source in sources(account, video.id)) {
-                val plan = readPlan(source) { reason = "${source.name}: $it" } ?: continue
-                try {
-                    probePlan(plan)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    failure = e
-                    continue
-                }
-                val work = File(context.cacheDir, "download-${UUID.randomUUID()}").apply { mkdirs() }
-                try {
-                    val total = plan.video.size + (plan.audio?.size ?: 0L)
-                    val videoPart = File(work, "video.part")
-                    fetch(plan.video, videoPart) { onProgress(percent(it, total)) }
-                    val result = if (plan.audio == null) {
-                        videoPart
-                    } else {
-                        val audioPart = File(work, "audio.part")
-                        fetch(plan.audio, audioPart) { onProgress(percent(plan.video.size + it, total)) }
-                        File(work, "joined.mp4").also { MediaJoiner.join(videoPart, audioPart, it) }
-                    }
-                    val name = fileName(video)
-                    publish(context, result, name)
-                    val metadata = JSONObject().put("title", video.title).put("channel", video.channel)
-                        .put("duration", video.duration).put("short", video.isShort)
-                    context.getSharedPreferences(METADATA_PREFS, Context.MODE_PRIVATE)
-                        .edit().putString(video.id, metadata.toString()).apply()
-                    revision.update { it + 1 }
-                    return@withContext name
-                } catch (e: Refused) {
-                    failure = e
-                } finally {
-                    work.deleteRecursively()
-                }
+            val work = File(context.cacheDir, "download-${UUID.randomUUID()}").apply { mkdirs() }
+            try {
+                val result = produce(account, video, MAX_HEIGHT, work, {}, onProgress)
+                val name = fileName(video)
+                publish(context, result, name)
+                val metadata = JSONObject().put("title", video.title).put("channel", video.channel)
+                    .put("duration", video.duration).put("short", video.isShort)
+                context.getSharedPreferences(METADATA_PREFS, Context.MODE_PRIVATE)
+                    .edit().putString(video.id, metadata.toString()).apply()
+                revision.update { it + 1 }
+                name
+            } finally {
+                work.deleteRecursively()
             }
-            val last = failure
-            if (last is Refused) {
-                throw IOException("YouTube từ chối link tải của video này (HTTP ${last.code}). Thử lại sau hoặc chọn video khác.")
+        }
+
+    /**
+     * Tệp MP4 để phát trong app (Shorts): tải về bộ nhớ đệm của app, lần sau có sẵn thì dùng lại ngay.
+     * Giữ tối đa [PLAYBACK_KEEP] tệp mới nhất.
+     */
+    suspend fun playbackFile(context: Context, account: Account?, video: VideoItem, onMeta: (JSONObject) -> Unit): File =
+        withContext(Dispatchers.IO) {
+            val dir = File(context.cacheDir, "playback").apply { mkdirs() }
+            val target = File(dir, "${video.id}.mp4")
+            if (target.length() > 0) {
+                target.setLastModified(System.currentTimeMillis())
+                return@withContext target
             }
-            throw last ?: IllegalStateException(
-                reason?.let { "YouTube không cung cấp bản MP4 tải trực tiếp cho video này ($it)" }
-                    ?: "YouTube không cung cấp bản MP4 tải trực tiếp cho video này"
-            )
+            val work = File(dir, "work-${UUID.randomUUID()}").apply { mkdirs() }
+            try {
+                val result = produce(account, video, PLAYBACK_MAX_HEIGHT, work, onMeta) {}
+                if (!result.renameTo(target)) result.copyTo(target, overwrite = true)
+            } finally {
+                work.deleteRecursively()
+            }
+            dir.listFiles { f -> f.isFile && f.name.endsWith(".mp4") }
+                ?.sortedByDescending { it.lastModified() }
+                ?.drop(PLAYBACK_KEEP)
+                ?.forEach { it.delete() }
+            target
         }
 
     /** Hỏi thử 2 byte đầu của luồng video và âm thanh: link bị từ chối thì bỏ plan này ngay, khỏi tải dở rồi mới biết. */
@@ -169,7 +208,7 @@ object VideoDownloads {
     }
 
     /** Đọc /player của [source] thành kế hoạch tải; không dùng được thì trả null kèm lý do qua [why] (hiện trong thông báo lỗi). */
-    private suspend fun readPlan(source: Source, why: (String) -> Unit): Plan? {
+    private suspend fun readPlan(source: Source, maxHeight: Int, why: (String) -> Unit): Plan? {
         val json = try {
             source.load()
         } catch (e: CancellationException) {
@@ -193,15 +232,16 @@ object VideoDownloads {
             return null
         }
         val adaptive = streams(data.optJSONArray("adaptiveFormats"))
-        val video = adaptive.filter { it.mime.startsWith("video/mp4") && "avc1" in it.mime && it.height <= MAX_HEIGHT }
+        val video = adaptive.filter { it.mime.startsWith("video/mp4") && "avc1" in it.mime && it.height <= maxHeight }
             .maxByOrNull { it.height }
         val audio = adaptive.filter { it.mime.startsWith("audio/mp4") }.maxByOrNull { it.bitrate }
-        if (video != null && audio != null) return Plan(video, audio)
+        val details = json.optJSONObject("videoDetails")
+        if (video != null && audio != null) return Plan(video, audio, details)
         val muxed = streams(data.optJSONArray("formats"))
             .filter { it.mime.startsWith("video/mp4") }
             .maxByOrNull { it.height }
         if (muxed == null) why("không có link MP4 trực tiếp (chỉ có luồng mã hóa/SABR)")
-        return muxed?.let { Plan(it, null) }
+        return muxed?.let { Plan(it, null, details) }
     }
 
     private fun streams(formats: JSONArray?): List<Stream> {

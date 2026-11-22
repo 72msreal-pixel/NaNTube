@@ -67,6 +67,7 @@ fun AppRoot() {
     val account = AccountStore.selected
     val mainFeed = remember { homeFeed() }
     val shorts = remember { shortsFeed() }
+    val shortsTab = remember { ShortsTabState() }
     val searchUi = remember { SearchUi() }
     val musicUi = remember { MusicUi() }
     // Lịch sử dùng chung: hàng "Video đã xem" ở Info và trang Video đã xem đầy đủ cùng một danh sách.
@@ -80,6 +81,8 @@ fun AppRoot() {
     BackHandler(enabled = openList != null && tab == Tab.Info) { openList = null }
     BackHandler(enabled = showAccounts) { showAccounts = false }
     BackHandler(enabled = showNotifications) { showNotifications = false }
+    // Đăng ký sau cùng nên được ưu tiên: Back đóng màn xem Short trước.
+    BackHandler(enabled = ShortsViewer.items != null) { ShortsViewer.close() }
 
     Surface(Modifier.fillMaxSize(), color = NanColors.Background, contentColor = Color.White) {
         Box(Modifier.fillMaxSize()) {
@@ -121,7 +124,13 @@ fun AppRoot() {
                             onNotifications = { showNotifications = true },
                             onSaveToPlaylist = { saveVideo = it }
                         )
-                        tab == Tab.Shorts -> ShortsFeedScreen(shorts, account) { saveVideo = it }
+                        tab == Tab.Shorts -> ShortsFeedScreen(
+                            feed = shorts,
+                            state = shortsTab,
+                            account = account,
+                            onSearch = { searchUi.startNew(); tab = Tab.Search },
+                            onSaveToPlaylist = { saveVideo = it }
+                        )
                         tab == Tab.Music -> MusicScreen(musicUi, account) { saveVideo = it }
                         else -> SearchScreen(
                             ui = searchUi,
@@ -143,6 +152,13 @@ fun AppRoot() {
                     account = account,
                     onBack = { showNotifications = false },
                     onSignIn = { showNotifications = false; showAccounts = true; addStep = AddStep.Chooser }
+                )
+            }
+            if (ShortsViewer.items != null) {
+                ShortsViewerOverlay(
+                    account = account,
+                    onSearch = { ShortsViewer.close(); searchUi.startNew(); tab = Tab.Search },
+                    onSave = { saveVideo = it }
                 )
             }
             if (TvScreen.open) TvConnectScreen()

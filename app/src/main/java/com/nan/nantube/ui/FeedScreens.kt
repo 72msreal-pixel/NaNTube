@@ -66,22 +66,9 @@ fun openLink(context: android.content.Context, url: String) {
     }
 }
 
-fun openVideo(context: android.content.Context, video: VideoItem) = openLink(context, video.watchUrl)
-
-fun shortsFeed() = singlePageFeed<VideoItem>(keyOf = { it.id }) { account, _ -> VideoRepository.shorts(account) }
-
-@Composable
-fun ShortsFeedScreen(feed: PagedFeed<VideoItem>, account: Account?, onSaveToPlaylist: (VideoItem) -> Unit) {
-    LaunchedEffect(account?.id) { feed.load(account) }
-
-    Column(Modifier.fillMaxSize().statusBarsPadding()) {
-        PagedBody(feed, onRetry = { feed.load(account, force = true) }) {
-            LazyColumn(Modifier.fillMaxSize(), state = feed.listState, contentPadding = PaddingValues(vertical = 3.dp)) {
-                shortRows(feed.items, account, onSaveToPlaylist)
-            }
-        }
-    }
-}
+/** Short mở ngay trong app (trình phát dọc), video thường vẫn mở ngoài như cũ. */
+fun openVideo(context: android.content.Context, video: VideoItem) =
+    if (video.isShort) ShortsViewer.open(listOf(video)) else openLink(context, video.watchUrl)
 
 /**
  * Lưới Short 2 cột kiểu YouTube (ô dọc sát nhau, tiêu đề đè lên ảnh), dựng bằng từng hàng đôi của LazyColumn

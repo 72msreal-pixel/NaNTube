@@ -169,6 +169,7 @@ val HOME_CHIPS = listOf(
 object VideoRepository {
     private const val SEARCH_ANY = "EgIQAQ%3D%3D" // chỉ video
     private const val SEARCH_SHORT = "EgIYAQ%3D%3D" // dưới 4 phút
+    private const val SEARCH_SHORTS_ONLY = "EgIQCQ%3D%3D" // chỉ Shorts
 
     suspend fun home(account: Account?): List<VideoItem> {
         val json = InnerTube.call("browse", JSONObject().put("browseId", "FEwhat_to_watch"), account)
@@ -190,6 +191,28 @@ object VideoRepository {
         val onlyShort = list.filter { it.isShort }
         return if (onlyShort.isNotEmpty()) onlyShort else list
     }
+
+    /** Feed Shorts có trang kế (chip lọc "Shorts" của tìm kiếm); lỗi hoặc trống thì rơi về [shorts]. */
+    suspend fun shortsPage(account: Account?): Paged<VideoItem> {
+        val page = try {
+            searchPage("#shorts", SEARCH_SHORTS_ONLY, account).let { Paged(it.items.shortVideos(), it.token) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: AuthRejected) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+        return if (page != null && page.items.isNotEmpty()) page else Paged(shorts(account), null)
+    }
+
+    suspend fun shortsMore(account: Account?, token: String): Paged<VideoItem> {
+        val page = searchMore(token, account)
+        return Paged(page.items.shortVideos(), page.token)
+    }
+
+    private fun List<SearchResult>.shortVideos(): List<VideoItem> =
+        filterIsInstance<SearchResult.Video>().map { it.video }.filter { it.isShort }
 
     /** Video đã xem của tài khoản (cần đăng nhập). */
     suspend fun history(account: Account?): List<VideoItem> {
