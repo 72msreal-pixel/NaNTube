@@ -2,7 +2,6 @@ package com.nan.nantube.data
 
 import android.content.Context
 import android.net.Uri
-import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -111,8 +110,9 @@ class PlayPlan(
 
 /**
  * Phát Shorts theo cách của meetube (PhoneSourcePlanner + Media3SourceFactory): lấy link trực tiếp theo thứ tự
- * VISIONOS → ANDROID_VR → TV_TIZEN → WEB_EMBED → client của tài khoản, dựng bản kê DASH từ các luồng, cho ExoPlayer phát từng đoạn (có bộ nhớ đệm
- * trên đĩa), tải trước video kế tiếp. Link bị từ chối (403) thì đổi client (client vừa lỗi xếp cuối) và phát tiếp từ chỗ đang xem.
+ * VISIONOS → TV_TIZEN (kèm tài khoản mã) → WEB_EMBED → ANDROID_VR (xem [PlaybackSource]), dựng bản kê DASH từ các luồng, cho
+ * ExoPlayer phát từng đoạn (có bộ nhớ đệm trên đĩa), tải trước video kế tiếp. Link bị từ chối (403) thì đổi client
+ * (client vừa lỗi xếp cuối) và phát tiếp từ chỗ đang xem.
  *
  * Việc lấy link chạy ở scope riêng nên vuốt qua video khác không làm hủy lượt đang chạy; cùng một video được hỏi nhiều lần
  * (đang xem + tải trước) chỉ hỏi một lần.
@@ -186,56 +186,31 @@ object ShortsPlayback {
         }
     }
 
-    // ---- Lấy link theo thứ tự của meetube ----------------------------------------------------------
+    // ---- Lấy link theo thứ tự của meetube (xem PlaybackSource) -------------------------------------
 
     private suspend fun resolve(context: Context, account: Account?, video: VideoItem, exclude: Set<String>): PlayPlan {
-        var reason: String? = null
-        // Nguồn vừa lỗi xếp cuối; thứ tự các nguồn còn lại không đổi.
-        for (source in PlaybackSource.available().sortedBy { it.name in exclude }) {
-            val json = try {
-                source.load(context, account, video.id)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                reason = "${source.name}: ${e.message ?: "không kết nối được"}"
-                continue
-            }
-            if (json.dig("videoDetails", "isLive") == true || json.dig("videoDetails", "isUpcoming") == true) {
-                error("Video đang hoặc sắp phát trực tiếp")
-            }
-            val status = json.dig("playabilityStatus", "status") as? String
-            if (status != "OK") {
-                val detail = json.dig("playabilityStatus", "reason") as? String
-                reason = "${source.name}: " + listOfNotNull(status, detail).joinToString(" - ").ifBlank { "không có dữ liệu phát" }
-                continue
-            }
-            val data = json.optJSONObject("streamingData")
-            if (data == null) {
-                reason = "${source.name}: không có streamingData"
-                continue
-            }
-            val details = json.optJSONObject("videoDetails")
-            val plan = buildPlan(video.id, source.name, data, details)
-            if (plan == null) {
-                reason = "${source.name}: không có luồng phát trực tiếp"
-                continue
-            }
-            if (details != null) {
-                val views = details.optString("viewCount").toLongOrNull()
-                metas[video.id] = ShortMeta(
-                    author = details.optString("author").ifBlank { null },
-                    channelId = details.optString("channelId").ifBlank { null },
-                    views = views?.let { "%,d lượt xem".format(it) },
-                    title = details.optString("title").ifBlank { null },
-                    description = details.optString("shortDescription").ifBlank { null },
-                    viewCount = views,
-                    publishDate = json.optJSONObject("microformat")?.optJSONObject("playerMicroformatRenderer")
-                        ?.let { it.optString("publishDate").ifBlank { it.optString("uploadDate") } }?.ifBlank { null }
-                )
-            }
-            return plan
-        }
-        throw IOException(reason?.let { "YouTube không cho phát video này ($it)" } ?: "YouTube không cho phát video này")
+        val refusals = PlaybackRefusals()
+        return PlaybackSource.walk(context, account, video.id, exclude, refusals) { answer ->
+            val details = answer.json.optJSONObject("videoDetails")
+            val plan = buildPlan(video.id, answer.source.name, answer.streamingData, details)
+            if (plan == null) refusals.add(answer.source, "không có luồng phát trực tiếp") else rememberMeta(video.id, answer.json, details)
+            plan
+        } ?: throw refusals.failure("phát")
+    }
+
+    private fun rememberMeta(videoId: String, json: JSONObject, details: JSONObject?) {
+        if (details == null) return
+        val views = details.optString("viewCount").toLongOrNull()
+        metas[videoId] = ShortMeta(
+            author = details.optString("author").ifBlank { null },
+            channelId = details.optString("channelId").ifBlank { null },
+            views = views?.let { "%,d lượt xem".format(it) },
+            title = details.optString("title").ifBlank { null },
+            description = details.optString("shortDescription").ifBlank { null },
+            viewCount = views,
+            publishDate = json.optJSONObject("microformat")?.optJSONObject("playerMicroformatRenderer")
+                ?.let { it.optString("publishDate").ifBlank { it.optString("uploadDate") } }?.ifBlank { null }
+        )
     }
 
     private fun buildPlan(videoId: String, source: String, data: JSONObject, details: JSONObject?): PlayPlan? {

@@ -3,7 +3,6 @@ package com.nan.nantube.data
 import android.content.Context
 import android.util.Log
 import java.util.concurrent.ConcurrentHashMap
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -18,8 +17,8 @@ import org.json.JSONObject
  * thẻ video thường, còn các cách đoán (thời lượng, "#" trong tiêu đề, ảnh bìa, chuyển hướng /shorts/) đều nhận nhầm video
  * ngang và nhạc thành Short (meetube cũng dính lỗi này). Nên ở đây KHÔNG đoán và KHÔNG hỏi "có phải Short không" qua web.
  *
- * Cách làm: hỏi chính YouTube về video bằng `/player` (đúng hai client và thứ tự VISIONOS → ANDROID_VR mà trình phát Short
- * và nút Tải xuống của NaNTube đang dùng, qua [InnerTube.directPlayer]) rồi đọc KÍCH THƯỚC THẬT của luồng video. Định nghĩa
+ * Cách làm: hỏi chính YouTube về video bằng `/player` (đúng các nguồn và thứ tự của meetube mà trình phát Short và nút
+ * Tải xuống của NaNTube đang dùng, qua [PlaybackSource.walk]) rồi đọc KÍCH THƯỚC THẬT của luồng video. Định nghĩa
  * của YouTube cho Short là video ≤ 3 phút có khung dọc hoặc vuông, nên:
  *   Short  <=> thời lượng ≤ 180 giây VÀ khung dọc (rộng/cao ≤ 0,8; khung vuông của nhạc/tuyển tập không tính).
  * Video ngang (16:9) và nhạc không bao giờ khớp. Không đọc được (không phát được, lỗi mạng) thì "chưa biết": không nhớ,
@@ -47,6 +46,7 @@ object ShortDetector {
     private val known = ConcurrentHashMap<String, Boolean>()
     private val failedAt = ConcurrentHashMap<String, Long>() // chưa biết: thử lại sau RETRY_MS, không dồn dập
     @Volatile private var prefs: android.content.SharedPreferences? = null
+    @Volatile private var appContext: Context? = null
 
     /**
      * Tài khoản đang dùng (do các hàm tải danh sách đặt). Video riêng tư / không phát được khi chưa đăng nhập thì hỏi lại
@@ -56,6 +56,7 @@ object ShortDetector {
 
     /** Nạp kết quả đã nhớ từ lần chạy trước. Gọi một lần ở MainActivity. */
     fun init(context: Context) {
+        appContext = context.applicationContext
         val p = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         prefs = p
         p.getString(PREFS_KEY, null)?.split(',')?.forEach { e ->
@@ -136,45 +137,18 @@ object ShortDetector {
         return out
     }
 
-    /** Hỏi /player (VISIONOS rồi ANDROID_VR): client đầu cho kết luận thì dùng, không thì thử client sau. */
+    /**
+     * Hỏi /player theo thứ tự của meetube: nguồn đầu cho kết luận thì dùng, không thì thử nguồn sau. Tài khoản mã đi cùng
+     * TV_TIZEN nên video riêng tư của chủ kênh vẫn đọc được.
+     */
     private suspend fun probe(id: String): Boolean? {
-        for (vision in listOf(true, false)) {
-            val json = try {
-                InnerTube.directPlayer(id, vision)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.d(TAG, "$id: ${if (vision) "VISIONOS" else "ANDROID_VR"} lỗi ${e.message}")
-                continue
-            }
-            val v = verdict(json)
-            Log.d(TAG, "$id: ${if (vision) "VISIONOS" else "ANDROID_VR"} -> ${describe(json)} => $v")
-            if (v != null) return v
+        val context = appContext ?: return null
+        val refusals = PlaybackRefusals()
+        val isShort = PlaybackSource.walk(context, account, id, refusals = refusals, probeOnly = true) { answer ->
+            verdict(answer.json).also { Log.d(TAG, "$id: ${answer.source.name} -> ${describe(answer.json)} => $it") }
         }
-        return probeAuthed(id)
-    }
-
-    /** Hỏi /player bằng chính tài khoản đăng nhập (client TV rồi WEB, đều kèm token): cho video riêng tư của chủ kênh. */
-    private suspend fun probeAuthed(id: String): Boolean? {
-        val acc = account ?: return null
-        for (asWeb in listOf(false, true)) {
-            val json = try {
-                InnerTube.call(
-                    "player",
-                    JSONObject().put("videoId", id).put("racyCheckOk", true).put("contentCheckOk", true),
-                    acc, asWeb
-                )
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.d(TAG, "$id: đăng nhập ${if (asWeb) "WEB" else "TV"} lỗi ${e.message}")
-                continue
-            }
-            val v = verdict(json)
-            Log.d(TAG, "$id: đăng nhập ${if (asWeb) "WEB" else "TV"} -> ${describe(json)} => $v")
-            if (v != null) return v
-        }
-        return null
+        if (isShort == null) Log.d(TAG, "$id: không đọc được ($refusals)")
+        return isShort
     }
 
     /** Kết luận từ một phản hồi /player: true = Short, false = không, null = không đủ dữ liệu. */

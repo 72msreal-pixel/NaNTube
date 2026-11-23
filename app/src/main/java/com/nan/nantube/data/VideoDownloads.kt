@@ -91,16 +91,16 @@ object VideoDownloads {
     /**
      * Lấy link, tải (có chia đoạn) và ghép video + âm thanh thành một tệp MP4 nằm trong [work].
      * Dùng cho nút Tải xuống (trình phát Shorts đã chuyển sang phát trực tiếp, xem [ShortsPlayback]). [onMeta] nhận thông tin kênh của video.
+     * Như DownloadJob của meetube: link bị từ chối thì đổi nguồn, lấy link mới, tải lại; không thử lại đúng link cũ.
      */
     private suspend fun produce(
         context: Context, account: Account?, video: VideoItem, maxHeight: Int, work: File,
         onMeta: (JSONObject) -> Unit, onProgress: (Int) -> Unit
     ): File {
         var failure: Exception? = null
-        var reason: String? = null
-        // Như DownloadJob của meetube: link bị từ chối thì đổi client, lấy link mới, tải lại; không thử lại đúng link cũ.
-        for (source in PlaybackSource.available()) {
-            val plan = readPlan(context, account, video.id, source, maxHeight) { reason = "${source.name}: $it" } ?: continue
+        val refusals = PlaybackRefusals()
+        val file = PlaybackSource.walk(context, account, video.id, refusals = refusals) { answer ->
+            val plan = readPlan(answer, maxHeight, refusals) ?: return@walk null
             plan.details?.let(onMeta)
             try {
                 probePlan(plan)
@@ -108,28 +108,27 @@ object VideoDownloads {
                 throw e
             } catch (e: Exception) {
                 failure = e
-                continue
+                return@walk null
             }
             try {
                 val total = plan.video.size + (plan.audio?.size ?: 0L)
                 val videoPart = File(work, "video.part")
                 fetch(plan.video, videoPart) { onProgress(percent(it, total)) }
-                if (plan.audio == null) return videoPart
+                if (plan.audio == null) return@walk videoPart
                 val audioPart = File(work, "audio.part")
                 fetch(plan.audio, audioPart) { onProgress(percent(plan.video.size + it, total)) }
-                return File(work, "joined.mp4").also { MediaJoiner.join(videoPart, audioPart, it) }
+                File(work, "joined.mp4").also { MediaJoiner.join(videoPart, audioPart, it) }
             } catch (e: Refused) {
                 failure = e
+                null
             }
         }
+        if (file != null) return file
         val last = failure
         if (last is Refused) {
             throw IOException("YouTube từ chối link của video này (HTTP ${last.code}). Thử lại sau hoặc chọn video khác.")
         }
-        throw last ?: IllegalStateException(
-            reason?.let { "YouTube không cung cấp bản MP4 trực tiếp cho video này ($it)" }
-                ?: "YouTube không cung cấp bản MP4 trực tiếp cho video này"
-        )
+        throw last ?: refusals.failure("tải")
     }
 
     suspend fun download(context: Context, account: Account?, video: VideoItem, onProgress: (Int) -> Unit): String =
@@ -163,42 +162,18 @@ object VideoDownloads {
         return "$clean-${video.id}.mp4"
     }
 
-    /** Đọc /player của [source] thành kế hoạch tải; không dùng được thì trả null kèm lý do qua [why] (hiện trong thông báo lỗi). */
-    private suspend fun readPlan(
-        context: Context, account: Account?, videoId: String, source: PlaybackSource, maxHeight: Int, why: (String) -> Unit
-    ): Plan? {
-        val json = try {
-            source.load(context, account, videoId)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            why(e.message ?: "không kết nối được")
-            return null
-        }
-        if (json.dig("videoDetails", "isLive") == true || json.dig("videoDetails", "isUpcoming") == true) {
-            error("Không tải được video đang hoặc sắp phát trực tiếp")
-        }
-        val status = json.dig("playabilityStatus", "status") as? String
-        if (status != "OK") {
-            val detail = json.dig("playabilityStatus", "reason") as? String
-            why(listOfNotNull(status, detail).joinToString(" - ").ifBlank { "không có dữ liệu phát" })
-            return null
-        }
-        val data = json.optJSONObject("streamingData")
-        if (data == null) {
-            why("không có streamingData")
-            return null
-        }
-        val adaptive = streams(data.optJSONArray("adaptiveFormats"))
+    /** Đọc câu trả lời /player thành kế hoạch tải; không dùng được thì trả null kèm lý do ghi vào [refusals]. */
+    private fun readPlan(answer: PlaybackAnswer, maxHeight: Int, refusals: PlaybackRefusals): Plan? {
+        val adaptive = streams(answer.streamingData.optJSONArray("adaptiveFormats"))
         val video = adaptive.filter { it.mime.startsWith("video/mp4") && "avc1" in it.mime && it.height <= maxHeight }
             .maxByOrNull { it.height }
         val audio = adaptive.filter { it.mime.startsWith("audio/mp4") }.maxByOrNull { it.bitrate }
-        val details = json.optJSONObject("videoDetails")
+        val details = answer.json.optJSONObject("videoDetails")
         if (video != null && audio != null) return Plan(video, audio, details)
-        val muxed = streams(data.optJSONArray("formats"))
+        val muxed = streams(answer.streamingData.optJSONArray("formats"))
             .filter { it.mime.startsWith("video/mp4") }
             .maxByOrNull { it.height }
-        if (muxed == null) why("không có link MP4 trực tiếp (chỉ có luồng mã hóa/SABR)")
+        if (muxed == null) refusals.add(answer.source, "không có link MP4 trực tiếp (chỉ có luồng mã hóa/SABR)")
         return muxed?.let { Plan(it, null, details) }
     }
 

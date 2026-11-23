@@ -28,12 +28,15 @@ internal object PlayerJs {
     private val stsPattern = Regex("(?:signatureTimestamp|\\bsts)[\"']?\\s*:\\s*([0-9]{5})\\b")
     private val playerLock = Mutex()
     private val solverLock = Mutex()
-    private var cached: Player? = null
+    @Volatile private var cached: Player? = null
     @Volatile private var bundle: String? = null
 
     internal class Player(val id: String, val code: String, val sts: Int, val loadedAt: Long)
 
     fun supported(): Boolean = Build.VERSION.SDK_INT >= 26 && Api26.supported()
+
+    /** signatureTimestamp của player đã tải (còn hạn) hoặc null; không gọi mạng, cho các nguồn không cần giải mã. */
+    fun cachedSts(): Int? = cached?.takeIf { android.os.SystemClock.elapsedRealtime() - it.loadedAt < TTL }?.sts
 
     suspend fun get(preferredId: String? = null): Player = playerLock.withLock {
         val now = android.os.SystemClock.elapsedRealtime()

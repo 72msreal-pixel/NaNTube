@@ -12,7 +12,7 @@ class AuthRejected : Exception("Phiên đăng nhập không còn hiệu lực, h
  * - CODE: client TV kèm Bearer token (token TV chỉ dùng được với client TV, đúng ghi chú trong meetube).
  */
 object InnerTube {
-    private const val BASE = "https://www.youtube.com/youtubei/v1/"
+    internal const val BASE = "https://www.youtube.com/youtubei/v1/"
     private const val WEB_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
     private const val WEB_VERSION = "2.20250120.01.00"
     private const val TV_VERSION = "7.20250219.14.00"
@@ -95,13 +95,6 @@ object InnerTube {
         }
     }
 
-    /** User-Agent mà [call] dùng cho tài khoản này (đường dẫn /player cũ), để tải đúng UA với link nhận được. */
-    internal fun callUserAgent(account: Account?): String =
-        if (account?.kind == LoginKind.CODE) TV_UA else Http.DEFAULT_UA
-
-    internal const val VISION_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
-    internal const val VR_UA = "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
-
     /** UA mà mọi request tới googlevideo của meetube dùng (Media3SourceFactory.MEDIA_USER_AGENT), trình tải cũng phải dùng đúng UA này. */
     internal const val MEDIA_UA = "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36"
 
@@ -118,12 +111,12 @@ object InnerTube {
 
     private const val ID_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 
-    private fun randomId(length: Int): String {
+    internal fun randomId(length: Int): String {
         val random = java.security.SecureRandom()
         return buildString { repeat(length) { append(ID_ALPHABET[random.nextInt(ID_ALPHABET.length)]) } }
     }
 
-    private fun utcOffsetMinutes(): Int = java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 60_000
+    internal fun utcOffsetMinutes(): Int = java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 60_000
 
     @Volatile
     private var cachedVisitor: String? = null
@@ -158,7 +151,7 @@ object InnerTube {
         }
     }
 
-    private fun safetyUser() = JSONObject().put("enableSafetyMode", false).put("lockedSafetyMode", false)
+    internal fun safetyUser() = JSONObject().put("enableSafetyMode", false).put("lockedSafetyMode", false)
 
     /** Phần "client" của mẫu WEB trong meetube (AppClient.WEB.browseTemplate): có clientScreen, userAgent, browser, vùng, visitorData. */
     private fun mtWebClient(visitor: String?): JSONObject {
@@ -358,45 +351,6 @@ object InnerTube {
         return headers
     }
 
-    /**
-     * /player cho client phát link trực tiếp (VISIONOS, ANDROID_VR), dựng đúng như QueryBuilder + VideoInfoApi của meetube:
-     * context có clientScreen / userAgent / browser (Safari cho VISIONOS) / vùng / visitorData do máy chủ cấp, user,
-     * racyCheckOk + contentCheckOk + cpn; header Origin + X-Goog-Visitor-Id + UA + X-Youtube-Client-*; URL không có `key`
-     * (meetube gọi /player không key, như yt-dlp).
-     */
-    internal suspend fun directPlayer(videoId: String, vision: Boolean): JSONObject {
-        val visitor = visitorData()
-        val version = if (vision) "1.02" else "1.65.10"
-        val ua = if (vision) VISION_UA else VR_UA
-        val client = JSONObject()
-            .put("clientName", if (vision) "VISIONOS" else "ANDROID_VR").put("clientVersion", version)
-            .put("clientScreen", "WATCH").put("userAgent", ua)
-        if (vision) {
-            client.put("browserName", "Safari").put("browserVersion", "605.1.15")
-                .put("deviceMake", "Apple").put("deviceModel", "RealityDevice17,1")
-                .put("osName", "visionOS").put("osVersion", "26.5.23O471")
-        } else {
-            client.put("androidSdkVersion", "32").put("osName", "Android").put("osVersion", "12L")
-                .put("deviceModel", "Quest 3").put("deviceMake", "Oculus")
-        }
-        client.put("acceptLanguage", "vi").put("acceptRegion", "VN")
-            .put("utcOffsetMinutes", utcOffsetMinutes().toString())
-        if (!visitor.isNullOrEmpty()) client.put("visitorData", visitor)
-        val body = JSONObject()
-            .put("context", JSONObject().put("client", client).put("user", safetyUser()))
-            .put("racyCheckOk", true).put("contentCheckOk", true)
-            .put("videoId", videoId).put("cpn", randomId(16))
-        val headers = HashMap<String, String>()
-        headers["Origin"] = ORIGIN
-        headers["User-Agent"] = ua
-        headers["X-Youtube-Client-Name"] = if (vision) "101" else "28"
-        headers["X-Youtube-Client-Version"] = version
-        if (!visitor.isNullOrEmpty()) headers["X-Goog-Visitor-Id"] = visitor
-        val res = Http.postJson(BASE + "player?prettyPrint=false", body, headers)
-        check(res.code in 200..299) { "Không đọc được dữ liệu video (HTTP ${res.code})" }
-        return JSONObject(res.body)
-    }
-
     private fun context(tv: Boolean): JSONObject {
         val client = JSONObject()
             .put("hl", "vi").put("gl", "VN")
@@ -420,7 +374,7 @@ object InnerTube {
 
     // ---- WEB: cookie + SAPISIDHASH --------------------------------------------------------
 
-    private const val ORIGIN = "https://www.youtube.com"
+    internal const val ORIGIN = "https://www.youtube.com"
 
     private fun rawCookies(origin: String): String? = try {
         CookieManager.getInstance().getCookie(origin)
