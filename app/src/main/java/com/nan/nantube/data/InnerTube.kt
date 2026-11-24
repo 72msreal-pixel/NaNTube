@@ -180,6 +180,28 @@ object InnerTube {
         return tokens.joinToString(" ")
     }
 
+    /**
+     * Gọi ẩn danh bằng đúng mẫu WEB của meetube (AppClient.WEB.browseTemplate): phiên bản WEB mới, userAgent, vùng và visitorData.
+     * `getShortsWeb` của meetube hỏi chi tiết reel (kèm menu Không quan tâm) theo kiểu này; mẫu WEB cũ của [call] (bản 2025,
+     * không visitorData) nhận về menu không có mục phản hồi.
+     */
+    internal suspend fun callMtWebAnonymous(endpoint: String, data: JSONObject): JSONObject {
+        val visitor = visitorData()
+        val client = mtWebClient(visitor).put("hl", "vi").put("gl", "VN")
+        val body = JSONObject(data.toString())
+            .put("context", JSONObject().put("client", client).put("user", safetyUser()))
+            .put("racyCheckOk", true).put("contentCheckOk", true)
+        val headers = mutableMapOf(
+            "X-YouTube-Client-Name" to "1",
+            "X-YouTube-Client-Version" to MT_WEB_VERSION,
+            "User-Agent" to MT_WEB_UA,
+            "Origin" to ORIGIN,
+            "Referer" to "$ORIGIN/"
+        )
+        if (visitor != null) headers["X-Goog-Visitor-Id"] = visitor
+        return Http.postJson(BASE + endpoint + "?prettyPrint=false", body, headers).requireJson()
+    }
+
     /** Mẫu WEB/TV của MediaServiceCore, riêng cho luồng bình luận. Không gửi thao tác ghi ẩn danh. */
     internal suspend fun commentRequest(endpoint: String, data: JSONObject, account: Account, tv: Boolean): JSONObject {
         require(!tv || account.kind == LoginKind.CODE)

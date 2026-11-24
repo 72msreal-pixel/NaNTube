@@ -34,7 +34,10 @@ data class VideoItem(
     /** Dòng của video sắp công chiếu / phát trực tiếp ("Công chiếu vào 24 thg 11, 20:00"), theo upcomingEventData. */
     val upcoming: String? = null,
     /** Đang phát trực tiếp (thẻ ghi "đang xem" hoặc có nhãn LIVE). */
-    val live: Boolean = false
+    val live: Boolean = false,
+    /** `params` / `playerParams` của reelWatchEndpoint do feed Short trả, để hỏi lại menu của đúng reel này (Không quan tâm...). */
+    val reelParams: String? = null,
+    val reelPlayerParams: String? = null
 ) {
     /** Ảnh bìa lấy thẳng từ CDN theo id: luôn dùng được, khỏi phụ thuộc cấu trúc JSON từng loại. */
     val thumbnail: String

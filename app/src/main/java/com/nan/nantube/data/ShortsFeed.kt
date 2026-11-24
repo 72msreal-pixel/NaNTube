@@ -32,7 +32,7 @@ object ShortsFeed {
             ?: root.optJSONObject("continuationEndpoint")?.optJSONObject("continuationCommand")?.optString("token")?.ifBlank { null }
 
         val all = ArrayList<VideoItem>()
-        firstId?.let { all.add(item(it)) }
+        firstId?.let { all.add(item(it, head?.optString("params"), head?.optString("playerParams"))) }
         var next = token
         var pages = 0
         // Đủ video mới thì dừng; không thì lấy tiếp vài trang (cùng cách ShortsFeedTail của meetube).
@@ -77,7 +77,7 @@ object ShortsFeed {
                 val endpoint = entries.optJSONObject(i)?.optJSONObject("command")?.optJSONObject("reelWatchEndpoint") ?: continue
                 if (endpoint.optJSONObject("adClientParams")?.optBoolean("isAd") == true) continue
                 val id = endpoint.optString("videoId").takeIf { it.length == 11 } ?: continue
-                items.add(item(id))
+                items.add(item(id, endpoint.optString("params"), endpoint.optString("playerParams")))
             }
         }
         val next = root.optString("continuation").ifBlank { null }
@@ -86,7 +86,10 @@ object ShortsFeed {
     }
 
     /** Reel chỉ cho mã video; tiêu đề + kênh được điền khi mở video (xem ShortsPlayback.info). */
-    private fun item(id: String) = VideoItem(id = id, title = "", channel = null, duration = null, views = null, isShort = true)
+    private fun item(id: String, params: String? = null, playerParams: String? = null) = VideoItem(
+        id = id, title = "", channel = null, duration = null, views = null, isShort = true,
+        reelParams = params?.ifBlank { null }, reelPlayerParams = playerParams?.ifBlank { null }
+    )
 
     /** Thử bằng tài khoản (ngữ cảnh WEB), không được thì gọi ẩn danh như meetube. */
     private suspend fun call(endpoint: String, account: Account?, body: JSONObject.() -> Unit): JSONObject {

@@ -758,7 +758,7 @@ private fun ShortsPager(
         closeSheet()
         scope.launch {
             try {
-                ShortsFeedback.send(account, video.id, kind)
+                ShortsFeedback.send(account, video, kind)
                 ShortsSeen.add(video.id)
                 toast(
                     if (kind == ShortsFeedback.Kind.NOT_INTERESTED) "Đã xóa video khỏi mục đề xuất"
@@ -768,7 +768,10 @@ private fun ShortsPager(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                toast("Không gửi được tới YouTube. Hãy thử lại.")
+                toast(
+                    if (e is IllegalStateException || e is IllegalArgumentException) e.message ?: "Không gửi được tới YouTube. Hãy thử lại."
+                    else "Không gửi được tới YouTube. Hãy thử lại."
+                )
             }
         }
     }
