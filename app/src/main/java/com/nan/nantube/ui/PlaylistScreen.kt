@@ -66,7 +66,7 @@ import com.nan.nantube.data.VideoItem
 /** Một mục thư viện được mở ra: [key] là LibraryCovers.LIST_*. */
 data class OpenList(val key: String, val title: String)
 
-private enum class ListKind { All, Video, Shorts }
+private enum class ListKind { All, Video, Shorts, Music }
 
 /**
  * Trang một danh sách (Video đã thích, Xem sau, Video của bạn) theo kiểu YouTube: nền mờ từ ảnh bìa,
@@ -100,6 +100,7 @@ fun PlaylistScreen(list: OpenList, account: Account?, onSaveToPlaylist: (VideoIt
                 ListKind.All -> true
                 ListKind.Video -> !it.isShort
                 ListKind.Shorts -> it.isShort
+                ListKind.Music -> it.isMusic
             } && (q.isEmpty() || it.title.contains(q, ignoreCase = true) || (it.channel?.contains(q, ignoreCase = true) == true))
         }
     }
@@ -235,7 +236,7 @@ fun PlaylistScreen(list: OpenList, account: Account?, onSaveToPlaylist: (VideoIt
                         items(ListKind.entries.toList()) { k ->
                             val on = k == kind
                             Text(
-                                when (k) { ListKind.All -> "Tất cả"; ListKind.Video -> "Video"; ListKind.Shorts -> "Shorts" },
+                                when (k) { ListKind.All -> "Tất cả"; ListKind.Video -> "Video"; ListKind.Shorts -> "Shorts"; ListKind.Music -> "Âm nhạc" },
                                 fontSize = 14.sp,
                                 fontWeight = FontWeight.Medium,
                                 color = if (on) Color.Black else Color.White,
@@ -260,6 +261,7 @@ fun PlaylistScreen(list: OpenList, account: Account?, onSaveToPlaylist: (VideoIt
                                 feed.error != null && feed.items.isEmpty() -> feed.error.orEmpty()
                                 feed.loading || feed.loadingMore || feed.classifying -> "Đang tải…"
                                 kind == ListKind.Shorts -> "Không có Short nào."
+                                kind == ListKind.Music -> "Không có nhạc nào."
                                 else -> "Không có video nào."
                             },
                             color = NanColors.TextSecondary,
@@ -268,7 +270,7 @@ fun PlaylistScreen(list: OpenList, account: Account?, onSaveToPlaylist: (VideoIt
                             modifier = Modifier.fillMaxWidth().padding(32.dp)
                         )
                     }
-                    else -> items(shown, key = { it.id }) {
+                    else -> items(shown, key = { "${it.id}|${it.music}" }) {
                         HistoryVideoRow(it, listAccount, onSaveToPlaylist, displayOnly = downloads, queue = shown)
                     }
                 }

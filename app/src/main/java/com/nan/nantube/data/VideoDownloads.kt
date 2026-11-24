@@ -34,7 +34,7 @@ object VideoDownloads {
     private const val AUDIO_LEAD_MS = 6_000L
     private const val METADATA_PREFS = "download_metadata"
     // Android có thể thêm " (1)" vào tên nếu tải lại một video đã tồn tại.
-    private val savedName = Regex("^(.+)-([A-Za-z0-9_-]{11})(?: [(][0-9]+[)])?[.]mp4$")
+    private val savedName = Regex("^(.+)-([A-Za-z0-9_-]{11})(?: [(][0-9]+[)])?[.](mp4|m4a|mp3)$")
     private val revision = MutableStateFlow(0)
 
     fun changes(context: Context): Flow<Unit> {
@@ -62,9 +62,9 @@ object VideoDownloads {
         val names = if (Build.VERSION.SDK_INT >= 29) {
             val columns = arrayOf(MediaStore.Downloads.DISPLAY_NAME)
             val where = "${MediaStore.Downloads.OWNER_PACKAGE_NAME} = ? AND " +
-                "${MediaStore.Downloads.MIME_TYPE} = ? AND ${MediaStore.Downloads.IS_PENDING} = 0 AND " +
+                "${MediaStore.Downloads.MIME_TYPE} IN (?, ?, ?) AND ${MediaStore.Downloads.IS_PENDING} = 0 AND " +
                 "${MediaStore.Downloads.SIZE} > 0"
-            val args = arrayOf(context.packageName, "video/mp4")
+            val args = arrayOf(context.packageName, "video/mp4", "audio/mp4", "audio/mpeg")
             val order = "${MediaStore.Downloads.DATE_ADDED} DESC, ${MediaStore.Downloads._ID} DESC"
             val cursor = context.contentResolver.query(MediaStore.Downloads.EXTERNAL_CONTENT_URI, columns, where, args, order)
                 ?: error("Không đọc được thư mục Tải xuống")
@@ -79,12 +79,13 @@ object VideoDownloads {
         val prefs = context.getSharedPreferences(METADATA_PREFS, Context.MODE_PRIVATE)
         fun itemOf(name: String): VideoItem? {
             val match = savedName.matchEntire(name) ?: return null
-            val (fileTitle, id) = match.destructured
-            val metadata = prefs.getString(id, null)?.let { runCatching { JSONObject(it) }.getOrNull() }
-                ?: records.optJSONObject(id)
+            val (fileTitle, id, ext) = match.destructured
+            val audio = ext != "mp4"
+            val metadata = prefs.getString(if (audio) "a$id" else id, null)?.let { runCatching { JSONObject(it) }.getOrNull() }
+                ?: if (audio) null else records.optJSONObject(id)
             fun field(key: String): String? = (metadata?.opt(key) as? String)?.takeIf { it.isNotBlank() }
             return VideoItem(id, field("title") ?: fileTitle, field("channel"), field("duration"), null,
-                metadata?.optBoolean("short") == true)
+                metadata?.optBoolean("short") == true && !audio, music = audio)
         }
         val listed = names.mapNotNull { itemOf(it) }
         val seen = listed.map { it.id }.toHashSet()
@@ -92,8 +93,8 @@ object VideoDownloads {
             val item = itemOf(name) ?: return@mapNotNull null
             if (seen.add(item.id)) item else null
         }
-        val items = (listed + restored).distinctBy { it.id }
-        VideoPage(items, null, total = "${items.size} video")
+        val items = (listed + restored).distinctBy { it.id to it.music }
+        VideoPage(items, null, total = "${items.size} mục")
     }
 
     // ---------- Sổ video đã tải (lưu ở thư mục NaNTube, theo từng tài khoản) ----------
@@ -272,7 +273,14 @@ object VideoDownloads {
                 val result = produce(context.applicationContext, account, video, request, work, {}, onProgress)
                 val name = fileName(video, request)
                 publish(context, result, name, if (request.audioOnly) request.audioFormat.mime else "video/mp4")
-                // Chỉ video đầy đủ vào sổ "Đã tải xuống": âm thanh và đoạn cắt không phải bản của video này.
+                // Âm thanh: nhớ tiêu đề/kênh để hiện ở chip Âm nhạc của "Nội dung đã tải".
+                if (request.audioOnly && !request.isClip) {
+                    val metadata = JSONObject().put("title", video.title).put("channel", video.channel)
+                        .put("duration", video.duration).put("short", false)
+                    context.getSharedPreferences(METADATA_PREFS, Context.MODE_PRIVATE)
+                        .edit().putString("a${video.id}", metadata.toString()).apply()
+                }
+                // Chỉ video đầy đủ vào sổ "Đã tải xuống": đoạn cắt không phải bản của video này.
                 if (!request.audioOnly && !request.isClip) {
                     val metadata = JSONObject().put("title", video.title).put("channel", video.channel)
                         .put("duration", video.duration).put("short", video.isShort)
