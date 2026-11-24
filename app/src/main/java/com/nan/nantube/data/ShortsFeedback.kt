@@ -12,13 +12,11 @@ object ShortsFeedback {
     enum class Kind { NOT_INTERESTED, DONT_RECOMMEND_CHANNEL }
 
     suspend fun send(account: Account?, videoId: String, kind: Kind) {
+        checkNotNull(account) { "Cần đăng nhập" }
         val token = findToken(account, videoId, kind)
             ?: error("YouTube không cung cấp thao tác này cho video này")
         val body = JSONObject().put("feedbackTokens", JSONArray().put(token))
-        val result = InnerTube.callAny("feedback", body, account)
-        check(result.dig("feedbackResponses", 0, "isProcessed") != false) {
-            "YouTube chưa xác nhận thao tác"
-        }
+        InnerTube.callAny("feedback", body, account)
     }
 
     private suspend fun findToken(account: Account?, videoId: String, kind: Kind): String? {
@@ -49,22 +47,24 @@ object ShortsFeedback {
         return roots.firstNotNullOfOrNull { tokenIn(it, kind) }
     }
 
+    private class MenuItem(val title: String, val icon: String, val token: String)
+
     private fun tokenIn(root: JSONObject, kind: Kind): String? {
-        val entries = findAllKeys(root, "menuServiceItemRenderer") + findAllKeys(root, "listItemViewModel")
-        for (entry in entries) {
-            val title = (ytText(entry.opt("text")) ?: ytText(entry.opt("title"))).orEmpty().lowercase()
-            val icon = findKey(entry, "icon")?.optString("iconType").orEmpty()
-            val match = when (kind) {
-                Kind.NOT_INTERESTED ->
-                    title.contains("không quan tâm") || title.contains("not interested") || icon == "NOT_INTERESTED"
-                Kind.DONT_RECOMMEND_CHANNEL ->
-                    title.contains("không đề xuất kênh") || title.contains("don't recommend channel") ||
-                        title.contains("don’t recommend channel")
-            }
-            if (!match) continue
+        val items = (findAllKeys(root, "menuServiceItemRenderer") + findAllKeys(root, "listItemViewModel")).mapNotNull { entry ->
             val token = findKey(entry, "feedbackEndpoint")?.optString("feedbackToken")?.takeIf { it.isNotBlank() }
-            if (token != null) return token
+                ?: return@mapNotNull null
+            val title = (ytText(entry.opt("text")) ?: ytText(entry.opt("title"))).orEmpty().lowercase()
+            MenuItem(title, findKey(entry, "icon")?.optString("iconType").orEmpty(), token)
         }
-        return null
+        val byTitle = items.firstOrNull {
+            when (kind) {
+                Kind.NOT_INTERESTED -> it.title.contains("không quan tâm") || it.title.contains("not interested")
+                Kind.DONT_RECOMMEND_CHANNEL -> it.title.contains("không đề xuất kênh") ||
+                    it.title.contains("don't recommend channel") || it.title.contains("don’t recommend channel")
+            }
+        }
+        val byIcon = items.firstOrNull { it.icon == if (kind == Kind.NOT_INTERESTED) "NOT_INTERESTED" else "REMOVE" }
+        val byOrder = items.takeIf { it.size == 2 }?.get(kind.ordinal)
+        return (byTitle ?: byIcon ?: byOrder)?.token
     }
 }

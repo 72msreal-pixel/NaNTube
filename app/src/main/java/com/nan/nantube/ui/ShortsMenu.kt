@@ -146,6 +146,7 @@ fun ColumnScope.ShortsMenuContent(
     onDescription: () -> Unit,
     onTranscript: () -> Unit,
     onClean: () -> Unit,
+    onDownload: () -> Unit,
     onNotInterested: () -> Unit,
     onDontRecommend: () -> Unit,
     onDismiss: () -> Unit
@@ -171,6 +172,7 @@ fun ColumnScope.ShortsMenuContent(
         MenuEntry(AutoScrollIcon, "Tự động vuốt", if (ShortsPool.autoScroll) "Bật" else "Tắt") {
             ShortsPool.selectAutoScroll(!ShortsPool.autoScroll)
         },
+        MenuEntry(YtDownload, "Tải xuống", onClick = onDownload),
         MenuEntry(NotInterestedIcon, "Không quan tâm", onClick = onNotInterested),
         MenuEntry(DontRecommendIcon, "Không đề xuất kênh này", onClick = onDontRecommend)
     )

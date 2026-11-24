@@ -2,6 +2,8 @@ package com.nan.nantube.ui
 
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -39,18 +41,22 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
@@ -75,6 +81,8 @@ import com.nan.nantube.data.DownloadText
 import com.nan.nantube.data.VideoDownloads
 import com.nan.nantube.data.VideoItem
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 
 /**
  * Bảng Tải xuống của video: nút "Tải xuống" ở menu ba chấm không tải thẳng nữa mà mở bảng này.
@@ -97,6 +105,40 @@ object DownloadPanel {
 }
 
 private val Scrim = Color(0x99000000)
+private const val FLING = 1200f
+
+/**
+ * Trạng thái kéo của bảng. [lift] > 0 là bảng được kéo cao thêm (tối đa tới hết [maxPx]), < 0 là bảng đang bị kéo xuống để đóng.
+ * Thả tay thì về mốc gần nhất: đóng / cao tự nhiên / mở hết cỡ.
+ */
+private class SheetDrag(private val scope: CoroutineScope, private val onDismiss: () -> Unit) {
+    val lift = Animatable(0f)
+    var peekPx = 0
+    var maxPx = 0
+
+    private val room get() = (maxPx - peekPx).coerceAtLeast(0).toFloat()
+
+    fun pulled(): Float = if (peekPx > 0) (-lift.value / peekPx).coerceIn(0f, 1f) else 0f
+
+    fun drag(dy: Float) {
+        scope.launch { lift.snapTo((lift.value - dy).coerceIn(-peekPx.toFloat(), room)) }
+    }
+
+    fun release(velocity: Float) {
+        val v = lift.value
+        val target = when {
+            velocity > FLING -> if (v > 0f) 0f else -peekPx.toFloat()
+            velocity < -FLING -> if (v < 0f) 0f else room
+            v < -peekPx * 0.35f -> -peekPx.toFloat()
+            v > room / 2f -> room
+            else -> 0f
+        }
+        scope.launch {
+            lift.animateTo(target, tween(220))
+            if (target < 0f) onDismiss()
+        }
+    }
+}
 
 /** Các trang của bảng; trang sau mở chồng lên trang trước, nút quay lại / vuốt Back lùi một trang. */
 private enum class Step { Root, Video, Quality, Audio, AudioType, Clip, ClipKind }
@@ -157,6 +199,8 @@ private fun DownloadSheetContent(video: VideoItem, account: Account?, onDismiss:
     var clipStart by remember { mutableLongStateOf(0L) }
     var clipEnd by remember { mutableLongStateOf(0L) }
     val inClip = Step.ClipKind in stack
+    val scope = rememberCoroutineScope()
+    val drag = remember { SheetDrag(scope, onDismiss) }
 
     fun back() {
         if (stack.size > 1) stack.removeAt(stack.lastIndex) else onDismiss()
@@ -208,21 +252,28 @@ private fun DownloadSheetContent(video: VideoItem, account: Account?, onDismiss:
     val qualityBytes = (info?.qualities?.firstOrNull { it.height == (height ?: topQuality?.height) })?.bytes ?: -1L
 
     Box(Modifier.fillMaxSize()) {
-        Box(Modifier.fillMaxSize().background(Scrim).plainClickable(onDismiss)) {
+        Box(Modifier.fillMaxSize().drawBehind { drawRect(Scrim, alpha = 1f - drag.pulled()) }.plainClickable(onDismiss)) {
             Column(
                 Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
                     .heightIn(max = (LocalConfiguration.current.screenHeightDp * 0.85f).dp)
+                    .graphicsLayer { translationY = (-drag.lift.value).coerceAtLeast(0f) }
+                    .layout { measurable, c ->
+                        drag.maxPx = c.maxHeight
+                        val lift = drag.lift.value
+                        val fixed = if (lift > 0f) (drag.peekPx + lift).toInt().coerceAtMost(c.maxHeight) else null
+                        val p = measurable.measure(if (fixed != null) c.copy(minHeight = fixed, maxHeight = fixed) else c)
+                        if (fixed == null) drag.peekPx = p.height
+                        layout(p.width, p.height) { p.place(0, 0) }
+                    }
                     .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
                     .background(NanColors.Background)
                     .plainClickable { }
                     .navigationBarsPadding()
                     .imePadding()
             ) {
-                Box(Modifier.fillMaxWidth().height(40.dp), contentAlignment = Alignment.Center) {
-                    Box(Modifier.size(width = 40.dp, height = 4.dp).clip(RoundedCornerShape(2.dp)).background(NanColors.TextSecondary))
-                }
+                PanelHandle(drag::drag, drag::release)
                 Header(
                     title = when (step) {
                         Step.Root -> "Tải xuống"
@@ -236,7 +287,7 @@ private fun DownloadSheetContent(video: VideoItem, account: Account?, onDismiss:
                     showBack = stack.size > 1,
                     onBack = { back() }
                 )
-                Column(Modifier.weight(1f, fill = false).fillMaxWidth().verticalScroll(rememberScrollState())) {
+                Column(Modifier.weight(1f, fill = drag.lift.value > 0f).fillMaxWidth().verticalScroll(rememberScrollState())) {
                     when (step) {
                         Step.Root -> {
                             OptionRow(VideoIcon, "Tải video") { stack.add(Step.Video) }

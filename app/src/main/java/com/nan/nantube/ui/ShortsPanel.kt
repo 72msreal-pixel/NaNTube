@@ -74,8 +74,6 @@ fun DraggablePanel(
     liftPx: Int = 0,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    val dragNow by rememberUpdatedState(onDrag)
-    val releaseNow by rememberUpdatedState(onRelease)
     // Cuộn tới đầu / cuối nội dung mà còn dư cử chỉ thì nuốt luôn, không cho tràn lên YtPullRefresh bên ngoài (gây vòng tròn tải lại).
     val swallowOverscroll = remember {
         object : NestedScrollConnection {
@@ -95,17 +93,25 @@ fun DraggablePanel(
             .nestedScroll(swallowOverscroll)
             .plainClickable { }
     ) {
-        Box(
-            Modifier.fillMaxWidth().height(40.dp).draggable(
-                orientation = Orientation.Vertical,
-                state = rememberDraggableState { dragNow(it) },
-                onDragStopped = { releaseNow(it) }
-            ),
-            contentAlignment = Alignment.Center
-        ) {
-            Box(Modifier.size(width = 40.dp, height = 4.dp).clip(RoundedCornerShape(2.dp)).background(NanColors.TextSecondary))
-        }
+        PanelHandle(onDrag, onRelease)
         content()
+    }
+}
+
+/** Thanh nắm ở đỉnh bảng: chỉ kéo ở đây mới đổi chiều cao / đóng bảng. [onRelease] nhận vận tốc px/s, dương = kéo xuống. */
+@Composable
+fun PanelHandle(onDrag: (Float) -> Unit, onRelease: (Float) -> Unit) {
+    val dragNow by rememberUpdatedState(onDrag)
+    val releaseNow by rememberUpdatedState(onRelease)
+    Box(
+        Modifier.fillMaxWidth().height(40.dp).draggable(
+            orientation = Orientation.Vertical,
+            state = rememberDraggableState { dragNow(it) },
+            onDragStopped = { releaseNow(it) }
+        ),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(Modifier.size(width = 40.dp, height = 4.dp).clip(RoundedCornerShape(2.dp)).background(NanColors.TextSecondary))
     }
 }
 

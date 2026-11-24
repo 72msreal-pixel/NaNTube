@@ -86,6 +86,31 @@ val YtShare: ImageVector by lazy {
     )
 }
 
+/** Mũi tên tải xuống đặc kèm vạch đáy (Material "download", giống nút Tải xuống của meetube). */
+val YtDownload: ImageVector by lazy {
+    glyph("YtDownload", "M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z")
+}
+
+/** Tam giác phát và hai thanh dừng của ô tròn nháy giữa Short (glyph meetube: đặc + viền 1.5 bo tròn). */
+private fun flashGlyph(name: String, path: String): ImageVector =
+    ImageVector.Builder(name, 24.dp, 24.dp, 24f, 24f).apply {
+        addPath(
+            pathData = PathParser().parsePathString(path).toNodes(),
+            fill = SolidColor(Color.White),
+            stroke = SolidColor(Color.White),
+            strokeLineWidth = 1.5f,
+            strokeLineJoin = StrokeJoin.Round
+        )
+    }.build()
+
+val FlashPlay: ImageVector by lazy {
+    flashGlyph("FlashPlay", "M8.75 6.37 13.18 9.18 13.18 14.82 8.75 17.63ZM13.18 9.18 17.6 12 13.18 14.82Z")
+}
+
+val FlashPause: ImageVector by lazy {
+    flashGlyph("FlashPause", "M6.75 5.75 9.25 5.75 9.25 18.25 6.75 18.25ZM14.75 5.75 17.25 5.75 17.25 18.25 14.75 18.25Z")
+}
+
 /** Mũi tên xoay vòng: làm mới để lấy Short mới. */
 val YtRefresh: ImageVector by lazy {
     glyph(

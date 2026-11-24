@@ -17,6 +17,7 @@ import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
 import androidx.media3.exoplayer.ExoPlayer
 import com.nan.nantube.data.Account
+import com.nan.nantube.data.Connectivity
 import com.nan.nantube.data.NanStorage
 import com.nan.nantube.data.ShortsMedia
 import com.nan.nantube.data.ShortsPlayback
@@ -28,6 +29,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -62,6 +64,7 @@ class ShortSlot internal constructor(val video: VideoItem, val player: ExoPlayer
     internal var resumeMs = 0L
     internal val failed = HashSet<String>()
     internal var job: Job? = null
+    internal var retryJob: Job? = null
     internal var wantPlay = false
     internal var activeRetried = false
     internal var released = false
@@ -81,6 +84,7 @@ object ShortsPool {
     private const val NEIGHBOUR_WAIT_MS = 1_500L
     private const val HEAD_WAIT_MS = 4_000L
     private const val TRIM_DELAY_MS = 3_000L
+    private const val RETRY_DELAY_MS = 4_000L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val slots = LinkedHashMap<String, ShortSlot>()
@@ -89,6 +93,24 @@ object ShortsPool {
     private var claimed: Set<String> = emptySet()
     private var neighbourJob: Job? = null
     private var trimJob: Job? = null
+
+    init {
+        scope.launch { snapshotFlow { Connectivity.tick }.drop(1).collect { retryFailed() } }
+    }
+
+    private fun retryFailed() {
+        slots.values.filter { it.error != null }.forEach { retry(it) }
+    }
+
+    /** Lỗi tải (mất mạng, link bị chặn…) không báo ra màn hình: ô cứ quay vòng và tự thử lại sau ít giây, hoặc ngay khi có mạng. */
+    private fun giveUp(slot: ShortSlot) {
+        slot.error = "Không phát được video này."
+        slot.retryJob?.cancel()
+        slot.retryJob = scope.launch {
+            delay(RETRY_DELAY_MS)
+            if (!slot.released && slot.error != null) retry(slot)
+        }
+    }
 
     /** Chất lượng người dùng chọn ở menu Short (cạnh ngắn của video, vd 480); null = Tự động. Áp cho mọi ô, kể cả ô nạp sau. */
     var quality by mutableStateOf<Int?>(null)
@@ -379,11 +401,13 @@ object ShortsPool {
     private fun release(slot: ShortSlot) {
         slot.released = true
         slot.job?.cancel()
+        slot.retryJob?.cancel()
         slot.player.release()
     }
 
     private fun create(video: VideoItem): ShortSlot? {
         val context = app ?: return null
+        Connectivity.start(context)
         val player = ExoPlayer.Builder(context)
             .setLoadControl(ShortsMedia.loadControl())
             .build().apply {
@@ -449,19 +473,19 @@ object ShortsPool {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                slot.error = e.shortMessage ?: "Không phát được video này."
+                giveUp(slot)
             }
         }
     }
 
     /**
      * Link bị từ chối / hết hạn / kẹt / ExoPlayer báo lỗi giữa chừng: đổi sang client khác lấy link mới rồi phát tiếp từ chỗ đang xem.
-     * Quá [MAX_AUTO_RECOVERY] lần mới hiện lỗi cho người dùng bấm "Thử lại".
+     * Quá [MAX_AUTO_RECOVERY] lần thì [giveUp]: ô quay vòng chờ rồi tự thử lại từ đầu.
      */
     private fun recover(slot: ShortSlot) {
         if (slot.released) return
         if (slot.autoTries >= MAX_AUTO_RECOVERY) {
-            slot.error = "Không phát được video này."
+            giveUp(slot)
             return
         }
         slot.autoTries++

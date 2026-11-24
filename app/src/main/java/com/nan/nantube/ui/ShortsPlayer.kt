@@ -24,6 +24,10 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -93,6 +97,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -109,10 +114,10 @@ import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import com.composables.icons.lucide.ChevronDown
 import com.composables.icons.lucide.Lucide
-import com.composables.icons.lucide.Play
 import com.composables.icons.lucide.ThumbsUp
 import com.nan.nantube.R
 import com.nan.nantube.data.Account
+import com.nan.nantube.data.Connectivity
 import com.nan.nantube.data.CaptionCue
 import com.nan.nantube.data.ChannelNotify
 import com.nan.nantube.data.ChannelSubscriptions
@@ -218,8 +223,10 @@ fun ShortsFeedScreen(
             onSearch = onSearch,
             hasVideo = feed.items.getOrNull(state.pageFor(feed.version)) != null
         )
+        QuietFeedRetry(feed, account)
         Box(Modifier.weight(1f).fillMaxWidth()) {
-            PagedBody(feed, onRetry = { feed.load(account, force = true) }) {
+            if (feed.items.isEmpty() && feed.error != null) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { ShortSpinner() }
+            else PagedBody(feed, onRetry = { feed.load(account, force = true) }) {
                 YtPullRefresh(feed.loading, onRefresh = { state.refresh() }) {
                     // Bộ mới về (version đổi) thì dựng lại pager từ video đầu; trước đó video cũ vẫn phát.
                     key(feed.version) {
@@ -348,6 +355,12 @@ private const val WATCH_MARK_DELAY_MS = 2_500L
 /** Cập nhật lại thời gian xem định kỳ khi vẫn ở Short này (Short lặp lại cũng được tính). */
 private const val WATCH_REFRESH_MS = 10_000L
 
+/** Khung trang (rộng / cao) từ mức này trở lên thì Short dọc hiện nguyên khung (có viền đen) thay vì phóng to cắt mất hình. */
+private const val MAX_ZOOM_ASPECT = 0.72f
+
+/** Khoảng chờ giữa các lần tự tải lại bộ Short khi chưa có mạng. */
+private const val FEED_RETRY_MS = 4_000L
+
 /** Số lần tự đổi client + phát tiếp trước khi hiện nút "Thử lại". */
 private const val MAX_AUTO_RECOVERY = 4
 
@@ -373,6 +386,7 @@ private fun ShortsPager(
     DisposableEffect(Unit) { onDispose { ShortsPool.pagerGone() } }
 
     var userPaused by remember { mutableStateOf(false) }
+    var flashTick by remember { mutableIntStateOf(0) }
     var progress by remember { mutableFloatStateOf(0f) }
     var positionMs by remember { mutableLongStateOf(0L) }
     var tick by remember { mutableIntStateOf(0) }
@@ -725,6 +739,11 @@ private fun ShortsPager(
     LaunchedEffect(finished, page) {
         if (finished && page + 1 < latest.size) pagerState.animateScrollToPage(page + 1)
     }
+    // Đổi cỡ cửa sổ (chia đôi màn hình, xoay, gập mở): pager không được kẹt lưng chừng giữa hai Short.
+    LaunchedEffect(boxHeight) {
+        delay(50)
+        if (!pagerState.isScrollInProgress && pagerState.currentPageOffsetFraction != 0f) pagerState.scrollToPage(pagerState.currentPage)
+    }
     // Đang tự vuốt mà mở bảng (hoặc video bị tua về 0) thì animate bị huỷ giữa chừng, pager đứng lưng chừng hai Short: kéo về trang gần nhất.
     val scrolling = pagerState.isScrollInProgress
     LaunchedEffect(scrolling) {
@@ -733,7 +752,7 @@ private fun ShortsPager(
         if (pagerState.currentPageOffsetFraction != 0f) pagerState.animateScrollToPage(pagerState.currentPage)
     }
 
-    // Không quan tâm / Không đề xuất kênh này: gửi phản hồi cho YouTube rồi sang Short kế (video này cũng không hiện lại ở lần mở sau).
+    // Như meetube: đóng menu rồi gửi phản hồi; YouTube nhận thì sang Short kế (video này không hiện lại ở lần mở sau), không thì ở nguyên và báo lỗi.
     fun sendFeedback(kind: ShortsFeedback.Kind) {
         val video = curVideo ?: return
         closeSheet()
@@ -742,14 +761,14 @@ private fun ShortsPager(
                 ShortsFeedback.send(account, video.id, kind)
                 ShortsSeen.add(video.id)
                 toast(
-                    if (kind == ShortsFeedback.Kind.NOT_INTERESTED) "Đã ghi nhận. Bạn sẽ thấy ít video như vậy hơn"
-                    else "Đã ghi nhận. Sẽ không đề xuất kênh này nữa"
+                    if (kind == ShortsFeedback.Kind.NOT_INTERESTED) "Đã xóa video khỏi mục đề xuất"
+                    else "Chúng tôi sẽ không đề xuất kênh này cho bạn nữa"
                 )
                 if (page + 1 < latest.size) pagerState.animateScrollToPage(page + 1)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                toast(e.shortMessage ?: "Không thực hiện được thao tác này")
+                toast("Không gửi được tới YouTube. Hãy thử lại.")
             }
         }
     }
@@ -794,8 +813,11 @@ private fun ShortsPager(
                     commentCount = info?.comments ?: commentCounts[video.id],
                     channel = channel,
                     subscribed = channel != null && ChannelSubscriptions.isSubscribed(account, channel),
-                    onTap = { userPaused = !userPaused },
-                    onRetry = { ShortsPool.slot(video.id)?.let { ShortsPool.retry(it) } },
+                    flashTick = flashTick,
+                    onTap = {
+                        userPaused = !userPaused
+                        flashTick++
+                    },
                     onLike = { like(video) },
                     onComments = { openSheet(ShortPanel.Comments) },
                     onSave = { onSave(video) },
@@ -862,6 +884,10 @@ private fun ShortsPager(
                             closeSheet()
                             ShortsChrome.clean = true
                         },
+                        onDownload = {
+                            closeSheet()
+                            DownloadPanel.open(curVideo, account)
+                        },
                         onNotInterested = { sendFeedback(ShortsFeedback.Kind.NOT_INTERESTED) },
                         onDontRecommend = { sendFeedback(ShortsFeedback.Kind.DONT_RECOMMEND_CHANNEL) },
                         onDismiss = { closeSheet() }
@@ -911,7 +937,7 @@ private fun ShortsHeader(
 ) {
     Box(Modifier.fillMaxWidth().background(Color.Black).statusBarsPadding().height(48.dp)) {
         if (!ShortsChrome.clean) {
-            Row(Modifier.fillMaxSize().padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxSize().sideInsets().padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (onBack != null) TopIcon(IconArrowLeft, onBack)
                 Spacer(Modifier.weight(1f))
                 TopIcon(YtSearch, onSearch)
@@ -920,6 +946,29 @@ private fun ShortsHeader(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun Modifier.sideInsets(): Modifier = windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
+
+@Composable
+private fun ShortSpinner(modifier: Modifier = Modifier) {
+    CircularProgressIndicator(color = Color.White, strokeWidth = 3.dp, modifier = modifier.size(36.dp))
+}
+
+/** Bộ Short chưa tải được (thường do mất mạng): không báo lỗi, tự tải lại sau ít giây hoặc ngay khi có mạng. */
+@Composable
+private fun QuietFeedRetry(feed: PagedFeed<VideoItem>, account: Account?) {
+    val context = LocalContext.current
+    LaunchedEffect(Unit) { Connectivity.start(context) }
+    val tick = Connectivity.tick
+    var seenTick by remember { mutableIntStateOf(tick) }
+    val stuck = feed.items.isEmpty() && feed.error != null && !feed.loading
+    LaunchedEffect(stuck, tick) {
+        if (!stuck) return@LaunchedEffect
+        if (tick == seenTick) delay(FEED_RETRY_MS) else seenTick = tick
+        feed.load(account, force = true)
     }
 }
 
@@ -949,8 +998,8 @@ private fun ShortPage(
     commentCount: String?,
     channel: SearchResult.Channel?,
     subscribed: Boolean,
+    flashTick: Int,
     onTap: () -> Unit,
-    onRetry: () -> Unit,
     onLike: () -> Unit,
     onComments: () -> Unit,
     onSave: () -> Unit,
@@ -999,7 +1048,16 @@ private fun ShortPage(
     }
     val chrome = !clean && scrub == null
 
-    Box(Modifier.fillMaxSize().background(Color.Black).pointerInput(Unit) { detectTapGestures(onTap = { onTap() }) }) {
+    val flash = remember { PlayFlash() }
+    val firstTick = remember { flashTick }
+    LaunchedEffect(flashTick) {
+        if (flashTick != firstTick && current) flash.show(playing = !paused)
+    }
+
+    var boxSize by remember { mutableStateOf(IntSize.Zero) }
+    val zoom = vertical && sheetFraction == 0f && (boxSize.height == 0 || boxSize.width.toFloat() / boxSize.height < MAX_ZOOM_ASPECT)
+
+    Box(Modifier.fillMaxSize().background(Color.Black).onSizeChanged { boxSize = it }.pointerInput(Unit) { detectTapGestures(onTap = { onTap() }) }) {
         // Bảng mô tả đang mở: video thu lại phần trên màn hình (phần còn lại là bảng).
         val videoArea = Modifier.fillMaxWidth().fillMaxHeight(1f - sheetFraction)
         AsyncImage(
@@ -1021,7 +1079,7 @@ private fun ShortPage(
                 },
                 update = {
                     it.player = slot.player
-                    it.resizeMode = if (vertical && sheetFraction == 0f) AspectRatioFrameLayout.RESIZE_MODE_ZOOM else AspectRatioFrameLayout.RESIZE_MODE_FIT
+                    it.resizeMode = if (zoom) AspectRatioFrameLayout.RESIZE_MODE_ZOOM else AspectRatioFrameLayout.RESIZE_MODE_FIT
                 },
                 modifier = videoArea
             )
@@ -1044,32 +1102,13 @@ private fun ShortPage(
                 .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0x99000000))))
         )
 
-        if (detailsReady && sheetFraction == 0f && current && ready && paused) {
-            Icon(Lucide.Play, null, Modifier.align(Alignment.Center).size(64.dp), tint = Color(0xCCFFFFFF))
+        Box(videoArea.align(Alignment.TopCenter), contentAlignment = Alignment.Center) { PlayFlashDisc(flash) }
+        if (sheetFraction == 0f && (error != null || !detailsReady || (current && (!ready || buffering) && !paused && slot != null))) {
+            ShortSpinner(Modifier.align(Alignment.Center))
         }
-        if (sheetFraction == 0f && error == null && (!detailsReady || (current && (!ready || buffering) && !paused && slot != null))) {
-            CircularProgressIndicator(
-                color = Color.White, strokeWidth = 3.dp,
-                modifier = Modifier.align(Alignment.Center).size(36.dp)
-            )
-        }
-        if (error != null) {
-            Column(
-                Modifier.align(Alignment.Center).padding(32.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Text(error, color = Color.White, fontSize = 14.sp, textAlign = TextAlign.Center)
-                Spacer(Modifier.height(16.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    PillButton("Thử lại", Color(0xFFF1F1F1), Color.Black, onClick = onRetry)
-                    PillButton("Mở trên YouTube", Color(0x33FFFFFF), Color.White, onClick = { openLink(context, video.watchUrl) })
-                }
-            }
-        }
-
         // Cột nút bên phải như Shorts của YouTube: tim, bình luận, lưu, chia sẻ (có số khi YouTube trả về).
         if (detailsReady && sheetFraction == 0f && chrome) Column(
-            Modifier.align(Alignment.BottomEnd).then(inset).padding(end = 4.dp, bottom = 14.dp),
+            Modifier.align(Alignment.BottomEnd).then(inset).sideInsets().padding(end = 4.dp, bottom = 14.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             ShortAction(if (liked) YtHeartFilled else YtHeart, likes ?: "Thích", if (liked) LikedRed else Color.White, onLike, likeEffect, LikedRed, "like|${video.id}")
@@ -1080,7 +1119,7 @@ private fun ShortPage(
 
         // Kênh + Đăng ký + tiêu đề ở góc dưới trái.
         if (detailsReady && sheetFraction == 0f && chrome) Column(
-            Modifier.align(Alignment.BottomStart).then(inset).fillMaxWidth(0.80f).padding(start = 14.dp, bottom = 16.dp)
+            Modifier.align(Alignment.BottomStart).then(inset).sideInsets().fillMaxWidth(0.80f).padding(start = 14.dp, bottom = 16.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 ChannelAvatar(
