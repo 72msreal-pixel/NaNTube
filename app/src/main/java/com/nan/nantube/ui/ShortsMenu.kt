@@ -45,6 +45,7 @@ import com.composables.icons.lucide.Check
 import com.composables.icons.lucide.ChevronRight
 import com.composables.icons.lucide.Lucide
 import com.composables.icons.lucide.Settings
+import com.nan.nantube.data.AudioChoice
 import com.nan.nantube.data.CaptionTrack
 import com.nan.nantube.data.ShortsCaptions
 
@@ -96,6 +97,9 @@ private val CaptionsIcon: ImageVector by lazy {
 private val TranscriptIcon: ImageVector by lazy {
     lucide("ShortsTranscript", "M3 6h.01", "M3 12h.01", "M3 18h.01", "M8 6h13", "M8 12h13", "M8 18h13")
 }
+private val AudioTrackIcon: ImageVector by lazy {
+    lucide("ShortsAudioTrack", "M2 10v3", "M6 6v11", "M10 3v18", "M14 8v7", "M18 5v13", "M22 10v3")
+}
 private val SpeedIcon: ImageVector by lazy { lucide("ShortsSpeed", "m12 14 4-4", "M3.34 19a10 10 0 1 1 17.32 0") }
 private val AutoScrollIcon: ImageVector by lazy { lucide("ShortsAutoScroll", "m7 6 5 5 5-5", "m7 13 5 5 5-5") }
 private val NotInterestedIcon: ImageVector by lazy { lucide("ShortsNotInterested", "M2 12a10 10 0 1 0 20 0a10 10 0 1 0-20 0z", "M4.9 4.9l14.2 14.2") }
@@ -105,6 +109,7 @@ private enum class MenuPage(val title: String) {
     Main(""),
     Quality("Chất lượng"),
     Captions("Phụ đề"),
+    Audio("Bản âm thanh"),
     Speed("Tốc độ phát")
 }
 
@@ -136,6 +141,8 @@ fun ColumnScope.ShortsMenuContent(
     tracks: List<CaptionTrack>,
     qualities: List<Int>,
     playingQuality: Int?,
+    audios: List<AudioChoice>,
+    playingAudio: String?,
     onDescription: () -> Unit,
     onTranscript: () -> Unit,
     onClean: () -> Unit,
@@ -148,9 +155,14 @@ fun ColumnScope.ShortsMenuContent(
 
     val auto = "Tự động" + (playingQuality?.let { " (${it}p)" } ?: "")
     val selectedTrack = ShortsCaptions.pick(tracks, ShortsChrome.captionKey)
+    // Dòng có dấu tích: bản đang phát; chưa nạp xong thì bản người dùng chọn, không có thì bản gốc (đứng đầu).
+    val selectedAudio = audios.firstOrNull { it.key == playingAudio }
+        ?: audios.firstOrNull { it.key == ShortsPool.audioKey }
+        ?: audios.firstOrNull()
 
     val entries = listOf(
         MenuEntry(DescriptionIcon, "Thông tin mô tả", onClick = onDescription),
+        MenuEntry(AudioTrackIcon, "Bản âm thanh", selectedAudio?.label ?: "Mặc định", true) { page = MenuPage.Audio },
         MenuEntry(TranscriptIcon, "Bản ghi", onClick = onTranscript),
         MenuEntry(CleanScreenIcon, "Làm sạch màn hình", onClick = onClean),
         MenuEntry(CaptionsIcon, "Phụ đề", selectedTrack?.label ?: "Tắt", true) { page = MenuPage.Captions },
@@ -178,6 +190,11 @@ fun ColumnScope.ShortsMenuContent(
             choices = listOf(Choice("Tắt", selectedTrack == null) { ShortsChrome.captionKey = null; onDismiss() }) +
                 tracks.map { track -> Choice(track.label, selectedTrack?.key == track.key) { ShortsChrome.captionKey = track.key; onDismiss() } },
             note = if (tracks.isEmpty()) "Video này không có phụ đề." else null
+        )
+        MenuPage.Audio -> SubPage(
+            // Chọn bản gốc = quay về mặc định của từng video (không ép ngôn ngữ cho các Short sau).
+            choices = audios.mapIndexed { i, a -> Choice(a.label, selectedAudio?.key == a.key) { ShortsPool.selectAudio(if (i == 0) null else a.key); onDismiss() } },
+            note = if (audios.size < 2) "Video này chỉ có một bản âm thanh." else null
         )
         MenuPage.Speed -> SubPage(SPEEDS.map { speed -> Choice(speedLabel(speed), ShortsPool.speed == speed) { ShortsPool.selectSpeed(speed); onDismiss() } })
     }

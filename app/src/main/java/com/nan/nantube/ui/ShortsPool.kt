@@ -17,6 +17,7 @@ import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
 import androidx.media3.exoplayer.ExoPlayer
 import com.nan.nantube.data.Account
+import com.nan.nantube.data.NanStorage
 import com.nan.nantube.data.ShortsMedia
 import com.nan.nantube.data.ShortsPlayback
 import com.nan.nantube.data.VideoItem
@@ -31,6 +32,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import org.json.JSONObject
 
 /**
  * Một ô phát: một ExoPlayer đã / đang nạp đúng một Short, đứng sẵn ở khung hình đầu (tạm dừng) để vuốt tới là hiện ngay.
@@ -96,7 +98,11 @@ object ShortsPool {
     var speed by mutableFloatStateOf(1f)
         private set
 
-    /** Bật thì hết video là tự vuốt sang Short kế (ô không lặp lại); tắt thì lặp lại như YouTube. */
+    /** Bản âm thanh người dùng chọn ([com.nan.nantube.data.AudioChoice.key]); null = bản gốc của từng video. Video nào không có bản đó thì dùng bản gốc. */
+    var audioKey by mutableStateOf<String?>(null)
+        private set
+
+    /** Bật thì hết video là tự vuốt sang Short kế (ô không lặp lại); tắt thì lặp lại như YouTube. Lưu trong tệp NaNTube/guest/shorts_settings.json. */
     var autoScroll by mutableStateOf(false)
         private set
 
@@ -111,6 +117,76 @@ object ShortsPool {
     fun selectAutoScroll(on: Boolean) {
         autoScroll = on
         applyRepeat()
+        saveSettings()
+    }
+
+    // ---- Cài đặt lưu vào tệp -----------------------------------------------------------------------
+
+    private const val SETTINGS = "shorts_settings"
+    private const val KEY_AUTO_SCROLL = "autoScroll"
+    private var settingsHooked = false
+    private var settingsOwner: String? = null
+
+    /**
+     * Cài đặt Short của từng tài khoản: NaNTube/accounts/<id tài khoản>/shorts_settings.json, chưa đăng nhập thì NaNTube/guest/shorts_settings.json
+     * (cấu trúc chung của [NanStorage]). Đổi tài khoản thì nạp lại theo tài khoản mới; chưa có tệp thì về mặc định (tắt).
+     */
+    private fun loadSettings(owner: Account?) {
+        val ownerId = owner?.id.orEmpty()
+        scope.launch {
+            val json = withContext(Dispatchers.IO) { NanStorage.readJson(SETTINGS, owner) as? JSONObject }
+            // Trong lúc đọc mà đã đổi sang tài khoản khác thì bỏ kết quả này.
+            if (settingsOwner != ownerId) return@launch
+            autoScroll = json?.optBoolean(KEY_AUTO_SCROLL, false) ?: false
+            applyRepeat()
+        }
+    }
+
+    private fun saveSettings() {
+        val owner = account
+        val json = JSONObject().put(KEY_AUTO_SCROLL, autoScroll)
+        scope.launch(Dispatchers.IO) { NanStorage.writeJson(SETTINGS, owner, json) }
+    }
+
+    fun selectAudio(key: String?) {
+        audioKey = key
+        for (slot in slots.values) applyAudio(slot)
+    }
+
+    private val AUDIO_REP = Regex("aud(\\d+)_")
+
+    /** Số thứ tự bản âm thanh của một nhóm track (đọc từ id biểu diễn trong bản kê DASH, xem ShortsMedia.mpd). */
+    private fun audioIndex(format: androidx.media3.common.Format): Int? =
+        format.id?.let { AUDIO_REP.find(it)?.groupValues?.get(1)?.toIntOrNull() }
+
+    /** Khóa bản âm thanh đang phát ở ô [id] (null nếu chưa nạp xong hoặc video chỉ có một bản). */
+    fun playingAudio(id: String): String? {
+        val slot = slots[id] ?: return null
+        val choices = com.nan.nantube.data.ShortsPlayback.audioChoices(id)
+        val group = slot.player.currentTracks.groups.firstOrNull { it.type == C.TRACK_TYPE_AUDIO && it.length > 0 && it.isSelected } ?: return null
+        val index = audioIndex(group.getTrackFormat(0)) ?: return null
+        return choices.firstOrNull { it.index == index }?.key
+    }
+
+    /**
+     * Ép ExoPlayer của ô vào đúng bản âm thanh: bản người dùng chọn nếu video có, không thì bản gốc (mặc định của video), kể cả khi
+     * máy đặt ngôn ngữ khác và YouTube có bản lồng tiếng sang ngôn ngữ đó. Video chỉ có một bản thì để ExoPlayer tự chọn.
+     */
+    private fun applyAudio(slot: ShortSlot) {
+        if (slot.released) return
+        val player = slot.player
+        val groups = player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO && it.length > 0 }
+        if (groups.size < 2) return
+        val choices = com.nan.nantube.data.ShortsPlayback.audioChoices(slot.video.id)
+        if (choices.isEmpty()) return
+        val want = audioKey?.let { key -> choices.firstOrNull { it.key == key } } ?: choices.first()
+        val group = groups.firstOrNull { audioIndex(it.getTrackFormat(0)) == want.index } ?: return
+        val params = player.trackSelectionParameters
+        // Đã ép đúng rồi thì thôi, tránh vòng lặp onTracksChanged → đặt lại → onTracksChanged.
+        if (params.overrides[group.mediaTrackGroup]?.trackIndices == listOf(0)) return
+        player.trackSelectionParameters = params.buildUpon()
+            .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, 0))
+            .build()
     }
 
     fun hold(on: Boolean) {
@@ -175,6 +251,17 @@ object ShortsPool {
     fun bind(context: Context, account: Account?) {
         app = context.applicationContext
         this.account = account
+        val owner = account?.id.orEmpty()
+        if (settingsOwner != owner) {
+            settingsOwner = owner
+            NanStorage.init(context)
+            loadSettings(account)
+        }
+        if (!settingsHooked) {
+            settingsHooked = true
+            // Cấp quyền tệp xong thì đọc lại: tệp cũ của lần cài trước có thể đã nằm sẵn ở thư mục NaNTube.
+            NanStorage.addReloadListener { scope.launch { loadSettings(this@ShortsPool.account) } }
+        }
     }
 
     fun slot(id: String): ShortSlot? {
@@ -320,6 +407,7 @@ object ShortsPool {
 
             override fun onTracksChanged(tracks: Tracks) {
                 applyQuality(slot)
+                applyAudio(slot)
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {

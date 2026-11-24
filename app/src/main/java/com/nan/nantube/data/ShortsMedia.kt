@@ -162,14 +162,27 @@ object ShortsMedia {
             append("</Representation>\n")
         }
         append("</AdaptationSet>\n")
-        append("<AdaptationSet id=\"1\" mimeType=\"${esc(audio.mime)}\" subsegmentAlignment=\"true\">\n")
-        append("<Role schemeIdUri=\"urn:mpeg:DASH:role:2011\" value=\"main\"/>\n")
-        append("<Representation id=\"${audio.itag}\" codecs=\"${esc(audio.codecs)}\" startWithSAP=\"1\" bandwidth=\"${audio.bitrate}\" ")
-        append("audioSamplingRate=\"${audio.sampleRate ?: "44100"}\">\n")
-        append("<AudioChannelConfiguration schemeIdUri=\"urn:mpeg:dash:23003:3:audio_channel_configuration:2011\" value=\"2\"/>\n")
-        representationBody(audio)
-        append("</Representation>\n")
-        append("</AdaptationSet>\n")
+        // Mỗi bản âm thanh một AdaptationSet (lang + label + Role như YouTubeMPDBuilder: chỉ bản gốc mang "main"), id biểu diễn
+        // "aud<số thứ tự>_<itag>" để ShortsPool biết nhóm nào là bản nào khi đổi bản âm thanh.
+        plan.audios.ifEmpty { listOf(audio) }.forEachIndexed { index, a ->
+            val role = when (a.acont) {
+                null, "original" -> "main"
+                "descriptive" -> "description"
+                "secondary" -> "alternate"
+                else -> "dub"
+            }
+            val lang = a.lang?.replace('_', '-')?.replace('\u2010', '-')?.replace('\u2011', '-')
+            append("<AdaptationSet id=\"${index + 1}\" mimeType=\"${esc(a.mime)}\"")
+            if (lang != null) append(" lang=\"${esc(lang)}\"")
+            append(" label=\"${esc(ShortsPlayback.audioLabel(a))}\" subsegmentAlignment=\"true\">\n")
+            append("<Role schemeIdUri=\"urn:mpeg:DASH:role:2011\" value=\"$role\"/>\n")
+            append("<Representation id=\"aud${index}_${a.itag}\" codecs=\"${esc(a.codecs)}\" startWithSAP=\"1\" bandwidth=\"${a.bitrate}\" ")
+            append("audioSamplingRate=\"${a.sampleRate ?: "44100"}\">\n")
+            append("<AudioChannelConfiguration schemeIdUri=\"urn:mpeg:dash:23003:3:audio_channel_configuration:2011\" value=\"2\"/>\n")
+            representationBody(a)
+            append("</Representation>\n")
+            append("</AdaptationSet>\n")
+        }
         append("</Period>\n</MPD>\n")
     }
 

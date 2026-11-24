@@ -435,9 +435,9 @@ private fun ShortsPager(
         }
     }
 
-    // Đổi Short / rời tab thì đóng bảng ngay.
+    // Đổi Short / rời tab thì đóng bảng ngay; riêng menu ba chấm giữ nguyên khi tự vuốt sang Short kế (nội dung menu đổi theo video mới).
     LaunchedEffect(page, active) {
-        if (panel != null) {
+        if (panel != null && (panel != ShortPanel.Menu || !active)) {
             sheet.snapTo(0f)
             panel = null
         }
@@ -717,8 +717,8 @@ private fun ShortsPager(
         androidx.compose.runtime.derivedStateOf { if (cues.isEmpty()) null else ShortsCaptions.textAt(cues, positionMs) }
     }
 
-    // Tự vuốt: bật ở menu thì hết video là sang Short kế, trừ lúc đang đọc mô tả / menu / bản ghi / bình luận.
-    val reading = panel != null
+    // Tự vuốt: bật ở menu thì hết video là sang Short kế, trừ lúc đang đọc mô tả / bản ghi / bình luận. Menu ba chấm không chặn: video hết là đổi thẳng sang Short kế, menu còn mở.
+    val reading = panel != null && panel != ShortPanel.Menu
     LaunchedEffect(reading) { ShortsPool.hold(reading) }
     DisposableEffect(Unit) { onDispose { ShortsPool.hold(false) } }
     val finished = ShortsPool.autoScroll && !reading && curSlot?.ended == true
@@ -854,6 +854,8 @@ private fun ShortsPager(
                         tracks = curMeta?.captionTracks.orEmpty(),
                         qualities = ShortsPlayback.qualities(curVideo.id),
                         playingQuality = ShortsPool.playingQuality(curVideo.id),
+                        audios = ShortsPlayback.audioChoices(curVideo.id),
+                        playingAudio = ShortsPool.playingAudio(curVideo.id),
                         onDescription = { openSheet(ShortPanel.Description) },
                         onTranscript = { openSheet(ShortPanel.Transcript) },
                         onClean = {

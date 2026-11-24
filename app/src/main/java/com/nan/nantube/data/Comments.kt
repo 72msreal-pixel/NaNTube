@@ -79,7 +79,8 @@ object CommentsRepository {
             val total = ytText(findKey(read.root, "commentsEntryPointHeaderRenderer")?.opt("commentCount"))
                 ?: ytText(findKey(read.root, "engagementPanelTitleHeaderRenderer")?.opt("contextualInfo"))
             // Danh sách Nổi bật / Mới nhất nằm ở tiêu đề bảng bình luận của phản hồi đầu, không có trong trang bình luận.
-            return page.copy(total = page.total ?: total, sorts = page.sorts.ifEmpty { sorts(read.root) })
+            // Như MeeTube: token Top / Newest lấy từ bảng bình luận của phản hồi /next, trang bình luận chỉ là phương án dự phòng.
+            return page.copy(total = page.total ?: total, sorts = sorts(read.root).ifEmpty { page.sorts })
         }
         if (account?.kind == LoginKind.CODE) {
             // Như MeeTube: lấy continuation và hành động trong cùng ngữ cảnh TV khi đăng nhập bằng mã.
@@ -438,9 +439,10 @@ object CommentsRepository {
         val menu = findKey(root, "sortFilterSubMenuRenderer")?.optJSONArray("subMenuItems") ?: return emptyList()
         return (0 until menu.length()).mapNotNull { i ->
             val m = menu.optJSONObject(i) ?: return@mapNotNull null
-            val token = continuationToken(m) ?: return@mapNotNull null
+            // MeeTube đọc continuation của chính mục menu (next / radio / reload) trước khi tìm lệnh khác.
+            val token = continuationToken(m.optJSONObject("continuation")) ?: continuationToken(m) ?: return@mapNotNull null
             val label = ytText(m.opt("title")) ?: return@mapNotNull null
-            CommentSort(label, token, m.optBoolean("selected"))
+            CommentSort(label, token, i == 0)
         }
     }
 

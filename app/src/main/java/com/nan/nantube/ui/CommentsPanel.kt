@@ -135,12 +135,17 @@ class CommentsSession {
     var fromTv = false
     var total by mutableStateOf<String?>(null)
     var sorts by mutableStateOf<List<CommentSort>>(emptyList())
+    var sortIndex = 0
+    val feeds = HashMap<Int, SortFeed>()
     var disabled by mutableStateOf(false)
     var loaded = false
     var loadedAt = 0L
     var scrollIndex = 0
     var scrollOffset = 0
 }
+
+/** Bình luận đã tải của một kiểu sắp xếp (như MeeTube giữ riêng Top / Newest): đổi qua lại không phải tải lại. */
+class SortFeed(val nodes: List<CommentNode>, val token: String?, val scrollIndex: Int, val scrollOffset: Int)
 
 object CommentsCache {
     private val map = object : LinkedHashMap<String, CommentsSession>(16, 0.75f, true) {
@@ -205,6 +210,7 @@ fun CommentsContent(video: VideoItem, account: Account?, imeOverlapPx: Int = 0, 
     var token by remember(session) { mutableStateOf(session.token) }
     var total by remember(session) { mutableStateOf(session.total) }
     var sorts by remember(session) { mutableStateOf(session.sorts) }
+    var sortIndex by remember(session) { mutableStateOf(session.sortIndex) }
     var sortOpen by remember { mutableStateOf(false) }
     var loading by remember(session) { mutableStateOf(!session.loaded) }
     var loadingMore by remember { mutableStateOf(false) }
@@ -243,7 +249,7 @@ fun CommentsContent(video: VideoItem, account: Account?, imeOverlapPx: Int = 0, 
 
     fun toast(message: String) = Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
 
-    fun load(sortToken: String? = null) {
+    fun load(sortToken: String? = null, fallbackIndex: Int = sortIndex) {
         loading = true
         error = null
         scope.launch {
@@ -253,24 +259,60 @@ fun CommentsContent(video: VideoItem, account: Account?, imeOverlapPx: Int = 0, 
                 nodes.addAll(topNodes(page.items))
                 token = page.token
                 total = page.total ?: total
-                if (page.sorts.isNotEmpty()) sorts = page.sorts
+                // Danh sách kiểu sắp xếp chỉ lấy một lần từ lượt tải đầu; trang của từng kiểu không có danh sách đáng tin.
+                if (sortToken == null && page.sorts.isNotEmpty()) sorts = page.sorts
+                if (sortToken != null) listState.scrollToItem(0)
                 if (page.items.isEmpty()) error = "Chưa có bình luận nào."
                 session.token = token
                 session.fromTv = page.fromTv
                 session.total = total
                 session.sorts = sorts
+                session.sortIndex = sortIndex
                 session.loaded = true
                 session.loadedAt = System.currentTimeMillis()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                disabled = nodes.isEmpty()
-                session.disabled = disabled
-                error = e.shortMessage ?: "Không tải được bình luận."
+                if (sortToken != null) {
+                    // Không tải được kiểu mới: quay về kiểu cũ cùng danh sách đang có.
+                    sortIndex = fallbackIndex
+                    session.sortIndex = fallbackIndex
+                    session.feeds[fallbackIndex]?.let { f ->
+                        nodes.clear()
+                        nodes.addAll(f.nodes)
+                        token = f.token
+                        session.token = f.token
+                    }
+                    toast(e.shortMessage ?: "Không tải được bình luận.")
+                } else {
+                    disabled = nodes.isEmpty()
+                    session.disabled = disabled
+                    error = e.shortMessage ?: "Không tải được bình luận."
+                }
             } finally {
                 loading = false
             }
         }
+    }
+
+    fun pickSort(index: Int) {
+        val target = sorts.getOrNull(index) ?: return
+        if (index == sortIndex || loading) return
+        val from = sortIndex
+        session.feeds[from] = SortFeed(nodes.toList(), token, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset)
+        sortIndex = index
+        session.sortIndex = index
+        val kept = session.feeds[index]
+        if (kept == null) {
+            load(target.token, from)
+            return
+        }
+        nodes.clear()
+        nodes.addAll(kept.nodes)
+        token = kept.token
+        session.token = kept.token
+        error = null
+        scope.launch { listState.scrollToItem(kept.scrollIndex, kept.scrollOffset) }
     }
     LaunchedEffect(session) { if (!session.loaded) load() }
 
@@ -502,19 +544,18 @@ fun CommentsContent(video: VideoItem, account: Account?, imeOverlapPx: Int = 0, 
             Text("Bình luận", fontSize = 18.sp, fontWeight = FontWeight.Bold)
             total?.let { Text(it, fontSize = 14.sp, color = NanColors.TextSecondary, modifier = Modifier.padding(start = 10.dp)) }
             Spacer(Modifier.weight(1f))
-            if (sorts.isNotEmpty()) Box {
+            Box {
                 CommentIcon(YtSliders, 44.dp, 22.dp) { sortOpen = true }
                 DropdownMenu(
                     expanded = sortOpen, onDismissRequest = { sortOpen = false },
-                    shape = RoundedCornerShape(20.dp), containerColor = NanColors.Surface, tonalElevation = 0.dp
+                    shape = RoundedCornerShape(16.dp), containerColor = NanColors.Surface, tonalElevation = 0.dp
                 ) {
-                    // YouTube trả thứ tự: Nổi bật nhất rồi Mới nhất (theo MeeTube: Top / Newest kèm mô tả).
-                    sorts.forEachIndexed { i, s ->
-                        val newest = i == 1
-                        SortItem(if (newest) "Mới nhất" else "Nổi bật nhất",
-                            if (newest) "Có thể gồm bình luận rác" else "Được thích nhiều nhất lên đầu", s.selected) {
+                    // Như MeeTube: mục 0 = Nổi bật nhất (Top), mục 1 = Mới nhất (Newest). Chưa tải xong thì hiện sẵn nhưng chưa bấm được.
+                    for (i in 0..1) {
+                        SortItem(if (i == 1) "Mới nhất" else "Nổi bật nhất",
+                            if (i == 1) "Có thể gồm bình luận rác" else "Được thích nhiều nhất lên đầu", i == sortIndex) {
                             sortOpen = false
-                            if (!s.selected) load(s.token)
+                            pickSort(i)
                         }
                     }
                 }
@@ -747,14 +788,14 @@ private fun CommentRow(
 @Composable
 private fun SortItem(title: String, hint: String, selected: Boolean, onClick: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().widthIn(min = 240.dp).plainClickable(onClick).padding(horizontal = 20.dp, vertical = 12.dp),
+        Modifier.fillMaxWidth().widthIn(min = 190.dp).plainClickable(onClick).padding(horizontal = 16.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(Modifier.weight(1f)) {
-            Text(title, fontSize = 16.sp, color = Color.White, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal)
-            Text(hint, fontSize = 12.sp, color = NanColors.TextSecondary, modifier = Modifier.padding(top = 2.dp))
+            Text(title, fontSize = 14.sp, color = Color.White, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal)
+            Text(hint, fontSize = 11.sp, color = NanColors.TextSecondary, modifier = Modifier)
         }
-        Box(Modifier.padding(start = 16.dp).size(20.dp)) {
+        Box(Modifier.padding(start = 12.dp).size(16.dp)) {
             if (selected) Icon(Lucide.Check, null, Modifier.fillMaxSize(), tint = Color.White)
         }
     }

@@ -58,6 +58,11 @@ private const val SHORTS_OUTLINE_PATH =
 /** Nhà đặc (tab Main đang chọn), giống app YouTube. */
 val HouseFilled: ImageVector by lazy { filledIcon("HouseFilled", "M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z") }
 
+/** Nhà thường/viền (tab Main chưa chọn): cùng bộ với [HouseFilled] (cùng mái, cùng cửa), chỉ khác đặc / rỗng. */
+val HouseOutline: ImageVector by lazy {
+    filledIcon("HouseOutline", "M12 5.69l5 4.5V18h-2v-6H9v6H7v-7.81l5-4.5M12 3L2 12h3v8h6v-6h2v6h6v-8h3L12 3z")
+}
+
 /** Logo Shorts đặc (đang chọn). */
 val ShortsFilled: ImageVector by lazy { filledIcon("ShortsFilled", SHORTS_PATH) }
 

@@ -47,7 +47,7 @@ private enum class Tab(val label: String) {
     Main("Main"), Shorts("Short"), Music("Music"), Search("Search"), Info("Info");
 
     fun icon(selected: Boolean): ImageVector = when (this) {
-        Main -> if (selected) HouseFilled else LucideHouse
+        Main -> if (selected) HouseFilled else HouseOutline
         Shorts -> if (selected) ShortsFilled else ShortsOutline
         Music -> Lucide.Music
         Search -> Lucide.Search

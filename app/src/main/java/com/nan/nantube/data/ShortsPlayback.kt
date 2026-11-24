@@ -2,6 +2,7 @@ package com.nan.nantube.data
 
 import android.content.Context
 import android.net.Uri
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -87,9 +88,25 @@ class MediaStream(
     val initRange: String?,
     val indexRange: String?,
     val itag: Int,
-    val sampleRate: String?
+    val sampleRate: String?,
+    /** Âm thanh nhiều ngôn ngữ (đọc từ xtags của link như MediaServiceCore): mã ngôn ngữ, loại (original / dubbed / dubbed-auto / descriptive / secondary). */
+    val lang: String? = null,
+    val acont: String? = null,
+    /** Tên bản âm thanh YouTube ghi trong audioTrack.displayName (dự phòng khi link không có xtags). */
+    val trackName: String? = null,
+    val defaultTrack: Boolean = false,
+    /** Biến thể "âm lượng ổn định" (DRC): bộ chọn bản âm thanh bỏ qua nếu có bản thường. */
+    val drc: Boolean = false
 ) {
     val isVideo get() = mime.startsWith("video/")
+
+    /** Một bản âm thanh = một cặp ngôn ngữ + loại, không tách theo codec hay bitrate. */
+    val variantKey get() = "${lang.orEmpty()}|${acont.orEmpty()}"
+
+    private val isOriginal get() = acont == "original" || (acont == null && defaultTrack)
+
+    /** Bản gốc xếp trước: đó là bản dùng mặc định. */
+    internal val originalRank get() = if (isOriginal) 0 else 1
     val shortSide get() = minOf(width, height)
 
     /** Đủ thông tin để dựng DASH SegmentBase (init + sidx). */
@@ -107,8 +124,13 @@ class PlayPlan(
     val audio: MediaStream?,
     val muxed: MediaStream?,
     val durationSec: Int,
+    /** Mỗi bản âm thanh (ngôn ngữ + loại) một luồng tốt nhất, bản gốc đứng đầu; [audio] chính là phần tử đầu. */
+    val audios: List<MediaStream> = emptyList(),
     val createdAt: Long = System.currentTimeMillis()
 )
+
+/** Một dòng trong "Bản âm thanh": [index] là vị trí trong [PlayPlan.audios] (cũng là số thứ tự bộ AdaptationSet trong bản kê DASH). */
+class AudioChoice(val key: String, val label: String, val index: Int)
 
 /**
  * Phát Shorts theo cách của meetube (PhoneSourcePlanner + Media3SourceFactory): lấy link trực tiếp theo thứ tự
@@ -144,6 +166,33 @@ object ShortsPlayback {
     /** Các mức chất lượng (cạnh ngắn, vd 720, 480) của kế hoạch phát đang nhớ, cao xuống thấp; rỗng nếu chưa có / chỉ phát tệp muxed. */
     fun qualities(videoId: String): List<Int> =
         resolved[videoId]?.videos?.map { it.shortSide }?.distinct()?.sortedDescending().orEmpty()
+
+    /** Các bản âm thanh của kế hoạch phát đang nhớ (bản gốc đứng đầu); rỗng nếu chưa có / chỉ phát tệp muxed. */
+    fun audioChoices(videoId: String): List<AudioChoice> {
+        val plan = resolved[videoId] ?: return emptyList()
+        if (plan.videos.isEmpty()) return emptyList()
+        return plan.audios.mapIndexed { i, a -> AudioChoice(a.variantKey, audioLabel(a), i) }
+    }
+
+    private val VI = Locale("vi")
+
+    /** Tên bản âm thanh như YouTube: "Tiếng Anh (Hoa Kỳ, gốc)", "Tiếng Việt (lồng tiếng tự động)". */
+    fun audioLabel(a: MediaStream): String {
+        val tag = a.lang?.replace('_', '-')?.replace('\u2010', '-')?.replace('\u2011', '-')
+        val named = tag?.let { Locale.forLanguageTag(it).getDisplayName(VI) }
+            ?.takeIf { it.isNotBlank() && !it.equals(tag, ignoreCase = true) }
+            ?.replaceFirstChar { it.uppercase(VI) }
+        val name = named ?: tag ?: a.trackName ?: "Mặc định"
+        val role = when (a.acont) {
+            "original" -> "gốc"
+            "dubbed" -> "lồng tiếng"
+            "dubbed-auto" -> "lồng tiếng tự động"
+            "descriptive" -> "mô tả âm thanh"
+            "secondary" -> "phụ"
+            else -> null
+        } ?: return name
+        return if (name.endsWith(")")) name.dropLast(1) + ", $role)" else "$name ($role)"
+    }
 
     /** Kế hoạch phát của [video]; [exclude] là các client vừa bị từ chối (xếp cuối). */
     fun plan(context: Context, account: Account?, video: VideoItem, exclude: Set<String> = emptySet()): Deferred<PlayPlan> {
@@ -248,7 +297,12 @@ object ShortsPlayback {
             .sortedBy { it.shortSide }
             .takeLast(MAX_VIDEO_REPS)
         val audioPool = adaptive.filter { !it.isVideo && it.dashable }
-        val audio = (audioPool.filter { it.mime == "audio/mp4" }.ifEmpty { audioPool }).maxByOrNull { it.bitrate }
+        val audioPicked = audioPool.filter { it.mime == "audio/mp4" }.ifEmpty { audioPool }
+        // Như MeeTube (AudioTrackChoices): mỗi ngôn ngữ một bản, lấy luồng bitrate cao nhất và ưu tiên bản không DRC; bản gốc đứng đầu để làm mặc định.
+        val audios = audioPicked.groupBy { it.variantKey }
+            .map { (_, group) -> group.filter { !it.drc }.ifEmpty { group }.maxByOrNull { it.bitrate }!! }
+            .sortedWith(compareBy<MediaStream> { it.originalRank }.thenBy { audioLabel(it) })
+        val audio = audios.firstOrNull()
 
         val muxed = streams(data.optJSONArray("formats"))
             .filter { it.mime == "video/mp4" }
@@ -259,7 +313,7 @@ object ShortsPlayback {
         val duration = details?.optString("lengthSeconds")?.toIntOrNull()
             ?: (adaptive.firstOrNull()?.let { approxSeconds(data, it.itag) })
             ?: 60
-        return PlayPlan(videoId, source, if (dash) videos else emptyList(), if (dash) audio else null, muxed, duration)
+        return PlayPlan(videoId, source, if (dash) videos else emptyList(), if (dash) audio else null, muxed, duration, if (dash) audios else emptyList())
     }
 
     private fun approxSeconds(data: JSONObject, itag: Int): Int? {
@@ -283,12 +337,26 @@ object ShortsPlayback {
             val mime = type.substringBefore(';').trim()
             val codecs = type.substringAfter("codecs=\"", "").substringBefore('"')
             val size = f.optString("contentLength").toLongOrNull() ?: uri.getQueryParameter("clen")?.toLongOrNull() ?: 0L
+            // xtags dạng "acont=dubbed:lang=ar" (như VideoUrlHolder.getLanguage của MediaServiceCore); audioTrack chỉ là dự phòng.
+            val tags = uri.getQueryParameter("xtags")?.split(':')?.mapNotNull { part ->
+                part.indexOf('=').takeIf { it > 0 }?.let { part.substring(0, it) to part.substring(it + 1) }
+            }?.toMap().orEmpty()
+            val track = f.optJSONObject("audioTrack")
+            val trackDefault = track?.optBoolean("audioIsDefault") == true
+            val lang = tags["lang"] ?: track?.optString("id")?.substringBefore('.')?.ifBlank { null }
+            val acont = tags["acont"] ?: when {
+                track?.optBoolean("isAutoDubbed") == true -> "dubbed-auto"
+                trackDefault -> "original"
+                else -> null
+            }
             MediaStream(
                 url = url, mime = mime, codecs = codecs,
                 bitrate = f.optInt("bitrate"), width = f.optInt("width"), height = f.optInt("height"), fps = f.optInt("fps", 30),
                 size = size,
                 initRange = range(f.optJSONObject("initRange")), indexRange = range(f.optJSONObject("indexRange")),
-                itag = f.optInt("itag"), sampleRate = f.optString("audioSampleRate").ifBlank { null }
+                itag = f.optInt("itag"), sampleRate = f.optString("audioSampleRate").ifBlank { null },
+                lang = lang, acont = acont, trackName = track?.optString("displayName")?.ifBlank { null },
+                defaultTrack = trackDefault || acont == "original", drc = f.optBoolean("isDrc")
             )
         }
     }
