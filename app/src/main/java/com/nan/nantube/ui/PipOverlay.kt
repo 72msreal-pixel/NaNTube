@@ -17,6 +17,7 @@ import android.view.ContextThemeWrapper
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.MotionEvent
+import android.view.ScaleGestureDetector
 import android.view.VelocityTracker
 import android.view.View
 import android.view.ViewConfiguration
@@ -32,7 +33,9 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -67,6 +70,8 @@ import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import coil.compose.AsyncImage
+import com.composables.icons.lucide.Lucide
+import com.composables.icons.lucide.Settings
 import com.nan.nantube.MainActivity
 import com.nan.nantube.R
 import com.nan.nantube.data.PipPrefs
@@ -137,8 +142,18 @@ class PipOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner, Vi
     private val dm = DisplayMetrics()
 
     private val density get() = resources.displayMetrics.density
-    private val winW get() = ((if (vertical) 132f else 200f) * density).roundToInt()
-    private val winH get() = ((if (vertical) 132f * 16f / 9f else 200f * 9f / 16f) * density).roundToInt()
+    private var sizeScale = lastScale
+    private var resizeAnim: android.animation.ValueAnimator? = null
+    private val baseW get() = (if (vertical) 132f else 200f) * density
+    private val baseH get() = (if (vertical) 132f * 16f / 9f else 200f * 9f / 16f) * density
+    private val winW get() = (baseW * sizeScale).roundToInt()
+    private val winH get() = (baseH * sizeScale).roundToInt()
+
+    /** Lớn nhất: chừa lề hai bên và không cao quá 70% màn hình. */
+    private fun maxScale(): Float {
+        val m = realMetrics()
+        return min(MAX_SCALE, min((m.widthPixels - 2 * margin) / baseW, m.heightPixels * 0.7f / baseH)).coerceAtLeast(MIN_SCALE)
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -214,8 +229,14 @@ class PipOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner, Vi
             override fun moveTo(x: Int, y: Int) = place(x, y)
             override fun onGrab() {
                 settle?.cancel()
+                resizeAnim?.cancel()
             }
             override fun onRelease(vx: Float, vy: Float) = release(vx, vy)
+            override fun onScale(factor: Float) {
+                resizeAnim?.cancel()
+                setScale(sizeScale * factor)
+            }
+            override fun onScaleEnd() = settleAfterResize()
         }
         val view = OverlayRoot(themed, host)
         val compose = ComposeView(themed).apply {
@@ -224,6 +245,8 @@ class PipOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner, Vi
                     OverlayContent(
                         onClose = { closeShrink() },
                         onExpand = { expand() },
+                        onSettings = { openSettings() },
+                        onResize = { toggleSize() },
                         onGone = { shutdown() },
                         onShape = { v -> reshape(v) }
                     )
@@ -284,10 +307,76 @@ class PipOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner, Vi
         view.alpha = 1f - 0.85f * min(1f, over.toFloat() / winW)
     }
 
+    /** Đổi cỡ cửa sổ quanh tâm hiện tại (chụm hai ngón / nút đổi cỡ). */
+    private fun setScale(target: Float) {
+        val view = root ?: return
+        val lp = params ?: return
+        val s = target.coerceIn(MIN_SCALE, maxScale())
+        if (abs(s - sizeScale) < 1e-4f) return
+        val cx = lp.x + lp.width / 2f
+        val cy = lp.y + lp.height / 2f
+        sizeScale = s
+        lastScale = s
+        lp.width = winW
+        lp.height = winH
+        place((cx - winW / 2f).roundToInt(), (cy - winH / 2f).roundToInt())
+        runCatching { wm.updateViewLayout(view, lp) }
+    }
+
+    /** Chụm xong / đổi cỡ xong: kéo cửa sổ vào lại trong màn hình rồi hít về góc gần nhất. */
+    private fun settleAfterResize() {
+        val lp = params ?: return
+        val m = realMetrics()
+        place(lp.x.coerceIn(0, max(0, m.widthPixels - winW)), lp.y)
+        release(0f, 0f)
+    }
+
+    /** Chạm đúp / nút đổi cỡ: đang nhỏ thì phóng to, đang lớn thì về cỡ gốc. */
+    private fun toggleSize() {
+        if (closing) return
+        val from = sizeScale
+        val big = min(LARGE_SCALE, maxScale())
+        val to = if (from < (1f + big) / 2f) big else 1f
+        if (abs(to - from) < 1e-3f) return
+        settle?.cancel()
+        resizeAnim?.cancel()
+        resizeAnim = android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 220
+            interpolator = EMPH_DECEL
+            addUpdateListener { setScale(from + (to - from) * (it.animatedValue as Float)) }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                private var cancelled = false
+                override fun onAnimationCancel(animation: android.animation.Animator) {
+                    cancelled = true
+                }
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    if (!cancelled) settleAfterResize()
+                }
+            })
+            start()
+        }
+    }
+
+    /** Nút bánh răng: về app, mở thẳng Cài đặt → Thử nghiệm các tính năng mới (chỗ tắt / bật cửa sổ nổi). */
+    private fun openSettings() {
+        if (closing) return
+        closing = true
+        PipPrefs.requestSettings()
+        try {
+            startActivity(
+                Intent(this, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            )
+        } catch (_: Exception) {
+        }
+        shutdown()
+    }
+
     /** Video đổi hướng (dọc / ngang): đổi cỡ cửa sổ, giữ góc đang đứng. */
     private fun reshape(isVertical: Boolean) {
         if (isVertical == vertical) return
         vertical = isVertical
+        sizeScale = sizeScale.coerceIn(MIN_SCALE, maxScale())
         val view = root ?: return
         val lp = params ?: return
         lp.width = winW
@@ -403,6 +492,8 @@ class PipOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner, Vi
     private fun shutdown() {
         settle?.cancel()
         settle = null
+        resizeAnim?.cancel()
+        resizeAnim = null
         root?.let { view ->
             root = null
             runCatching { wm.removeView(view) }
@@ -431,6 +522,10 @@ class PipOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner, Vi
         // Nhớ chỗ cửa sổ nằm giữa các lần hiện.
         private var lastX: Int? = null
         private var lastY: Int? = null
+        private var lastScale = 1f
+        private const val MIN_SCALE = 0.85f
+        private const val MAX_SCALE = 2.5f
+        private const val LARGE_SCALE = 2f
     }
 }
 
@@ -468,6 +563,8 @@ private class OverlayRoot(context: Context, private val host: Host) : FrameLayou
         fun moveTo(x: Int, y: Int)
         fun onGrab()
         fun onRelease(vx: Float, vy: Float)
+        fun onScale(factor: Float)
+        fun onScaleEnd()
     }
 
     private val slop = ViewConfiguration.get(context).scaledTouchSlop
@@ -477,6 +574,25 @@ private class OverlayRoot(context: Context, private val host: Host) : FrameLayou
     private var startY = 0
     private var dragging = false
     private var velocity: VelocityTracker? = null
+    private var scaling = false
+    private val scaler = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+        override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
+            scaling = true
+            dragging = false
+            host.onGrab()
+            return true
+        }
+
+        override fun onScale(detector: ScaleGestureDetector): Boolean {
+            host.onScale(detector.scaleFactor)
+            return true
+        }
+
+        override fun onScaleEnd(detector: ScaleGestureDetector) {
+            scaling = false
+            host.onScaleEnd()
+        }
+    })
 
     private fun track(e: MotionEvent) {
         val raw = MotionEvent.obtain(e)
@@ -486,6 +602,8 @@ private class OverlayRoot(context: Context, private val host: Host) : FrameLayou
     }
 
     override fun onInterceptTouchEvent(e: MotionEvent): Boolean {
+        scaler.onTouchEvent(e)
+        if (scaling) return true
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 downX = e.rawX
@@ -499,7 +617,7 @@ private class OverlayRoot(context: Context, private val host: Host) : FrameLayou
             }
             MotionEvent.ACTION_MOVE -> {
                 track(e)
-                if (!dragging && hypot(e.rawX - downX, e.rawY - downY) > slop) {
+                if (!dragging && e.pointerCount == 1 && hypot(e.rawX - downX, e.rawY - downY) > slop) {
                     dragging = true
                     host.onGrab()
                     startX = host.x()
@@ -517,6 +635,8 @@ private class OverlayRoot(context: Context, private val host: Host) : FrameLayou
     }
 
     override fun onTouchEvent(e: MotionEvent): Boolean {
+        scaler.onTouchEvent(e)
+        if (scaling) return true
         if (!dragging) return true
         track(e)
         when (e.actionMasked) {
@@ -540,7 +660,7 @@ private class OverlayRoot(context: Context, private val host: Host) : FrameLayou
 }
 
 @Composable
-private fun OverlayContent(onClose: () -> Unit, onExpand: () -> Unit, onGone: () -> Unit, onShape: (Boolean) -> Unit) {
+private fun OverlayContent(onClose: () -> Unit, onExpand: () -> Unit, onSettings: () -> Unit, onResize: () -> Unit, onGone: () -> Unit, onShape: (Boolean) -> Unit) {
     val video = ShortsMini.current
     if (video == null) {
         LaunchedEffect(Unit) { onGone() }
@@ -583,7 +703,7 @@ private fun OverlayContent(onClose: () -> Unit, onExpand: () -> Unit, onGone: ()
     Box(
         Modifier.fillMaxSize().background(Color.Black)
             // Chạm vào video (chỗ không có nút) là ẩn / hiện nút, đúng thứ PiP của hệ thống không làm được.
-            .pointerInput(Unit) { detectTapGestures(onTap = { controlsVisible = !controlsVisible }) }
+            .pointerInput(Unit) { detectTapGestures(onTap = { controlsVisible = !controlsVisible }, onDoubleTap = { onResize() }) }
     ) {
         AsyncImage(
             model = video.thumbnail,
@@ -610,8 +730,17 @@ private fun OverlayContent(onClose: () -> Unit, onExpand: () -> Unit, onGone: ()
                         Brush.verticalGradient(listOf(Color(0x99000000), Color(0x40000000), Color(0x99000000)))
                     )
                 )
-                MiniButton(Modifier.align(Alignment.TopStart).padding(2.dp), 36.dp, enabled, onClose) { MiniIcon(MiniClose, 22.dp) }
-                MiniButton(Modifier.align(Alignment.TopEnd).padding(2.dp), 36.dp, enabled, onExpand) { MiniIcon(MiniExpand, 22.dp) }
+                // Hàng nút trên cùng như cửa sổ PiP của hệ thống: cài đặt, đổi cỡ, mở rộng, đóng.
+                Row(
+                    Modifier.align(Alignment.TopCenter).fillMaxWidth().padding(top = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    MiniButton(Modifier, 28.dp, enabled, onSettings) { MiniIcon(Lucide.Settings, 18.dp) }
+                    MiniButton(Modifier, 28.dp, enabled, onResize) { MiniIcon(MiniResize, 18.dp) }
+                    MiniButton(Modifier, 28.dp, enabled, onExpand) { MiniIcon(MiniExpand, 18.dp) }
+                    MiniButton(Modifier, 28.dp, enabled, onClose) { MiniIcon(MiniClose, 18.dp) }
+                }
                 Row(
                     Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -629,4 +758,9 @@ private fun OverlayContent(onClose: () -> Unit, onExpand: () -> Unit, onGone: ()
             }
         }
     }
+}
+
+/** Nút đổi cỡ (thay cho nút chia đôi màn hình của PiP hệ thống, cửa sổ tự vẽ không chia đôi được): khung lớn có khung nhỏ ở góc. */
+private val MiniResize: androidx.compose.ui.graphics.vector.ImageVector by lazy {
+    miniIcon("MiniResize", false, "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z", "M13 13h5v5h-5z")
 }

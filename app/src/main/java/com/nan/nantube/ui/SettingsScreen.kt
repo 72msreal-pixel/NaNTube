@@ -55,6 +55,7 @@ import com.composables.icons.lucide.User
 import com.composables.icons.lucide.Users
 import com.nan.nantube.BuildConfig
 import com.nan.nantube.R
+import com.nan.nantube.data.PipPrefs
 
 private const val EXPERIMENTS = "Thử nghiệm các tính năng mới"
 
@@ -89,7 +90,9 @@ private val videoItems = listOf(
 
 @Composable
 fun SettingsScreen(onBack: () -> Unit) {
-    var page by remember { mutableStateOf<String?>(null) }
+    var page by remember(PipPrefs.settingsSerial) {
+        mutableStateOf<String?>(if (PipPrefs.openExperiments) EXPERIMENTS else null).also { PipPrefs.openExperiments = false }
+    }
     if (page == EXPERIMENTS) {
         ExperimentsScreen(onBack = { page = null })
         return
