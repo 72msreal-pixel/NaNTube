@@ -321,10 +321,15 @@ fun HistoryVideoRow(
     onSaveToPlaylist: (VideoItem) -> Unit,
     displayOnly: Boolean = false,
     onRemoved: ((VideoItem) -> Unit)? = null,
-    queue: List<VideoItem> = emptyList()
+    queue: List<VideoItem> = emptyList(),
+    onClick: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
-    val click = if (displayOnly) Modifier else Modifier.clickable { openVideo(context, video, queue) }
+    val click = when {
+        onClick != null -> Modifier.clickable { onClick() }
+        displayOnly -> Modifier
+        else -> Modifier.clickable { openVideo(context, video, queue) }
+    }
     Row(Modifier.fillMaxWidth().then(click).padding(horizontal = 16.dp, vertical = 6.dp)) {
         Box(
             Modifier

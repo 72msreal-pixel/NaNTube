@@ -180,28 +180,6 @@ object InnerTube {
         return tokens.joinToString(" ")
     }
 
-    /**
-     * Gọi ẩn danh bằng đúng mẫu WEB của meetube (AppClient.WEB.browseTemplate): phiên bản WEB mới, userAgent, vùng và visitorData.
-     * `getShortsWeb` của meetube hỏi chi tiết reel (kèm menu Không quan tâm) theo kiểu này; mẫu WEB cũ của [call] (bản 2025,
-     * không visitorData) nhận về menu không có mục phản hồi.
-     */
-    internal suspend fun callMtWebAnonymous(endpoint: String, data: JSONObject): JSONObject {
-        val visitor = visitorData()
-        val client = mtWebClient(visitor).put("hl", "vi").put("gl", "VN")
-        val body = JSONObject(data.toString())
-            .put("context", JSONObject().put("client", client).put("user", safetyUser()))
-            .put("racyCheckOk", true).put("contentCheckOk", true)
-        val headers = mutableMapOf(
-            "X-YouTube-Client-Name" to "1",
-            "X-YouTube-Client-Version" to MT_WEB_VERSION,
-            "User-Agent" to MT_WEB_UA,
-            "Origin" to ORIGIN,
-            "Referer" to "$ORIGIN/"
-        )
-        if (visitor != null) headers["X-Goog-Visitor-Id"] = visitor
-        return Http.postJson(BASE + endpoint + "?prettyPrint=false", body, headers).requireJson()
-    }
-
     /** Mẫu WEB/TV của MediaServiceCore, riêng cho luồng bình luận. Không gửi thao tác ghi ẩn danh. */
     internal suspend fun commentRequest(endpoint: String, data: JSONObject, account: Account, tv: Boolean): JSONObject {
         require(!tv || account.kind == LoginKind.CODE)
@@ -418,6 +396,63 @@ object InnerTube {
             .put("clientName", if (tv) "TVHTML5" else "WEB")
             .put("clientVersion", if (tv) TV_VERSION else WEB_VERSION)
         return JSONObject().put("client", client)
+    }
+
+    /**
+     * Chi tiết reel đúng như MeTube (BrowseService2 + BrowseApiHelper.getReelDetailsQuery): mẫu WEB, KHÔNG kèm tài khoản.
+     * Interceptor của MeTube cho request ẩn danh: `key` + `prettyPrint=false` + `t`, UA/Referer của app, X-Goog-Visitor-Id.
+     */
+    internal suspend fun mtReelDetails(videoId: String, params: String?): JSONObject {
+        val visitor = visitorData()
+        val details = JSONObject().put("disablePlayerResponse", true)
+        if (!params.isNullOrBlank()) details.put("params", params)
+        details.put("playerRequest", JSONObject().put("videoId", videoId))
+        val body = details
+            .put("context", JSONObject().put("client", mtWebClient(visitor)).put("user", safetyUser()))
+            .put("racyCheckOk", true).put("contentCheckOk", true)
+        val headers = mutableMapOf("User-Agent" to MT_APP_UA, "Referer" to MT_APP_REFERER)
+        if (visitor != null) headers["X-Goog-Visitor-Id"] = visitor
+        val url = BASE + "reel/reel_item_watch?key=$WEB_KEY&prettyPrint=false&t=" + randomId(12)
+        return Http.postJson(url, body, headers).requireJson()
+    }
+
+    /**
+     * `feedback` đúng như MeTube (FeedbackApiHelper.getNotInterestedQuery = createQueryTV, gửi kèm tài khoản):
+     * body mẫu TV hiện tại + visitorData, URL chỉ có prettyPrint (không `key`, không `t`), UA/Referer của app, Bearer.
+     * Tài khoản web (cookie) dùng mẫu WEB + SAPISIDHASH như WebSession. Trả mã HTTP, MeTube coi 2xx là thành công.
+     */
+    internal suspend fun mtFeedback(account: Account, token: String): Int {
+        val visitor = visitorData()
+        val headers = mutableMapOf<String, String>()
+        val client: JSONObject
+        if (account.kind == LoginKind.CODE) {
+            client = JSONObject()
+                .put("clientName", "TVHTML5").put("clientVersion", MT_TV_VERSION)
+                .put("clientScreen", "WATCH").put("userAgent", MT_TV_UA)
+                .put("acceptLanguage", "vi").put("acceptRegion", "VN")
+                .put("utcOffsetMinutes", utcOffsetMinutes().toString())
+                .put("visitorData", visitor ?: "")
+                .put("tvAppInfo", JSONObject().put("appQuality", "TV_APP_QUALITY_FULL_ANIMATION").put("zylonLeftNav", true))
+                .put("webpSupport", false).put("animatedWebpSupport", true)
+            headers["Authorization"] = "Bearer " + freshToken(account)
+            headers["User-Agent"] = MT_APP_UA
+            headers["Referer"] = MT_APP_REFERER
+        } else {
+            client = mtWebClient(visitor)
+            val cookies = rawCookies(ORIGIN) ?: throw AuthRejected()
+            val auth = mtAuthorization(cookies, System.currentTimeMillis() / 1000, ORIGIN) ?: throw AuthRejected()
+            headers.putAll(mapOf("Authorization" to auth, "Cookie" to cookies, "Origin" to ORIGIN, "X-Origin" to ORIGIN,
+                "Referer" to "$ORIGIN/", "X-Goog-AuthUser" to account.authUser.toString(),
+                "X-Youtube-Client-Name" to "1", "X-Youtube-Client-Version" to MT_WEB_VERSION, "User-Agent" to MT_WEB_UA))
+            if (visitor != null) headers["X-Goog-Visitor-Id"] = visitor
+        }
+        val body = JSONObject()
+            .put("context", JSONObject().put("client", client).put("user", safetyUser()))
+            .put("racyCheckOk", true).put("contentCheckOk", true)
+            .put("feedbackTokens", org.json.JSONArray().put(token))
+        val res = Http.postJson(BASE + "feedback?prettyPrint=false", body, headers)
+        if (res.code == 401) throw AuthRejected()
+        return res.code
     }
 
     private suspend fun freshToken(account: Account): String {

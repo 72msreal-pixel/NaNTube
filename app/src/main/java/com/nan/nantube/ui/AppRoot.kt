@@ -157,6 +157,7 @@ fun AppRoot() {
     BackHandler(enabled = showNotifications) { showNotifications = false }
     // Đăng ký sau cùng nên được ưu tiên: Back đóng màn xem Short trước.
     BackHandler(enabled = ShortsViewer.items != null) { ShortsViewer.close() }
+    BackHandler(enabled = MusicPlayer.expanded) { MusicPlayer.expanded = false }
 
     Surface(Modifier.fillMaxSize(), color = NanColors.Background, contentColor = Color.White) {
         Box(Modifier.fillMaxSize()) {
@@ -214,6 +215,7 @@ fun AppRoot() {
                         )
                     }
                 }
+                if (MusicPlayer.current != null && !MusicPlayer.expanded) MiniMusicBar()
                 // Mở bảng mô tả Short thì thanh tab dưới trượt xuống ẩn đi.
                 AnimatedVisibility(visible = !(tab == Tab.Shorts && ShortsSheet.open)) {
                     BottomBar(selected = tab, onSelect = {
@@ -238,6 +240,7 @@ fun AppRoot() {
                     onSave = { saveVideo = it }
                 )
             }
+            if (MusicPlayer.expanded) MusicPlayerScreen()
             if (TvScreen.open) TvConnectScreen()
             if (searchUi.voiceOpen) {
                 VoiceSearchOverlay(
