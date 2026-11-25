@@ -88,3 +88,7 @@ Thẻ TV của Short dài (≤ 3 phút, vd 2:55) không có huy hiệu SHORTS, c
 
 ## Màn nghe giọng nói: size/vị trí/animation (đo từ video YouTube)
 Nút micro đỏ 80dp đứng yên, tâm cách đáy 180dp; khuôn mặt 90x102dp thẳng hàng với tâm nút. Phía sau nút là hình tròn đặc xám `#2C2B2B` lớn dần theo âm lượng (tối đa ~2,2 lần bán kính nút); khi im thì có vòng viền mỏng loe ra rồi mờ dần (~0,7 giây, lặp lại).
+
+## Kết quả tìm kiếm: nhạc và danh sách phát (v00.00.35)
+- **Nhạc ♪ ở Main và Search**: ngoài icon ♪ YouTube gắn sẵn (thẻ TV của tài khoản mã giờ cũng đọc icon này), app hỏi YouTube Music (`MusicDetector.classify`) cho các video 30 giây–20 phút chưa rõ, bài nào là nhạc thì gắn ♪ dần trên thẻ. Ảnh bìa vuông 1:1 mà YouTube trả cho đĩa nhạc / bài hát (`VideoItem.artUrl`) được vẽ vuông như YouTube.
+- **Danh sách phát / đĩa nhạc** (`PlaylistCard` ở `SearchScreen.kt`): bìa xếp chồng có nhãn "N video", tên, kênh · Danh sách phát, rồi khung "N video trong danh sách phát" (thu gọn được) có hàng video vuốt ngang (`VideoRepository.playlistPreview`). Thẻ TV loại playlist trước đây bị đọc thành một video nên chỉ hiện mỗi ảnh; nay đọc đúng thành danh sách (`tilePlaylist`), đĩa nhạc (LOCKUP_CONTENT_TYPE_ALBUM) cũng được nhận.

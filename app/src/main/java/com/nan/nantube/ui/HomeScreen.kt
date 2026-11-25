@@ -50,6 +50,8 @@ import com.nan.nantube.data.TvStore
 import com.nan.nantube.data.Account
 import com.nan.nantube.data.ChannelAvatars
 import com.nan.nantube.data.HOME_CHIPS
+import com.nan.nantube.data.MusicDetector
+import com.nan.nantube.data.ShortDetector
 import com.nan.nantube.data.VideoItem
 import com.nan.nantube.data.VideoRepository
 
@@ -77,6 +79,13 @@ fun MainFeedScreen(
     onSaveToPlaylist: (VideoItem) -> Unit
 ) {
     LaunchedEffect(account?.id, chip) { feed.load(account, chip.toString()) }
+    // Nhận diện nhạc cho thẻ không có icon ♪ (như YouTube), từng đợt nhỏ khi danh sách thêm video.
+    LaunchedEffect(feed.items.size, account?.id) {
+        ShortDetector.account = account
+        MusicDetector.classify({ feed.items }) { ids ->
+            feed.update { list -> list.map { if (it.id in ids) it.copy(music = true) else it } }
+        }
+    }
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         HomeTopBar(account, onSearch, onNotifications)

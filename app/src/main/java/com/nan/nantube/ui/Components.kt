@@ -284,18 +284,18 @@ fun BoxScope.DurationBadge(duration: String?, music: Boolean, live: Boolean = fa
     Row(
         Modifier
             .align(Alignment.BottomEnd)
-            .padding(6.dp)
-            .clip(RoundedCornerShape(6.dp))
+            .padding(8.dp)
+            .clip(RoundedCornerShape(8.dp))
             .background(Color(0xCC000000))
-            .padding(horizontal = 6.dp, vertical = 2.dp),
+            .padding(horizontal = 8.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (music) {
-            Icon(Lucide.Music, null, Modifier.size(12.dp), tint = Color.White)
-            if (duration != null) Spacer(Modifier.width(3.dp))
+            Icon(Lucide.Music, null, Modifier.size(16.dp), tint = Color.White)
+            if (duration != null) Spacer(Modifier.width(5.dp))
         }
         if (duration != null) {
-            Text(duration, fontSize = 12.sp, fontWeight = FontWeight.Medium, color = Color.White)
+            Text(duration, fontSize = 14.sp, lineHeight = 16.sp, fontWeight = FontWeight.Medium, color = Color.White)
         }
     }
 }

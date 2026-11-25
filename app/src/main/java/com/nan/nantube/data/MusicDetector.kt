@@ -78,6 +78,21 @@ object MusicDetector {
         return out
     }
 
+    /**
+     * Đánh dấu nhạc cho một danh sách đang hiện (Main, Tìm kiếm), từng đợt nhỏ: sau mỗi đợt có bài nhạc thì gọi [mark] với các id đó.
+     * [current] đọc lại danh sách mỗi vòng nên trang mới tải thêm cũng được xét.
+     */
+    suspend fun classify(current: () -> List<VideoItem>, mark: (Set<String>) -> Unit) {
+        val tried = HashSet<String>()
+        while (true) {
+            val todo = current().filter { it.id !in tried && needsCheck(it) }.take(8)
+            if (todo.isEmpty()) break
+            tried.addAll(todo.map { it.id })
+            val found = check(todo.map { it.id }).filterValues { it }.keys
+            if (found.isNotEmpty()) mark(found)
+        }
+    }
+
     private suspend fun probe(id: String): Boolean? = try {
         val type = MusicRepository.videoType(id, ShortDetector.account)
         type == "MUSIC_VIDEO_TYPE_OMV" || type == "MUSIC_VIDEO_TYPE_ATV"
