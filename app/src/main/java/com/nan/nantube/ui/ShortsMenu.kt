@@ -83,6 +83,15 @@ private fun lucide(name: String, vararg paths: String): ImageVector =
         }
     }.build()
 
+/** Hình trong hình (lucide picture-in-picture-2). */
+internal val PipIcon: ImageVector by lazy {
+    lucide(
+        "ShortsPip",
+        "M21 9V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v10c0 1.1.9 2 2 2h4",
+        "M14 13h6a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-6a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2z"
+    )
+}
+
 private val DescriptionIcon: ImageVector by lazy { lucide("ShortsDescription", "M21 6H3", "M15 12H3", "M17 18H3") }
 private val CleanScreenIcon: ImageVector by lazy { lucide("ShortsClean", "M15 3h6v6", "M9 21H3v-6", "M21 3l-7 7", "M3 21l7-7") }
 private val RestoreScreenIcon: ImageVector by lazy { lucide("ShortsRestore", "M4 14h6v6", "M20 10h-6V4", "M14 10l7-7", "M3 21l7-7") }
@@ -147,6 +156,7 @@ fun ColumnScope.ShortsMenuContent(
     onTranscript: () -> Unit,
     onClean: () -> Unit,
     onDownload: () -> Unit,
+    onPip: () -> Unit,
     onNotInterested: () -> Unit,
     onDontRecommend: () -> Unit,
     onDismiss: () -> Unit
@@ -173,6 +183,7 @@ fun ColumnScope.ShortsMenuContent(
             ShortsPool.selectAutoScroll(!ShortsPool.autoScroll)
         },
         MenuEntry(YtDownload, "Tải xuống", onClick = onDownload),
+        MenuEntry(PipIcon, "Hình trong hình", onClick = onPip),
         MenuEntry(NotInterestedIcon, "Không quan tâm", onClick = onNotInterested),
         MenuEntry(DontRecommendIcon, "Không đề xuất kênh này", onClick = onDontRecommend)
     )

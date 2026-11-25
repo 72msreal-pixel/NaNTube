@@ -478,12 +478,65 @@ private fun ShortsPager(
 
     val curVideo = items.getOrNull(page)
     val curSlot = curVideo?.let { ShortsPool.slot(it.id) }
+
+    // Picture-in-Picture (như meetube): Short đang hiện báo cho MainActivity biết để tự vào PiP khi rời app, và nhận Trước / Phát-Tạm dừng / Tiếp từ cửa sổ PiP.
+    LaunchedEffect(active, curVideo?.id, userPaused, curSlot?.vertical) {
+        if (!active) return@LaunchedEffect
+        PipState.shortId = curVideo?.id
+        PipState.playing = !userPaused
+        PipState.vertical = curSlot?.vertical ?: true
+    }
+    DisposableEffect(active) {
+        val controls = if (active) PipControls(
+            prev = { scope.launch { pagerState.animateScrollToPage((pagerState.currentPage - 1).coerceAtLeast(0)) } },
+            next = { scope.launch { pagerState.animateScrollToPage((pagerState.currentPage + 1).coerceAtMost((latest.size - 1).coerceAtLeast(0))) } },
+            toggle = { userPaused = !userPaused }
+        ) else null
+        if (controls != null) PipState.controls = controls
+        onDispose {
+            if (controls != null && PipState.controls === controls) {
+                PipState.controls = null
+                PipState.shortId = null
+                PipState.playing = false
+            }
+        }
+    }
+    // Bấm Hình trong hình: Short này thu thành cửa sổ nhỏ nổi trong app (ShortsMini), AppRoot đưa app về tab Main.
+    LaunchedEffect(PipState.miniRequest, active) {
+        if (PipState.miniRequest && active) {
+            PipState.miniRequest = false
+            ShortsMini.start(latest, pagerState.currentPage)
+        }
+    }
+    // Vào PiP: chỉ giữ video (làm sạch màn hình, đóng bảng đang mở); ra khỏi PiP trả lại như cũ.
+    val pipLifecycle = LocalLifecycleOwner.current.lifecycle
+    var wasInPip by remember { mutableStateOf(false) }
+    var cleanBeforePip by remember { mutableStateOf(false) }
+    LaunchedEffect(PipState.inPip, active) {
+        if (!active) return@LaunchedEffect
+        if (PipState.inPip) {
+            wasInPip = true
+            cleanBeforePip = ShortsChrome.clean
+            ShortsChrome.clean = true
+            if (panel != null) {
+                sheet.snapTo(0f)
+                panel = null
+            }
+        } else if (wasInPip) {
+            wasInPip = false
+            ShortsChrome.clean = cleanBeforePip
+            // Cửa sổ PiP bị đóng (X): app không còn hiện nên dừng video.
+            if (!pipLifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) ShortsPool.pauseAll()
+        }
+    }
     val curMeta = curVideo?.let { ShortsPlayback.meta(it.id) }
     val curSettled = curVideo != null && settled[curVideo.id] == true
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(lifecycle) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_PAUSE) ShortsPool.pauseAll()
+            // Đang phát mà rời app thì sắp vào cửa sổ PiP: không dừng video ở ON_PAUSE. Hết PiP (bấm X) hoặc app tắt hẳn thì dừng ở ON_STOP.
+            if (event == Lifecycle.Event.ON_PAUSE && !PipState.armed && !PipState.inPip) ShortsPool.pauseAll()
+            else if (event == Lifecycle.Event.ON_STOP && !PipState.inPip) ShortsPool.pauseAll()
             else if (event == Lifecycle.Event.ON_RESUME) tick++
         }
         lifecycle.addObserver(observer)
@@ -849,7 +902,7 @@ private fun ShortsPager(
         }
 
         // Làm sạch màn hình: chỉ còn nút nhỏ ở góc dưới bên phải để hiện lại mọi thứ.
-        if (clean && sheetFraction == 0f) {
+        if (clean && sheetFraction == 0f && !PipState.inPip) {
             CleanRestoreButton(
                 onClick = { ShortsChrome.clean = false },
                 modifier = Modifier.align(Alignment.BottomEnd)
@@ -893,6 +946,7 @@ private fun ShortsPager(
                             closeSheet()
                             DownloadPanel.open(curVideo, account)
                         },
+                        onPip = { PipState.request() },
                         onNotInterested = { sendFeedback(ShortsFeedback.Kind.NOT_INTERESTED) },
                         onDontRecommend = { sendFeedback(ShortsFeedback.Kind.DONT_RECOMMEND_CHANNEL) },
                         onDismiss = { closeSheet() }
@@ -940,11 +994,14 @@ private fun ShortsHeader(
     onSearch: () -> Unit,
     hasVideo: Boolean
 ) {
+    // Cửa sổ PiP chỉ còn video: không vẽ thanh trên.
+    if (PipState.inPip) return
     Box(Modifier.fillMaxWidth().background(Color.Black).statusBarsPadding().height(48.dp)) {
         if (!ShortsChrome.clean) {
             Row(Modifier.fillMaxSize().sideInsets().padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (onBack != null) TopIcon(IconArrowLeft, onBack)
                 Spacer(Modifier.weight(1f))
+                if (hasVideo) TopIcon(PipIcon) { PipState.request() }
                 TopIcon(YtSearch, onSearch)
                 Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
                     MoreButton(width = 36.dp) { if (hasVideo) ShortsChrome.menuRequest = true }

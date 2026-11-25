@@ -89,16 +89,16 @@ fun AddAccountChooser(onDismiss: () -> Unit, onManual: () -> Unit, onCode: () ->
     ) {
         Column(
             Modifier
-                .fillMaxWidth(0.86f)
+                .fillMaxWidth(0.72f)
                 .clip(RoundedCornerShape(12.dp))
                 .background(NanColors.Popup)
                 .plainClickable { }
-                .padding(vertical = 12.dp)
+                .padding(vertical = 8.dp)
         ) {
             Text(
                 "Thêm tài khoản",
-                fontSize = 22.sp,
-                modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
+                fontSize = 18.sp,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
             )
             ChooserRow(Lucide.User, "Tự nhập Gmail", "Đăng nhập ngay trên trang của Google", onManual)
             ChooserRow(Lucide.Tv, "Dùng mã", "Lấy mã rồi nhập tại yt.be/activate", onCode)
@@ -109,14 +109,14 @@ fun AddAccountChooser(onDismiss: () -> Unit, onManual: () -> Unit, onCode: () ->
 @Composable
 private fun ChooserRow(icon: ImageVector, title: String, subtitle: String, onClick: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 20.dp, vertical = 14.dp),
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 20.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(icon, null, Modifier.size(24.dp))
-        Spacer(Modifier.width(20.dp))
+        Icon(icon, null, Modifier.size(20.dp))
+        Spacer(Modifier.width(16.dp))
         Column {
-            Text(title, fontSize = 18.sp)
-            Text(subtitle, fontSize = 14.sp, color = NanColors.TextSecondary)
+            Text(title, fontSize = 14.sp)
+            Text(subtitle, fontSize = 12.sp, color = NanColors.TextSecondary)
         }
     }
 }

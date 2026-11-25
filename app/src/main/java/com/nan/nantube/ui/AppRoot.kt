@@ -148,6 +148,39 @@ fun AppRoot() {
         onDispose { activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED }
     }
 
+    // Bấm Hình trong hình ở Short: đóng màn Short, app về tab Main, Short phát tiếp trong cửa sổ nhỏ nổi (ShortsMiniWindow ở cuối cây).
+    LaunchedEffect(ShortsMini.startSerial) {
+        if (ShortsMini.startSerial == 0) return@LaunchedEffect
+        ShortsViewer.close()
+        tab = Tab.Main
+        showHistory = false
+        showSettings = false
+        openList = null
+        PlaylistViewer.open = null
+    }
+    // Bấm nút mở rộng ở cửa sổ nhỏ: vào thẳng tab Short, đúng video đang phát.
+    LaunchedEffect(ShortsMini.expandSerial) {
+        if (ShortsMini.expandSerial == 0) return@LaunchedEffect
+        val list = ShortsMini.expandList
+        val video = list.getOrNull(ShortsMini.expandIndex) ?: return@LaunchedEffect
+        val at = shorts.items.indexOfFirst { it.id == video.id }
+        if (at >= 0) {
+            shortsTab.page = at
+            shortsTab.pageVersion = shorts.version
+            showHistory = false
+            showSettings = false
+            openList = null
+            PlaylistViewer.open = null
+            tab = Tab.Shorts
+        } else {
+            ShortsViewer.open(list, ShortsMini.expandIndex)
+        }
+    }
+    // Mở lại Short toàn màn hình (tab Short hoặc màn xem Short) thì cửa sổ nhỏ tắt để hai bên không giành một trình phát.
+    LaunchedEffect(tab, ShortsViewer.items) {
+        if (tab == Tab.Shorts || ShortsViewer.items != null) ShortsMini.close()
+    }
+
     // Back: đóng lớp trên cùng trước, rồi mới về tab Main.
     BackHandler(enabled = tab != Tab.Main) { tab = Tab.Main }
     BackHandler(enabled = showSettings) { showSettings = false }
@@ -228,7 +261,7 @@ fun AppRoot() {
                     }
                 }
                 // Mở bảng mô tả Short thì thanh tab dưới trượt xuống ẩn đi.
-                AnimatedVisibility(visible = !(tab == Tab.Shorts && ShortsSheet.open)) {
+                AnimatedVisibility(visible = !(tab == Tab.Shorts && ShortsSheet.open) && !PipState.inPip) {
                     BottomBar(selected = tab, onSelect = {
                         tab = it
                         showHistory = false
@@ -285,6 +318,8 @@ fun AppRoot() {
                     onClose = { addStep = AddStep.None; webHint = null }
                 )
             }
+            // Cửa sổ Short nhỏ nổi (hoặc cả cửa sổ PiP khi rời app): trên cùng mọi lớp.
+            if (tab != Tab.Shorts && ShortsViewer.items == null) ShortsMiniWindow(account)
         }
     }
 }

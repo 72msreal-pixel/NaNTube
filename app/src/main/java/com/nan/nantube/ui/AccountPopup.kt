@@ -88,20 +88,20 @@ fun AccountPopup(onDismiss: () -> Unit, onAdd: () -> Unit) {
                 .align(Alignment.TopCenter)
                 .statusBarsPadding()
                 .padding(top = 8.dp)
-                .fillMaxWidth(0.72f)
+                .fillMaxWidth(0.62f)
                 .fillMaxHeight(0.9f)
                 .background(NanColors.Popup)
                 .plainClickable { }
         ) {
             Row(
-                Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 12.dp),
+                Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Tài khoản", fontSize = 22.sp, modifier = Modifier.weight(1f))
+                Text("Tài khoản", fontSize = 18.sp, modifier = Modifier.weight(1f))
                 Icon(
                     Lucide.Plus,
                     null,
-                    Modifier.offset(x = 8.dp).size(44.dp).clip(CircleShape).clickable(onClick = onAdd).padding(8.dp)
+                    Modifier.offset(x = 8.dp).size(40.dp).clip(CircleShape).clickable(onClick = onAdd).padding(8.dp)
                 )
             }
 
@@ -112,49 +112,49 @@ fun AccountPopup(onDismiss: () -> Unit, onAdd: () -> Unit) {
                             .fillMaxWidth()
                             .combinedClickable(onClick = { }, onLongClick = { menu = current })
                     ) {
-                        Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
-                            Text(current.googleName ?: current.name, fontSize = 18.sp)
+                        Column(Modifier.padding(horizontal = 20.dp, vertical = 4.dp)) {
+                            Text(current.googleName ?: current.name, fontSize = 14.sp)
                             (current.email ?: current.handle)?.let {
-                                Text(it, fontSize = 18.sp, color = NanColors.TextSecondary)
+                                Text(it, fontSize = 12.sp, color = NanColors.TextSecondary)
                             }
                         }
                         HorizontalDivider(Modifier.padding(horizontal = 20.dp), color = NanColors.Divider)
                         Row(
-                            Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp),
+                            Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp),
                             verticalAlignment = Alignment.Top
                         ) {
-                            Avatar(current.name.take(1).uppercase(), 54.dp, photoUrl = current.photo)
+                            Avatar(current.name.take(1).uppercase(), 44.dp, photoUrl = current.photo)
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f)) {
-                                Text(current.name, fontSize = 18.sp)
-                                current.handle?.let { Text(it, fontSize = 14.sp, color = NanColors.TextSecondary) }
-                                current.subs?.let { Text(it, fontSize = 14.sp, color = NanColors.TextSecondary) }
+                                Text(current.name, fontSize = 14.sp)
+                                current.handle?.let { Text(it, fontSize = 12.sp, color = NanColors.TextSecondary) }
+                                current.subs?.let { Text(it, fontSize = 12.sp, color = NanColors.TextSecondary) }
                                 Text(
                                     "Chỉnh sửa kênh",
                                     color = NanColors.Blue,
-                                    fontSize = 16.sp,
+                                    fontSize = 14.sp,
                                     fontWeight = FontWeight.Medium,
-                                    modifier = Modifier.padding(top = 10.dp)
+                                    modifier = Modifier.padding(top = 6.dp)
                                 )
                             }
-                            Icon(Lucide.Check, null, Modifier.size(24.dp), tint = NanColors.Blue)
+                            Icon(Lucide.Check, null, Modifier.size(20.dp), tint = NanColors.Blue)
                         }
                     }
                 } else {
                     // Đang dùng tài khoản khách.
-                    Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
-                        Text("Tài khoản khách", fontSize = 18.sp)
-                        Text("Chưa đăng nhập", fontSize = 18.sp, color = NanColors.TextSecondary)
+                    Column(Modifier.padding(horizontal = 20.dp, vertical = 4.dp)) {
+                        Text("Tài khoản khách", fontSize = 14.sp)
+                        Text("Chưa đăng nhập", fontSize = 12.sp, color = NanColors.TextSecondary)
                     }
                     HorizontalDivider(Modifier.padding(horizontal = 20.dp), color = NanColors.Divider)
                     Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp),
+                        Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        GuestAvatar(54.dp)
+                        GuestAvatar(36.dp)
                         Spacer(Modifier.width(12.dp))
-                        Text("Khách", fontSize = 18.sp, modifier = Modifier.weight(1f))
-                        Icon(Lucide.Check, null, Modifier.size(24.dp), tint = NanColors.Blue)
+                        Text("Khách", fontSize = 14.sp, modifier = Modifier.weight(1f))
+                        Icon(Lucide.Check, null, Modifier.size(20.dp), tint = NanColors.Blue)
                     }
                 }
 
@@ -162,9 +162,9 @@ fun AccountPopup(onDismiss: () -> Unit, onAdd: () -> Unit) {
                     Box(Modifier.fillMaxWidth().height(6.dp).background(NanColors.Divider))
                     Text(
                         "Tài khoản khác",
-                        fontSize = 18.sp,
+                        fontSize = 14.sp,
                         fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(20.dp)
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
                     )
                 }
 
@@ -190,21 +190,21 @@ fun AccountPopup(onDismiss: () -> Unit, onAdd: () -> Unit) {
                         ) {
                             Text(
                                 acc.email ?: acc.handle ?: if (acc.kind == LoginKind.CODE) "Đăng nhập bằng mã" else "Google",
-                                fontSize = 18.sp,
+                                fontSize = 14.sp,
                                 color = NanColors.TextSoft,
-                                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+                                modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)
                             )
                             Row(
-                                Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+                                Modifier.fillMaxWidth().padding(start = 20.dp, end = 4.dp, top = 2.dp, bottom = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Avatar(acc.name.take(1).uppercase(), 44.dp, photoUrl = acc.photo)
+                                Avatar(acc.name.take(1).uppercase(), 36.dp, photoUrl = acc.photo)
                                 Spacer(Modifier.width(12.dp))
                                 Column(Modifier.weight(1f)) {
-                                    Text(acc.name, fontSize = 18.sp)
+                                    Text(acc.name, fontSize = 14.sp)
                                     Text(
                                         acc.subs ?: acc.handle ?: "",
-                                        fontSize = 14.sp,
+                                        fontSize = 12.sp,
                                         color = NanColors.TextSecondary
                                     )
                                 }
@@ -255,18 +255,18 @@ fun AccountPopup(onDismiss: () -> Unit, onAdd: () -> Unit) {
                                 AccountStore.useGuest()
                                 onDismiss()
                             }
-                            .padding(horizontal = 20.dp, vertical = 12.dp),
+                            .padding(horizontal = 20.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        GuestAvatar(44.dp)
+                        GuestAvatar(36.dp)
                         Spacer(Modifier.width(12.dp))
                         Column {
-                            Text("Tài khoản khách", fontSize = 18.sp)
-                            Text("Chưa đăng nhập", fontSize = 14.sp, color = NanColors.TextSecondary)
+                            Text("Tài khoản khách", fontSize = 14.sp)
+                            Text("Chưa đăng nhập", fontSize = 12.sp, color = NanColors.TextSecondary)
                         }
                     }
                 }
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(6.dp))
             }
 
             HorizontalDivider(color = NanColors.Divider)
@@ -276,12 +276,12 @@ fun AccountPopup(onDismiss: () -> Unit, onAdd: () -> Unit) {
             PopupAction("Quản lý tài khoản") { openDeviceAccounts(context) }
             Text(
                 "Tìm hiểu thêm về các tùy chọn tài khoản",
-                fontSize = 16.sp,
+                fontSize = 14.sp,
                 color = NanColors.Blue,
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable { openInBrowser(context, HELP_URL) }
-                    .padding(horizontal = 20.dp, vertical = 14.dp)
+                    .padding(horizontal = 20.dp, vertical = 9.dp)
             )
         }
 
@@ -308,9 +308,9 @@ fun AccountPopup(onDismiss: () -> Unit, onAdd: () -> Unit) {
 private fun PopupAction(label: String, onClick: () -> Unit) {
     Text(
         label,
-        fontSize = 18.sp,
+        fontSize = 14.sp,
         color = NanColors.TextSoft,
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 20.dp, vertical = 14.dp)
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 20.dp, vertical = 9.dp)
     )
 }
 
@@ -328,7 +328,7 @@ private fun GuestAvatar(size: androidx.compose.ui.unit.Dp) {
 /** Tay nắm kéo thả: ba gạch ngang. */
 @Composable
 private fun DragHandle(modifier: Modifier) {
-    Box(modifier.size(44.dp), contentAlignment = Alignment.Center) {
+    Box(modifier.size(40.dp), contentAlignment = Alignment.Center) {
         Canvas(Modifier.size(width = 20.dp, height = 14.dp)) {
             val stroke = 2.dp.toPx()
             for (i in 0..2) {
