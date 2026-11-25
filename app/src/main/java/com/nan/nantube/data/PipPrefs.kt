@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Build
 import android.provider.Settings
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import org.json.JSONObject
@@ -21,6 +22,16 @@ object PipPrefs {
 
     var enhanced by mutableStateOf(false)
         private set
+
+    /** Nút bánh răng ở cửa sổ nổi: tăng số này thì AppRoot mở thẳng trang "Thử nghiệm các tính năng mới". */
+    var settingsSerial by mutableIntStateOf(0)
+        private set
+    var openExperiments = false
+
+    fun requestSettings() {
+        openExperiments = true
+        settingsSerial++
+    }
 
     /** MainActivity gán: mở màn cấp quyền "Hiển thị trên các ứng dụng khác" của app. */
     var openOverlaySettings: (() -> Unit)? = null

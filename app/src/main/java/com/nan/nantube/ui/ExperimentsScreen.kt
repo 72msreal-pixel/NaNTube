@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -44,23 +43,12 @@ fun ExperimentsScreen(onBack: () -> Unit) {
             Spacer(Modifier.width(12.dp))
             Text("Thử nghiệm các tính năng mới", fontSize = 22.sp)
         }
-        Row(
-            Modifier.fillMaxWidth()
-                .clickable { PipPrefs.setEnabled(context, !PipPrefs.enhanced) }
-                .padding(horizontal = 16.dp, vertical = 16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text("Cải thiện trải nghiệm dùng PiP", fontSize = 16.sp)
-                Text(
-                    "Khi rời app, Short đang phát thành cửa sổ nổi do NaNTube tự vẽ: chạm vào video để ẩn / hiện nút, kéo để di chuyển. " +
-                        "Cần quyền \"Hiển thị trên các ứng dụng khác\".",
-                    fontSize = 13.sp,
-                    color = NanColors.TextSecondary
-                )
-            }
-            Spacer(Modifier.width(16.dp))
-            Switch(checked = PipPrefs.enhanced, onCheckedChange = { PipPrefs.setEnabled(context, it) })
-        }
+        NanSwitchRow(
+            title = "Cải thiện trải nghiệm dùng PiP",
+            subtitle = "Khi rời app, Short đang phát thành cửa sổ nổi do NaNTube tự vẽ: chạm vào video để ẩn / hiện nút, kéo để di chuyển, " +
+                "chụm hai ngón hoặc chạm đúp để phóng to / thu nhỏ, xoay hai ngón rồi thả là tự thẳng lại. Cần quyền \"Hiển thị trên các ứng dụng khác\".",
+            checked = PipPrefs.enhanced,
+            onCheckedChange = { PipPrefs.setEnabled(context, it) }
+        )
     }
 }

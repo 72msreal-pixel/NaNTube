@@ -169,7 +169,7 @@ private const val FLY_MIN_MS = 110
 private const val TAP_AFTER_DRAG_MS = 250L
 private const val FLY_MAX_MS = 240
 
-private fun miniIcon(name: String, filled: Boolean, vararg paths: String): ImageVector =
+internal fun miniIcon(name: String, filled: Boolean, vararg paths: String): ImageVector =
     ImageVector.Builder(name, 24.dp, 24.dp, 24f, 24f).apply {
         paths.forEach { d ->
             addPath(
