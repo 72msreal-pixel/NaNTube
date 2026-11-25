@@ -9,6 +9,9 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.indication
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.material3.ripple
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,6 +22,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.statusBarsPadding
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
@@ -108,6 +112,13 @@ private val MpShareIcon by lazy { icon("MpShare", false, "M4 12v8a2 2 0 0 0 2 2h
 
 private val Accent = Color(0xFFFF4E45)
 
+/** Thích / bỏ thích như nút tim bên Short: nảy tim, khi vừa thích thêm chùm chấm confetti bung quanh icon. */
+private fun likeWithEffect(effect: TapEffectState) {
+    val before = MusicPlayer.liked
+    MusicPlayer.toggleLike()
+    if (MusicPlayer.liked != before) effect.play(burst = MusicPlayer.liked)
+}
+
 /** Góc quay của đĩa: quay đều khi đang phát, đứng yên đúng góc đó khi tạm dừng. */
 @Composable
 private fun rememberDiscAngle(spinning: Boolean): Animatable<Float, AnimationVector1D> {
@@ -142,6 +153,7 @@ fun MusicPlayerScreen() {
         }
     }
     val angle = rememberDiscAngle(MusicPlayer.playing)
+    val heartFx = rememberTapEffect()
 
     Box(Modifier.fillMaxSize().background(NanColors.Background).pointerInput(Unit) { detectTapGestures { } }) {
         // Nền: ảnh bìa làm mờ + phủ tối, không có ảnh thì chuyển màu đỏ sẫm → đen.
@@ -164,9 +176,14 @@ fun MusicPlayerScreen() {
                     Text("PHÁT TỪ", fontSize = 11.sp, letterSpacing = 1.5.sp, color = NanColors.TextSecondary)
                     Text(MusicPlayer.label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                Box(Modifier.size(44.dp).clip(CircleShape).clickable { MusicPlayer.toggleLike() }, contentAlignment = Alignment.Center) {
+                // Không .clip ở đây: chùm confetti vẽ ra ngoài khung icon (giống nút tim của Short).
+                Box(
+                    Modifier.size(44.dp).clickable(interactionSource = null, indication = null) { likeWithEffect(heartFx) },
+                    contentAlignment = Alignment.Center
+                ) {
                     Icon(
-                        if (MusicPlayer.liked) MpHeartFilledIcon else MpHeartIcon, "Thích", Modifier.size(24.dp),
+                        if (MusicPlayer.liked) MpHeartFilledIcon else MpHeartIcon, "Thích",
+                        Modifier.size(24.dp).tapEffect(heartFx, Accent, ring = false),
                         tint = if (MusicPlayer.liked) Accent else Color.White
                     )
                 }
@@ -197,16 +214,11 @@ fun MusicPlayerScreen() {
             }
 
             val total = duration.coerceAtLeast(1L)
-            Slider(
+            NanSlider(
                 value = if (dragging) dragValue else (position.toFloat() / total).coerceIn(0f, 1f),
                 onValueChange = { dragging = true; dragValue = it; position = (it * total).toLong() },
                 onValueChangeFinished = { MusicPlayer.seekTo((dragValue * total).toLong()); dragging = false },
                 enabled = duration > 0,
-                colors = SliderDefaults.colors(
-                    thumbColor = Color.White, activeTrackColor = Color.White,
-                    inactiveTrackColor = Color(0x55FFFFFF), disabledThumbColor = Color(0x88FFFFFF),
-                    disabledActiveTrackColor = Color(0x88FFFFFF), disabledInactiveTrackColor = Color(0x33FFFFFF)
-                ),
                 modifier = Modifier.padding(top = 16.dp)
             )
             Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -324,10 +336,14 @@ fun MiniMusicBar() {
     val scope = rememberCoroutineScope()
     val offsetX = remember { Animatable(0f) }
     var widthPx by remember { mutableFloatStateOf(1f) }
+    val heartFx = rememberTapEffect()
+    val press = remember { MutableInteractionSource() }
 
-    val barHeight = 52.dp
-    val artSize = 60.dp
+    val barHeight = 48.dp
+    val artSize = 54.dp
     val disc = 44.dp
+    val peek = 16.dp // đĩa nhô ra khỏi mép phải ảnh (như Zing MP3)
+    val cardShape = RoundedCornerShape(14.dp)
     Box(
         Modifier.fillMaxWidth().background(NanColors.Background).padding(horizontal = 12.dp, vertical = 4.dp)
             .onSizeChanged { widthPx = it.width.toFloat().coerceAtLeast(1f) }
@@ -347,13 +363,14 @@ fun MiniMusicBar() {
                     onHorizontalDrag = { change, amount -> change.consume(); scope.launch { offsetX.snapTo(offsetX.value + amount) } }
                 )
             }
-            .clickable { MusicPlayer.expanded = true },
+            // Không vẽ ripple ở đây (sẽ thành hình chữ nhật cả khung); hiệu ứng nhấn vẽ riêng ở lớp bo góc cuối cùng.
+            .clickable(interactionSource = press, indication = null) { MusicPlayer.expanded = true },
         contentAlignment = Alignment.CenterStart
     ) {
         // Thẻ đen có viền xám mỏng; vạch tiến độ nằm ở đáy, bắt đầu từ mép phải của ảnh.
         Box(
-            Modifier.fillMaxWidth().height(barHeight).clip(RoundedCornerShape(14.dp)).background(Color.Black)
-                .border(1.dp, Color(0xFF3A3A3A), RoundedCornerShape(14.dp))
+            Modifier.fillMaxWidth().height(barHeight).clip(cardShape).background(Color.Black)
+                .border(1.dp, Color(0xFF3A3A3A), cardShape)
         ) {
             Box(Modifier.align(Alignment.BottomStart).padding(start = artSize).fillMaxWidth().height(2.5.dp)) {
                 Box(Modifier.fillMaxWidth(progress).fillMaxHeight().background(Accent))
@@ -362,12 +379,13 @@ fun MiniMusicBar() {
         Row(Modifier.fillMaxWidth().height(artSize), verticalAlignment = Alignment.CenterVertically) {
             // Đĩa nằm dưới ảnh, chỉ nhô ra 1/4 đường kính.
             Box(Modifier.size(artSize), contentAlignment = Alignment.CenterStart) {
-                Canvas(Modifier.offset(x = artSize - disc * 0.75f).size(disc).graphicsLayer { rotationZ = angle.value }) {
+                Canvas(Modifier.offset(x = artSize - disc + peek).requiredSize(disc).graphicsLayer { rotationZ = angle.value }) {
                     val r = size.minDimension / 2
                     drawCircle(Color(0xFF111111), radius = r, center = center)
                     drawCircle(Color(0x33FFFFFF), radius = r - 1f, center = center, style = Stroke(width = 1.2f))
-                    drawCircle(Color(0x22FFFFFF), radius = r * 0.7f, center = center, style = Stroke(width = 1.2f))
-                    drawCircle(Accent, radius = r * 0.3f, center = center)
+                    drawCircle(Color(0x22FFFFFF), radius = r * 0.82f, center = center, style = Stroke(width = 1.2f))
+                    drawCircle(Color(0x18FFFFFF), radius = r * 0.62f, center = center, style = Stroke(width = 1.2f))
+                    drawCircle(Accent, radius = r * 0.34f, center = center)
                     drawCircle(Color(0xFF111111), radius = r * 0.06f, center = center)
                 }
                 Box(
@@ -376,28 +394,40 @@ fun MiniMusicBar() {
                     contentAlignment = Alignment.Center
                 ) {
                     if (track.art != null) AsyncImage(track.art, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-                    else Icon(Lucide.Music, null, Modifier.size(24.dp), tint = Color.White)
+                    else Icon(Lucide.Music, null, Modifier.size(22.dp), tint = Color.White)
                 }
             }
-            Column(Modifier.weight(1f).padding(start = 8.dp + disc * 0.25f, end = 2.dp)) {
-                Text(track.title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Column(Modifier.weight(1f).padding(start = 8.dp + peek, end = 2.dp)) {
+                Text(track.title, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
-                    MusicPlayer.error ?: track.artist ?: "Không rõ nghệ sĩ", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    MusicPlayer.error ?: track.artist ?: "Không rõ nghệ sĩ", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     color = if (MusicPlayer.error != null) Accent else NanColors.TextSecondary
                 )
             }
-            MiniButton(if (MusicPlayer.liked) MpHeartFilledIcon else MpHeartIcon, "Thích", if (MusicPlayer.liked) Accent else Color.White) { MusicPlayer.toggleLike() }
+            // Nút tim không clip để chùm confetti bung ra ngoài như bên Short.
+            Box(
+                Modifier.size(34.dp).clickable(interactionSource = null, indication = null) { likeWithEffect(heartFx) },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    if (MusicPlayer.liked) MpHeartFilledIcon else MpHeartIcon, "Thích",
+                    Modifier.size(20.dp).tapEffect(heartFx, Accent, ring = false),
+                    tint = if (MusicPlayer.liked) Accent else Color.White
+                )
+            }
             MiniButton(if (MusicPlayer.playing) PauseIcon else PlayIcon, "Phát / tạm dừng", Color.White) { MusicPlayer.toggle() }
             MiniButton(NextIcon, "Bài kế", Color.White) { MusicPlayer.next() }
-            Box(Modifier.size(6.dp))
+            Box(Modifier.size(4.dp))
         }
+        // Lớp nhấn / giữ: ánh sáng bo góc theo đúng hình thẻ, nằm trên cùng và không chặn thao tác chạm.
+        Box(Modifier.fillMaxWidth().height(barHeight).clip(cardShape).indication(press, ripple(color = Color.White)))
     }
 }
 
-/** Nút nhỏ của thanh mini: vùng chạm 38dp, đứng sát nhau. */
+/** Nút nhỏ của thanh mini: vùng chạm 34dp, đứng sát nhau. */
 @Composable
 private fun MiniButton(icon: ImageVector, desc: String, tint: Color, onClick: () -> Unit) {
-    Box(Modifier.size(38.dp).clip(CircleShape).clickable(onClick = onClick), contentAlignment = Alignment.Center) {
-        Icon(icon, desc, Modifier.size(22.dp), tint = tint)
+    Box(Modifier.size(34.dp).clip(CircleShape).clickable(onClick = onClick), contentAlignment = Alignment.Center) {
+        Icon(icon, desc, Modifier.size(20.dp), tint = tint)
     }
 }

@@ -5,6 +5,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.nan.nantube.data.Account
 import com.nan.nantube.data.PlaylistRepository
+import com.nan.nantube.data.MusicDetector
 import com.nan.nantube.data.ShortDetector
 import com.nan.nantube.data.ChannelAvatars
 import com.nan.nantube.data.HistoryChip
@@ -87,6 +88,24 @@ class HistoryFeed(private val forHistory: Boolean = false, private val firstPage
     }
 
     /**
+     * Đánh dấu nhạc mà thẻ danh sách không gắn ♪ (xem [MusicDetector]), từng đợt nhỏ, cập nhật ngay sau mỗi đợt nên bài hát
+     * hiện dần trong chip "Âm nhạc". Gọi lại khi danh sách thêm video.
+     */
+    suspend fun classifyMusic() {
+        if (items.none { MusicDetector.needsCheck(it) }) return
+        val tried = HashSet<String>()
+        while (true) {
+            val todo = items.filter { it.id !in tried && MusicDetector.needsCheck(it) }.take(ROUND)
+            if (todo.isEmpty()) break
+            tried.addAll(todo.map { it.id })
+            val found = MusicDetector.check(todo.map { it.id })
+            if (found.values.any { it }) {
+                items = items.map { v -> if (found[v.id] == true && !v.music) v.copy(music = true) else v }
+            }
+        }
+    }
+
+    /**
      * Tải lại trang đầu. Danh sách cũ vẫn hiện cho tới khi trang mới về (không chớp); đổi tài khoản thì xoá ngay.
      */
     suspend fun refresh(account: Account?, silent: Boolean = false) {
@@ -103,31 +122,40 @@ class HistoryFeed(private val forHistory: Boolean = false, private val firstPage
             error = null
         }
         try {
-            val page = firstPage(account)
-            val fresh = page.items.filterNot { it.id in removed }.map(ShortDetector::applyCached)
-            val freshIds = fresh.map { it.id }
-            val loadedMore = items.size > fresh.size // đã kéo xuống tải thêm các trang sau
-            if (!silent || !loadedMore) {
-                if (!silent || freshIds != items.map { it.id }) {
-                    ChannelAvatars.prefetchFor(page.items)
-                    items = fresh
-                    continuation = page.continuation
-                    total = page.total
+            var attempt = 0
+            while (true) {
+                try {
+                    val page = firstPage(account)
+                    val fresh = page.items.filterNot { it.id in removed }.map(ShortDetector::applyCached).map(MusicDetector::applyCached)
+                    val freshIds = fresh.map { it.id }
+                    val loadedMore = items.size > fresh.size // đã kéo xuống tải thêm các trang sau
+                    if (!silent || !loadedMore) {
+                        if (!silent || freshIds != items.map { it.id }) {
+                            ChannelAvatars.prefetchFor(page.items)
+                            items = fresh
+                            continuation = page.continuation
+                            total = page.total
+                        }
+                    } else if (freshIds != items.take(fresh.size).map { it.id }) {
+                        // Tải nền định kỳ: có video mới ở đầu thì đặt lên đầu, GIỮ các trang đã tải thêm và token trang kế
+                        // (trước đây ghi đè bằng trang đầu nên danh sách cứ bị cắt về vài video).
+                        ChannelAvatars.prefetchFor(page.items)
+                        val head = freshIds.toHashSet()
+                        items = fresh + items.filter { it.id !in head }
+                        total = page.total
+                    }
+                    if (page.chips.isNotEmpty() || loadedKey != key) chips = page.chips
+                    loadedKey = key
+                    break
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // Không báo lỗi: tải nền (silent) bỏ qua, tải thường thì cứ thử lại liên tục như bên Short.
+                    if (silent) break
+                    attempt++
+                    kotlinx.coroutines.delay((800L * attempt).coerceAtMost(4_000L))
                 }
-            } else if (freshIds != items.take(fresh.size).map { it.id }) {
-                // Tải nền định kỳ: có video mới ở đầu thì đặt lên đầu, GIỮ các trang đã tải thêm và token trang kế
-                // (trước đây ghi đè bằng trang đầu nên danh sách cứ bị cắt về vài video).
-                ChannelAvatars.prefetchFor(page.items)
-                val head = freshIds.toHashSet()
-                items = fresh + items.filter { it.id !in head }
-                total = page.total
             }
-            if (page.chips.isNotEmpty() || loadedKey != key) chips = page.chips
-            loadedKey = key
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            if (!silent) error = e.shortMessage ?: "Không tải được video."
         } finally {
             if (!silent) loading = false
         }
@@ -151,7 +179,7 @@ class HistoryFeed(private val forHistory: Boolean = false, private val firstPage
                 val page = VideoRepository.continuePage(account, token, history = forHistory)
                 ChannelAvatars.prefetchFor(page.items, 2_000L)
                 val seen = items.mapTo(HashSet()) { it.id }
-                val added = page.items.filter { it.id !in removed && seen.add(it.id) }.map(ShortDetector::applyCached)
+                val added = page.items.filter { it.id !in removed && seen.add(it.id) }.map(ShortDetector::applyCached).map(MusicDetector::applyCached)
                 // Token lặp lại đúng cái vừa dùng = YouTube không còn trang nào, tránh tải lặp mãi.
                 val next = page.continuation?.takeIf { it != token }
                 moreFailed = false
@@ -213,7 +241,7 @@ class LibraryCovers {
             return
         }
         items.firstOrNull()?.let { covers = covers + (list to it.coverThumbnail) }
-        if (list == LIST_SOUNDS || items.any { it.isMusic }) music = music + list
+        if (list == LIST_SOUNDS || items.map(MusicDetector::applyCached).any { it.isMusic }) music = music + list
     }
 
     companion object {

@@ -55,6 +55,7 @@ import coil.compose.AsyncImage
 import com.composables.icons.lucide.Lucide
 import com.composables.icons.lucide.Search
 import com.nan.nantube.data.Account
+import com.nan.nantube.data.MusicDetector
 import com.nan.nantube.data.ShortDetector
 import com.nan.nantube.data.VideoItem
 import com.nan.nantube.data.VideoRepository
@@ -78,19 +79,37 @@ fun openLink(context: android.content.Context, url: String) {
  * không chỉ một video rồi chuyển sang đề xuất.
  */
 fun openVideo(context: android.content.Context, video: VideoItem, queue: List<VideoItem> = emptyList()) {
-    // Thẻ TV của danh sách phát không đánh dấu Short dài (≤ 3 phút). Chạm vào khi chưa kịp phân loại thì hỏi nhanh
-    // ngay lúc này (có hạn chờ) thay vì mở nhầm link ngoài. Hỏi hay hết hạn đều định tuyến đúng một lần ([routeVideo]).
-    if (!video.isShort && ShortDetector.needsCheck(video)) {
+    // Thẻ TV của danh sách phát không đánh dấu Short dài (≤ 3 phút) cũng không đánh dấu nhạc. Chạm vào khi chưa kịp phân
+    // loại thì hỏi nhanh ngay lúc này (có hạn chờ) thay vì mở nhầm link ngoài. Hỏi hay hết hạn đều định tuyến đúng một lần ([routeVideo]).
+    val cached = ShortDetector.applyCached(video).let(MusicDetector::applyCached)
+    if (!cached.isShort && (ShortDetector.needsCheck(cached) || MusicDetector.needsCheck(cached))) {
         MainScope().launch {
-            val found = withTimeoutOrNull(3_000L) { ShortDetector.check(listOf(video.id)) }
-            routeVideo(context, if (found?.get(video.id) == true) video.copy(isShort = true) else video, queue)
+            var v = cached
+            if (ShortDetector.needsCheck(v)) {
+                val found = withTimeoutOrNull(3_000L) { ShortDetector.check(listOf(v.id)) }
+                if (found?.get(v.id) == true) v = v.copy(isShort = true)
+            }
+            if (!v.isShort && MusicDetector.needsCheck(v)) {
+                val found = withTimeoutOrNull(3_000L) { MusicDetector.check(listOf(v.id)) }
+                if (found?.get(v.id) == true) v = v.copy(music = true)
+            }
+            routeVideo(context, v, queue)
         }
         return
     }
-    routeVideo(context, video, queue)
+    routeVideo(context, cached, queue)
 }
 
 private fun routeVideo(context: android.content.Context, video: VideoItem, queue: List<VideoItem>) {
+    // Nhạc: phát ngay trong trình phát nhạc của app, cả các bài nhạc của danh sách đang mở làm hàng đợi.
+    if (!video.isShort && video.isMusic) {
+        val songs = queue.map(ShortDetector::applyCached).map(MusicDetector::applyCached)
+            .filter { !it.isShort && it.isMusic && it.id.length == 11 }
+            .toMutableList()
+        if (songs.none { it.id == video.id }) songs.add(0, video)
+        MusicPlayer.playVideos(context, ShortDetector.account, songs, video, "Danh sách phát", local = false)
+        return
+    }
     if (!video.isShort) return openLink(context, video.watchUrl)
     val shorts = LinkedHashMap<String, VideoItem>()
     for (v in queue.map(ShortDetector::applyCached)) if (v.isShort && v.id.length == 11 && (v.id == video.id || !shorts.containsKey(v.id))) shorts.putIfAbsent(v.id, v)
@@ -151,22 +170,10 @@ fun StatusBody(loading: Boolean, hasItems: Boolean, error: String?, onRetry: () 
         loading && !hasItems -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             CircularProgressIndicator(color = Color.White, strokeWidth = 3.dp, modifier = Modifier.size(36.dp))
         }
-        error != null && !hasItems -> Column(
-            Modifier.fillMaxSize().padding(32.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
+        // Không còn báo lỗi / nút "Thử lại": lỗi mạng thì feed tự tải lại liên tục (vòng xoay như bên Short). Chỉ còn câu
+        // "không có gì" khi YouTube trả về danh sách rỗng thật.
+        error != null && !hasItems -> Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
             Text(error, color = NanColors.TextSecondary, fontSize = 14.sp, textAlign = TextAlign.Center)
-            Spacer(Modifier.height(16.dp))
-            Box(
-                Modifier
-                    .clip(RoundedCornerShape(50))
-                    .background(Color(0xFFF1F1F1))
-                    .clickable(onClick = onRetry)
-                    .padding(horizontal = 24.dp, vertical = 10.dp)
-            ) {
-                Text("Thử lại", color = Color.Black, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-            }
         }
         else -> list()
     }

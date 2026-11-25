@@ -219,12 +219,17 @@ fun SaveToPlaylistSheet(video: VideoItem, account: Account?, onDismiss: () -> Un
     BackHandler(onBack = onDismiss)
 
     LaunchedEffect(video.id, account?.id) {
-        try {
-            options = PlaylistRepository.options(account, video.id)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            error = e.shortMessage ?: "Không tải được danh sách phát."
+        // Không báo lỗi: lỗi mạng thì cứ thử lại liên tục (vòng xoay).
+        var attempt = 0
+        while (options == null) {
+            try {
+                options = PlaylistRepository.options(account, video.id)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                attempt++
+                kotlinx.coroutines.delay((800L * attempt).coerceAtMost(4_000L))
+            }
         }
     }
     // Ảnh bìa mỗi danh sách = video đầu tiên của nó (như YouTube); lỗi thì giữ ô trống.

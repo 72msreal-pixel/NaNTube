@@ -119,12 +119,13 @@ fun HistoryScreen(base: HistoryFeed, account: Account?, onSaveToPlaylist: (Video
     }
     // Short mà YouTube không gắn nhãn (Short dài...) được nhận ra để chip Shorts đúng và chạm vào mở trình phát dọc.
     LaunchedEffect(feed, feed.items.size) { feed.classifyShorts() }
+    LaunchedEffect(feed, feed.items.size) { feed.classifyMusic() }
 
     val visible = remember(feed.items, tab.kind) {
         feed.items.filter {
             when (tab.kind) {
                 LocalKind.All -> true
-                LocalKind.Video -> !it.isShort
+                LocalKind.Video -> !it.isShort && !it.music
                 LocalKind.Shorts -> it.isShort
             }
         }

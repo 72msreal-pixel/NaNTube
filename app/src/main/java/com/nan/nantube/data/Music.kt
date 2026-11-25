@@ -51,6 +51,17 @@ object MusicRepository {
         return shelves(call("browse", body, account))
     }
 
+    private val VIDEO_TYPE = Regex("\"musicVideoType\"\\s*:\\s*\"(MUSIC_VIDEO_TYPE_[A-Z_]+)\"")
+
+    /**
+     * Loại video theo chính YouTube Music (`musicVideoType`): OMV = MV chính thức, ATV = bản âm thanh của bài hát,
+     * UGC = video người dùng, PODCAST_EPISODE... Trả "" nếu YouTube Music không coi video này là nhạc, ném lỗi nếu hỏi không được.
+     */
+    suspend fun videoType(videoId: String, account: Account?): String {
+        val json = call("next", JSONObject().put("videoId", videoId).put("isAudioOnly", true), account)
+        return VIDEO_TYPE.find(json.toString())?.groupValues?.get(1).orEmpty()
+    }
+
     private suspend fun call(endpoint: String, body: JSONObject, account: Account?): JSONObject {
         val day = SimpleDateFormat("yyyyMMdd", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
         val version = "1.${day.format(Date())}.01.00"

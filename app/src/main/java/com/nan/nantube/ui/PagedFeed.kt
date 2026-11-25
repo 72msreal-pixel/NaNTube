@@ -57,7 +57,12 @@ class PagedFeed<T : Any>(
         private set
     var loadingMore by mutableStateOf(false)
         private set
+    /** Chỉ còn dùng cho "danh sách rỗng" (không phải lỗi mạng: lỗi thì tự tải lại, không báo). */
     var error by mutableStateOf<String?>(null)
+        private set
+
+    /** Số lần tải trang đầu thất bại tới giờ (UI không hiện lỗi, chỉ để biết đã thử, vd mở màn chờ). */
+    var failures by mutableIntStateOf(0)
         private set
 
     /** Tăng mỗi khi danh sách được thay bằng bộ mới (tải lại / làm mới), để màn Short biết mà quay về video đầu. */
@@ -110,19 +115,27 @@ class PagedFeed<T : Any>(
         loading = true
         job = scope.launch {
             try {
-                val page = first(account, arg)
-                prepare?.invoke(page.items)
-                if (keeping) listState = LazyListState()
-                items = page.items.distinctBy(keyOf)
-                version++
-                token = page.token
-                loadedAt = System.currentTimeMillis()
-                if (items.isEmpty()) error = emptyMessage
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                currentKey = null // lần hiện lại sau sẽ tải lại
-                error = e.shortMessage ?: "Không tải được dữ liệu."
+                // Lỗi mạng / YouTube: không báo lỗi, không nút Thử lại; cứ thử lại liên tục (chờ lâu dần tới 4 giây).
+                var attempt = 0
+                while (true) {
+                    try {
+                        val page = first(account, arg)
+                        prepare?.invoke(page.items)
+                        if (keeping) listState = LazyListState()
+                        items = page.items.distinctBy(keyOf)
+                        version++
+                        token = page.token
+                        loadedAt = System.currentTimeMillis()
+                        if (items.isEmpty()) error = emptyMessage
+                        break
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        failures++
+                        attempt++
+                        kotlinx.coroutines.delay((800L * attempt).coerceAtMost(4_000L))
+                    }
+                }
             } finally {
                 if (isActive) loading = false
             }

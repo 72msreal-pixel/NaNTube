@@ -24,6 +24,7 @@ import com.nan.nantube.data.AccountStore
 import com.nan.nantube.data.ChannelAvatars
 import com.nan.nantube.data.NanStorage
 import com.nan.nantube.data.SavedComments
+import com.nan.nantube.data.MusicDetector
 import com.nan.nantube.data.ShortDetector
 import com.nan.nantube.data.ShortsSeen
 import com.nan.nantube.data.TvStore
@@ -46,6 +47,7 @@ class MainActivity : ComponentActivity() {
         ShortsSeen.init(this)
         SavedComments.init(this)
         ShortDetector.init(this)
+        MusicDetector.init(this)
         TvStore.init(this)
         NewUploadsWorker.schedule(this)
         if (Build.VERSION.SDK_INT >= 33 &&

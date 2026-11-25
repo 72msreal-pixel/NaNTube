@@ -101,7 +101,7 @@ fun AppRoot() {
         launch { historyFeed.refresh(account, silent = true) }
         launch { libraryCovers.load(account) }
     }
-    val mainReady = mainFeed.items.isNotEmpty() || mainFeed.error != null
+    val mainReady = mainFeed.items.isNotEmpty() || mainFeed.error != null || mainFeed.failures > 0
     LaunchedEffect(mainReady) { if (mainReady) SplashGate.ready = true }
 
     // Lịch sử tự cập nhật mỗi 1 giây khi đang ở tab Short hoặc Info (và app đang mở), nên xem tới Short nào là hàng

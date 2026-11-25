@@ -507,18 +507,14 @@ private fun ClipPage(
         val total = lengthMs / 1000f
         val s = ((if (from >= 0) from else 0L) / 1000f).coerceIn(0f, total)
         val e = ((if (to > 0) to else lengthMs) / 1000f).coerceIn(s, total)
-        RangeSlider(
+        NanRangeSlider(
             value = s..e,
             onValueChange = { range ->
                 onStart(DownloadText.duration(range.start.toLong() * 1000))
                 onEnd(DownloadText.duration(range.endInclusive.toLong() * 1000))
             },
             valueRange = 0f..total,
-            colors = SliderDefaults.colors(
-                thumbColor = Color.White,
-                activeTrackColor = Color.White,
-                inactiveTrackColor = NanColors.Divider
-            ),
+            inactiveColor = NanColors.Divider,
             modifier = Modifier.padding(horizontal = 12.dp)
         )
     }

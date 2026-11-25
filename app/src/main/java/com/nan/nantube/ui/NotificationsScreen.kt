@@ -138,13 +138,21 @@ fun NotificationsScreen(account: Account?, onBack: () -> Unit, onSignIn: () -> U
         loading = true
         error = null
         try {
-            val result = NotificationRepository.load(account, force = reload > 0)
-            items = result.items
-            fromInbox = result.fromInbox
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            error = e.shortMessage ?: "Không tải được thông báo."
+            // Không báo lỗi: lỗi mạng thì cứ thử lại liên tục (vòng xoay), như bên Short.
+            var attempt = 0
+            while (true) {
+                try {
+                    val result = NotificationRepository.load(account, force = reload > 0)
+                    items = result.items
+                    fromInbox = result.fromInbox
+                    break
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    attempt++
+                    kotlinx.coroutines.delay((800L * attempt).coerceAtMost(4_000L))
+                }
+            }
         } finally {
             loading = false
         }

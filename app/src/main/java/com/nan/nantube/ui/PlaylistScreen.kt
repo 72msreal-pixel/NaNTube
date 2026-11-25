@@ -89,6 +89,8 @@ fun PlaylistScreen(list: OpenList, account: Account?, onSaveToPlaylist: (VideoIt
     // Thẻ TV của danh sách phát không đánh dấu Short (kể cả Short dài tới 3 phút): tự nhận ra để chip Shorts đúng và
     // chạm vào mở trình phát dọc, vuốt xem các Short khác của danh sách.
     LaunchedEffect(feed, feed.items.size) { if (!downloads) feed.classifyShorts() }
+    // Bài hát mà YouTube không gắn ♪ (vd kênh "... Official"): hỏi YouTube Music để vào đúng chip Âm nhạc, không bị tính là video.
+    LaunchedEffect(feed, feed.items.size) { if (!downloads) feed.classifyMusic() }
 
     var kind by remember { mutableStateOf(ListKind.All) }
     var searching by remember { mutableStateOf(false) }
@@ -99,7 +101,7 @@ fun PlaylistScreen(list: OpenList, account: Account?, onSaveToPlaylist: (VideoIt
             when (kind) {
                 ListKind.All -> true
                 // Trong "Nội dung đã tải", music = file âm thanh (M4A/MP3): không phải video.
-                ListKind.Video -> !it.isShort && !(downloads && it.music)
+                ListKind.Video -> !it.isShort && !it.music
                 ListKind.Shorts -> it.isShort
                 ListKind.Music -> it.isMusic
             } && (q.isEmpty() || it.title.contains(q, ignoreCase = true) || (it.channel?.contains(q, ignoreCase = true) == true))
