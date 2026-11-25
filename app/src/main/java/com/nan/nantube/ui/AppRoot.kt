@@ -39,6 +39,7 @@ import com.composables.icons.lucide.CircleUser
 import com.composables.icons.lucide.Lucide
 import com.composables.icons.lucide.Music
 import com.composables.icons.lucide.Search
+import com.nan.nantube.data.PipPrefs
 import com.nan.nantube.data.AccountStore
 import kotlinx.coroutines.launch
 import com.nan.nantube.data.VideoItem
@@ -175,6 +176,16 @@ fun AppRoot() {
         } else {
             ShortsViewer.open(list, ShortsMini.expandIndex)
         }
+    }
+    // Bấm bánh răng ở cửa sổ nổi: mở thẳng Cài đặt → Thử nghiệm các tính năng mới.
+    LaunchedEffect(PipPrefs.settingsSerial) {
+        if (PipPrefs.settingsSerial == 0) return@LaunchedEffect
+        ShortsViewer.close()
+        showHistory = false
+        openList = null
+        PlaylistViewer.open = null
+        tab = Tab.Info
+        showSettings = true
     }
     // Mở lại Short toàn màn hình (tab Short hoặc màn xem Short) thì cửa sổ nhỏ tắt để hai bên không giành một trình phát.
     LaunchedEffect(tab, ShortsViewer.items) {
