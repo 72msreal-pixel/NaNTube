@@ -186,8 +186,10 @@ private fun subtitle(video: VideoItem): String =
 
 /** Thẻ video lớn kiểu trang chủ YouTube: ảnh 16:9, avatar kênh, tiêu đề 2 dòng, ♪ cho video nhạc. */
 @Composable
-fun VideoCard(video: VideoItem, account: Account?, onSaveToPlaylist: (VideoItem) -> Unit) {
+fun VideoCard(item: VideoItem, account: Account?, onSaveToPlaylist: (VideoItem) -> Unit) {
     val context = LocalContext.current
+    // Bài đã được nhận diện là nhạc (xem MusicDetector) thì hiện ♪ ngay, kể cả khi thẻ YouTube không gắn icon.
+    val video = MusicDetector.applyCached(item)
     Column(
         Modifier
             .fillMaxWidth()
@@ -198,12 +200,12 @@ fun VideoCard(video: VideoItem, account: Account?, onSaveToPlaylist: (VideoItem)
             Modifier
                 .padding(horizontal = 12.dp)
                 .fillMaxWidth()
-                .aspectRatio(16f / 9f)
+                .aspectRatio(if (video.artUrl != null && !video.isShort) 1f else 16f / 9f)
                 .clip(RoundedCornerShape(12.dp))
                 .background(NanColors.Surface)
         ) {
             // Ảnh 720p của YouTube; video nào không có thì rơi về ảnh nhỏ để khỏi trống.
-            var url by remember(video.id) { mutableStateOf(if (video.isShort) video.coverThumbnail else video.hqThumbnail) }
+            var url by remember(video.id) { mutableStateOf(video.artUrl?.takeIf { !video.isShort } ?: if (video.isShort) video.coverThumbnail else video.hqThumbnail) }
             AsyncImage(
                 model = url,
                 onError = { if (url != video.coverThumbnail) url = video.coverThumbnail },

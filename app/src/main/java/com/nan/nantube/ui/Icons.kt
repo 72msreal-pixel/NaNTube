@@ -91,5 +91,7 @@ val IconMic: ImageVector by lazy {
 val IconHistory: ImageVector by lazy {
     strokeIcon("History", "M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8", "M3 3v5h5", "M12 7v5l4 2")
 }
+/** Danh sách phát: ba dòng và mũi tên phát, cho nhãn "N video" trên bìa. */
+val IconPlaylist: ImageVector by lazy { strokeIcon("Playlist", "M3 6h13", "M3 12h13", "M3 18h7", "m16 14 5 3-5 3z") }
 /** Mũi tên chéo lên-trái: chép gợi ý vào ô tìm kiếm mà chưa tìm. */
 val IconFillQuery: ImageVector by lazy { strokeIcon("FillQuery", "M7 17V7h10", "M17 17 7 7") }

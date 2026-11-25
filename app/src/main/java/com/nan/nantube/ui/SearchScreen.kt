@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -76,12 +77,15 @@ import coil.compose.AsyncImage
 import com.composables.icons.lucide.Bell
 import com.composables.icons.lucide.Check
 import com.composables.icons.lucide.ChevronDown
+import com.composables.icons.lucide.ChevronUp
 import com.composables.icons.lucide.Lucide
 import com.composables.icons.lucide.Search
 import com.nan.nantube.data.Account
 import com.nan.nantube.data.ChannelAvatars
 import com.nan.nantube.data.ChannelSubscriptions
 import com.nan.nantube.data.HotSearches
+import com.nan.nantube.data.MusicDetector
+import com.nan.nantube.data.ShortDetector
 import com.nan.nantube.data.ChannelNotify
 import com.nan.nantube.data.Paged
 import com.nan.nantube.data.SearchFilter
@@ -211,6 +215,16 @@ fun SearchScreen(ui: SearchUi, account: Account?, onBack: () -> Unit, onSaveToPl
         ui.submitted?.let { ui.feed.load(account, "${ui.filter}|$it") }
     }
 
+    // Đánh dấu ♪ cho bài hát mà thẻ kết quả không gắn icon (YouTube tự gắn cho nhạc), từng đợt nhỏ khi danh sách thêm mục.
+    LaunchedEffect(ui.feed.items.size, account?.id) {
+        ShortDetector.account = account
+        MusicDetector.classify({ ui.feed.items.filterIsInstance<SearchResult.Video>().map { it.video } }) { ids ->
+            ui.feed.update { list ->
+                list.map { r -> if (r is SearchResult.Video && r.video.id in ids) SearchResult.Video(r.video.copy(music = true)) else r }
+            }
+        }
+    }
+
     // Gợi ý theo từ khóa đang gõ, đợi 150 ms sau phím cuối để khỏi gọi mạng từng chữ.
     val typed = ui.field.text
     LaunchedEffect(typed, ui.editing, account?.id) {
@@ -334,7 +348,7 @@ fun SearchScreen(ui: SearchUi, account: Account?, onBack: () -> Unit, onSaveToPl
                                     is ResultRow.Single -> when (val r = row.result) {
                                         is SearchResult.Video -> VideoCard(r.video, account, onSaveToPlaylist)
                                         is SearchResult.Channel -> ChannelCard(r, account)
-                                        is SearchResult.Playlist -> PlaylistRow(r)
+                                        is SearchResult.Playlist -> PlaylistCard(r, account)
                                     }
                                 }
                             }
@@ -742,47 +756,130 @@ private fun CardButton(
     }
 }
 
-/** Danh sách phát trong kết quả: ảnh bìa + số video bên trái, tên và kênh bên phải. */
+private val DIGITS = Regex("\\d[\\d.,]*")
+
+/**
+ * Danh sách phát / đĩa nhạc như YouTube: bìa xếp chồng có nhãn số video, tên, kênh · loại, rồi khung
+ * "N video trong danh sách phát" (thu gọn được) có hàng video vuốt ngang.
+ */
 @Composable
-private fun PlaylistRow(pl: SearchResult.Playlist) {
+private fun PlaylistCard(pl: SearchResult.Playlist, account: Account?) {
     val context = LocalContext.current
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clickable { openLink(context, pl.url) }
-            .padding(horizontal = 12.dp, vertical = 8.dp)
-    ) {
-        Box(
-            Modifier
-                .width(168.dp)
-                .aspectRatio(16f / 9f)
-                .clip(RoundedCornerShape(12.dp))
-                .background(NanColors.Surface)
-        ) {
-            fullUrl(pl.thumbnail)?.let {
-                AsyncImage(model = it, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-            }
-            pl.count?.let {
-                Text(
-                    it,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = Color.White,
-                    modifier = Modifier
+    var open by remember(pl.id) { mutableStateOf(true) }
+    var videos by remember(pl.id) { mutableStateOf<List<VideoItem>>(emptyList()) }
+    val album = pl.kind?.let { it.equals("Đĩa nhạc", true) || it.equals("Album", true) || it.equals("Đĩa đơn", true) } == true
+    LaunchedEffect(pl.id, account?.id) {
+        videos = VideoRepository.playlistPreview(account, pl.id).map { if (album) it.copy(music = true) else it }
+    }
+    val total = pl.count?.let { DIGITS.find(it)?.value } ?: videos.size.takeIf { it > 0 }?.toString()
+    val play: () -> Unit = {
+        val first = videos.firstOrNull()?.let(MusicDetector::applyCached)
+        if (first != null && first.isMusic) openVideo(context, first, videos) else openLink(context, pl.url)
+    }
+
+    Column(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 10.dp)) {
+        Column(Modifier.padding(horizontal = 12.dp).fillMaxWidth().clickable(onClick = play)) {
+            val strip = RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp)
+            Box(Modifier.align(Alignment.CenterHorizontally).fillMaxWidth(0.84f).height(5.dp).clip(strip).background(Color(0xFF3A3A3A)))
+            Spacer(Modifier.height(1.dp))
+            Box(Modifier.align(Alignment.CenterHorizontally).fillMaxWidth(0.92f).height(5.dp).clip(strip).background(Color(0xFF4A4A4A)))
+            Spacer(Modifier.height(1.dp))
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(16f / 9f)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color(0xFF3F3F3F))
+            ) {
+                fullUrl(pl.thumbnail)?.let {
+                    AsyncImage(model = it, contentDescription = null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+                }
+                Row(
+                    Modifier
                         .align(Alignment.BottomEnd)
-                        .padding(6.dp)
-                        .clip(RoundedCornerShape(6.dp))
+                        .padding(8.dp)
+                        .clip(RoundedCornerShape(8.dp))
                         .background(Color(0xCC000000))
-                        .padding(horizontal = 6.dp, vertical = 2.dp)
-                )
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(IconPlaylist, null, Modifier.size(16.dp), tint = Color.White)
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        pl.count ?: total?.let { "$it video" } ?: "Danh sách",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = Color.White
+                    )
+                }
             }
         }
-        Column(Modifier.weight(1f).padding(start = 12.dp)) {
-            Text(pl.title, fontSize = 15.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            pl.channel?.let {
-                Text(it, fontSize = 12.sp, color = NanColors.TextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
+        Column(Modifier.padding(start = 12.dp, end = 12.dp, top = 10.dp).fillMaxWidth()) {
+            Text(pl.title, fontSize = 18.sp, lineHeight = 24.sp, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(
+                listOfNotNull(pl.channel, "Danh sách phát").joinToString(" · "),
+                fontSize = 13.sp,
+                color = NanColors.TextSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 2.dp)
+            )
+        }
+        if (videos.isNotEmpty()) {
+            Column(
+                Modifier
+                    .padding(start = 12.dp, end = 12.dp, top = 12.dp)
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(NanColors.Popup)
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().clickable { open = !open }.padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("${total ?: videos.size} video trong danh sách phát", fontSize = 16.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+                    Icon(if (open) Lucide.ChevronUp else Lucide.ChevronDown, if (open) "Thu gọn" else "Mở rộng", Modifier.size(24.dp))
+                }
+                if (open) {
+                    LazyRow(
+                        contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 14.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(videos, key = { it.id }) { PlaylistVideoTile(it, videos) }
+                    }
+                }
             }
-            Text("Danh sách phát", fontSize = 12.sp, color = NanColors.TextSecondary, modifier = Modifier.padding(top = 2.dp))
+        }
+    }
+}
+
+/** Một video trong hàng vuốt ngang của thẻ danh sách phát: ảnh 16:9 kèm thời lượng, tên, kênh · lượt xem. */
+@Composable
+private fun PlaylistVideoTile(video: VideoItem, queue: List<VideoItem>) {
+    val context = LocalContext.current
+    val v = MusicDetector.applyCached(video)
+    Column(Modifier.width(168.dp).clickable { openVideo(context, v, queue) }) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(16f / 9f)
+                .clip(RoundedCornerShape(10.dp))
+                .background(NanColors.Surface)
+        ) {
+            AsyncImage(model = v.coverThumbnail, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            if (v.isShort) ShortsBadge() else DurationBadge(v.duration, v.isMusic, v.live)
+        }
+        Text(
+            v.title,
+            fontSize = 14.sp,
+            lineHeight = 18.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 6.dp)
+        )
+        listOfNotNull(v.channel, v.views).joinToString(" · ").takeIf { it.isNotEmpty() }?.let {
+            Text(it, fontSize = 11.sp, color = NanColors.TextSecondary, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
         }
     }
 }

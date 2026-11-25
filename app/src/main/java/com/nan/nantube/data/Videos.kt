@@ -37,7 +37,9 @@ data class VideoItem(
     val live: Boolean = false,
     /** `params` / `playerParams` của reelWatchEndpoint do feed Short trả, để hỏi lại menu của đúng reel này (Không quan tâm...). */
     val reelParams: String? = null,
-    val reelPlayerParams: String? = null
+    val reelPlayerParams: String? = null,
+    /** Ảnh bìa vuông (đĩa nhạc / bài hát) khi YouTube trả ảnh 1:1; có thì thẻ vẽ vuông như YouTube. */
+    val artUrl: String? = null
 ) {
     /** Ảnh bìa lấy thẳng từ CDN theo id: luôn dùng được, khỏi phụ thuộc cấu trúc JSON từng loại. */
     val thumbnail: String
@@ -125,7 +127,9 @@ sealed class SearchResult {
         val title: String,
         val channel: String?,
         val count: String?,
-        val thumbnail: String?
+        val thumbnail: String?,
+        /** "Đĩa nhạc", "Danh sách phát"... nếu YouTube ghi. */
+        val kind: String? = null
     ) : SearchResult() {
         override val key get() = "p:$id"
         val url: String get() = "https://www.youtube.com/playlist?list=$id"
@@ -262,6 +266,22 @@ object VideoRepository {
         ShortDetector.account = account
         val json = InnerTube.call("browse", JSONObject().put("browseId", "VL$playlistId"), account)
         return parsePage(json, withChips = false, withCount = true).resolved()
+    }
+
+    private val previews = java.util.concurrent.ConcurrentHashMap<String, List<VideoItem>>()
+
+    /** Vài video đầu của một danh sách phát cho thẻ kết quả tìm kiếm (khách cũng xem được). Lỗi thì trả rỗng. */
+    suspend fun playlistPreview(account: Account?, playlistId: String): List<VideoItem> {
+        previews[playlistId]?.let { return it }
+        return try {
+            val json = InnerTube.call("browse", JSONObject().put("browseId", "VL$playlistId"), account)
+            parse(json).filter { it.id.length == 11 }.take(12).map(ShortDetector::applyCached)
+                .also { if (it.isNotEmpty()) previews[playlistId] = it }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            emptyList()
+        }
     }
 
     /** Chỗ chung nhận ra Short không được YouTube đánh dấu (Short dài...) cho mọi danh sách: xem [ShortDetector.resolve]. */
@@ -646,6 +666,7 @@ object VideoRepository {
             progress = resumeProgress(v.opt("thumbnailOverlays")),
             avatar = avatarOf(v),
             music = MUSIC_ICON.containsMatchIn(v.opt("thumbnailOverlays")?.toString().orEmpty()),
+            artUrl = squareArt(v.dig("thumbnail", "thumbnails") as? JSONArray),
             channelId = channelIdOf(v),
             published = ytText(v.opt("publishedTimeText")) ?: publishedIn(views),
             upcoming = upcomingText(v.optJSONObject("upcomingEventData")),
@@ -767,6 +788,7 @@ object VideoRepository {
             progress = progress,
             avatar = avatarOf(meta),
             music = MUSIC_ICON.containsMatchIn(overlays?.toString().orEmpty()),
+            artUrl = squareArt(v.dig("contentImage", "thumbnailViewModel", "image", "sources") as? JSONArray),
             channelId = channelIdOf(meta) ?: channelIdOf(v),
             published = allParts.firstNotNullOfOrNull { publishedIn(it) },
             live = allParts.any { isWatchingText(it) } || duration.equals("LIVE", ignoreCase = true) ||
@@ -778,6 +800,18 @@ object VideoRepository {
      * Chữ huy hiệu trên ảnh bìa của lockupViewModel (thời lượng / LIVE). Như MediaServiceCore (LockupItem.getBadge): client WEB để ở
      * thumbnailOverlayBadgeViewModel.thumbnailBadges, client TV ở thumbnailBottomOverlayViewModel.badges.
      */
+    /** Ảnh cuối (lớn nhất) của một mảng ảnh nếu nó vuông (1:1), ngược lại null. */
+    private fun squareArt(thumbs: JSONArray?): String? {
+        val t = thumbs?.optJSONObject(thumbs.length() - 1) ?: return null
+        val w = t.optInt("width")
+        val h = t.optInt("height")
+        if (w <= 0 || h <= 0 || kotlin.math.abs(w.toFloat() / h - 1f) > 0.05f) return null
+        return t.optString("url").takeIf { it.isNotBlank() }?.let { if (it.startsWith("//")) "https:$it" else it }
+    }
+
+    private fun lastUrl(arr: JSONArray?): String? =
+        arr?.optJSONObject(arr.length() - 1)?.optString("url")?.takeIf { it.isNotBlank() }
+
     private fun lockupBadge(overlays: JSONArray?): String? {
         if (overlays == null) return null
         for (i in 0 until overlays.length()) {
@@ -811,6 +845,7 @@ object VideoRepository {
         return VideoItem(
             id, title, line(0), duration.takeIf { !short }, meta1, short,
             progress = resumeProgress(tileOverlays),
+            music = MUSIC_ICON.containsMatchIn(tileOverlays?.toString().orEmpty()),
             channelId = channelId, panelId = panel?.first, panelParams = panel?.second,
             published = publishedIn(meta1) ?: publishedIn(meta2),
             live = isWatchingText(meta1) || isWatchingText(meta2) || overlayStyle(tileOverlays) == "LIVE"
@@ -867,8 +902,11 @@ object VideoRepository {
                             k == "reelItemRenderer" -> putVideo(out, reel(v))
                             k == "shortsLockupViewModel" -> putVideo(out, shortsLockup(v))
                             k == "lockupViewModel" -> lockupResult(v)?.let { putResult(out, it) }
-                            k == "tileRenderer" ->
-                                if (isChannelTile(v)) putResult(out, tileChannel(v)) else putVideo(out, tile(v))
+                            k == "tileRenderer" -> when {
+                                isChannelTile(v) -> putResult(out, tileChannel(v))
+                                isPlaylistTile(v) -> putResult(out, tilePlaylist(v))
+                                else -> putVideo(out, tile(v))
+                            }
                             k in CHANNEL_KEYS -> putResult(out, channelResult(v))
                             k == "playlistRenderer" -> putResult(out, playlistResult(v))
                             else -> walkResults(v, out)
@@ -884,20 +922,61 @@ object VideoRepository {
 
     private fun lockupResult(v: JSONObject): SearchResult? {
         val type = v.optString("contentType")
-        if (type == "LOCKUP_CONTENT_TYPE_PLAYLIST") return playlistLockup(v)
+        if (PLAYLIST_LOCKUPS.any { type.contains(it) }) return playlistLockup(v)
         if (type.contains("CHANNEL")) return channelLockup(v)
         return lockup(v)?.takeIf { it.id.length == 11 && it.title.isNotBlank() }?.let { SearchResult.Video(it) }
+    }
+
+    private val PLAYLIST_LOCKUPS = listOf("PLAYLIST", "ALBUM", "PODCAST")
+    private val KIND_WORDS = listOf("đĩa nhạc", "album", "đĩa đơn", "single", "ep", "danh sách phát", "playlist", "podcast")
+    private val COUNT_IN_TEXT = Regex("\\d[\\d.,\\u00a0]*\\s*(video|videos|bài hát|bài|tracks?|songs?)", RegexOption.IGNORE_CASE)
+    private val DOT_SPLIT = Regex("\\s*[•·]\\s*")
+
+    /** Chữ của các dòng metadata, tách theo dấu • (YouTube hay gộp "Đĩa nhạc • HRXSTAL, HARDX" thành một đoạn). */
+    private fun lockupTexts(meta: JSONObject): List<String> {
+        val rows = meta.dig("metadata", "contentMetadataViewModel", "metadataRows") as? JSONArray
+        return (0 until (rows?.length() ?: 0)).flatMap { r ->
+            val parts = rows.dig(r, "metadataParts") as? JSONArray
+            (0 until (parts?.length() ?: 0)).mapNotNull { ytText(parts.dig(it, "text")) }
+        }.flatMap { it.split(DOT_SPLIT) }.map { it.trim() }.filter { it.isNotEmpty() }
     }
 
     private fun playlistLockup(v: JSONObject): SearchResult? {
         val id = v.optString("contentId").ifBlank { return null }
         val meta = v.optJSONObject("metadata")?.optJSONObject("lockupMetadataViewModel") ?: return null
         val title = ytText(meta.opt("title")) ?: return null
-        val rows = meta.dig("metadata", "contentMetadataViewModel", "metadataRows") as? JSONArray
-        val channel = ytText(rows.dig(0, "metadataParts", 0, "text"))
+        val texts = lockupTexts(meta)
         val count = findKey(v, "thumbnailBadgeViewModel")?.let { ytText(it.opt("text")) }
-        val thumb = findKey(v, "thumbnailViewModel")?.dig("image", "sources", 0, "url") as? String
-        return SearchResult.Playlist(id, title, channel, count, thumb)
+            ?: texts.firstOrNull { COUNT_IN_TEXT.containsMatchIn(it) }
+        val kind = texts.firstOrNull { t -> KIND_WORDS.any { t.equals(it, ignoreCase = true) } }
+        val channel = texts.firstOrNull { it != count && it != kind && !COUNT_IN_TEXT.containsMatchIn(it) }
+        val thumb = lastUrl(findKey(v, "thumbnailViewModel")?.dig("image", "sources") as? JSONArray)
+        return SearchResult.Playlist(id, title, channel, count, thumb, kind)
+    }
+
+    private fun isPlaylistTile(v: JSONObject): Boolean =
+        v.optString("contentType").let { it == "TILE_CONTENT_TYPE_PLAYLIST" || it == "TILE_CONTENT_TYPE_RADIO" } ||
+            tileBrowseId(v)?.startsWith("VL") == true
+
+    /** Danh sách phát của client TV (tài khoản đăng nhập bằng mã): trước đây bị đọc thành một video nên chỉ hiện mỗi ảnh. */
+    private fun tilePlaylist(v: JSONObject): SearchResult? {
+        val id = (v.dig("onSelectCommand", "watchEndpoint", "playlistId") as? String)?.takeIf { it.isNotBlank() }
+            ?: tileBrowseId(v)?.removePrefix("VL")?.takeIf { it.isNotBlank() }
+            ?: return null
+        val meta = v.dig("metadata", "tileMetadataRenderer") as? JSONObject ?: return null
+        val title = ytText(meta.opt("title")) ?: return null
+        val lines = meta.optJSONArray("lines")
+        val texts = (0 until (lines?.length() ?: 0)).mapNotNull { tileLine(lines, it) }
+            .flatMap { it.split(DOT_SPLIT) }.map { it.trim() }.filter { it.isNotEmpty() }
+        val overlays = v.dig("header", "tileHeaderRenderer", "thumbnailOverlays")
+        val overlayText = overlays?.toString().orEmpty()
+        val count = COUNT_IN_TEXT.find(overlayText)?.value
+            ?: overlayTime(overlays)?.takeIf { t -> t.isNotBlank() && t.all { it.isDigit() || it in ".,\u00a0 " } }?.let { "$it video" }
+            ?: texts.firstOrNull { COUNT_IN_TEXT.containsMatchIn(it) }
+        val kind = texts.firstOrNull { t -> KIND_WORDS.any { t.equals(it, ignoreCase = true) } }
+        val channel = texts.firstOrNull { it != count && it != kind && !COUNT_IN_TEXT.containsMatchIn(it) }
+        val thumb = lastUrl(v.dig("header", "tileHeaderRenderer", "thumbnail", "thumbnails") as? JSONArray)
+        return SearchResult.Playlist(id, title, channel, count, thumb, kind)
     }
 
     private fun playlistResult(v: JSONObject): SearchResult? {
@@ -905,8 +984,8 @@ object VideoRepository {
         val title = ytText(v.opt("title")) ?: return null
         val channel = ytText(v.opt("longBylineText")) ?: ytText(v.opt("shortBylineText"))
         val count = ytText(v.opt("videoCountText")) ?: v.optString("videoCount").ifBlank { null }?.let { "$it video" }
-        val thumb = (v.dig("thumbnails", 0, "thumbnails", 0, "url") as? String)
-            ?: (v.dig("thumbnail", "thumbnails", 0, "url") as? String)
+        val thumb = lastUrl(v.dig("thumbnails", 0, "thumbnails") as? JSONArray)
+            ?: lastUrl(v.dig("thumbnail", "thumbnails") as? JSONArray)
         return SearchResult.Playlist(id, title, channel, count, thumb)
     }
 

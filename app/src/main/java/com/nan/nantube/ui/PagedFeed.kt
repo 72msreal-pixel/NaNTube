@@ -165,6 +165,11 @@ class PagedFeed<T : Any>(
         }
     }
 
+    /** Sửa tại chỗ các mục đang hiện (vd đánh dấu ♪ sau khi nhận diện), giữ nguyên vị trí cuộn. */
+    fun update(transform: (List<T>) -> List<T>) {
+        items = transform(items)
+    }
+
     /** Nhớ lại khóa đang hiện (nếu đã tải xong) trước khi chuyển sang khóa khác. */
     private fun stash() {
         val key = currentKey ?: return
