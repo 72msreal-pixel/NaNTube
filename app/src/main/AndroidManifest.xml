@@ -9,6 +9,9 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Phát nhạc nền: dịch vụ mediaPlayback + giữ CPU / Wi-Fi khi tắt màn hình. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Tìm kiếm bằng giọng nói (màn nghe riêng trong app). -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
@@ -61,6 +64,15 @@
             android:name=".SignInKeepaliveService"
             android:exported="false"
             android:foregroundServiceType="shortService" />
+
+        <service
+            android:name=".MusicPlaybackService"
+            android:exported="true"
+            android:foregroundServiceType="mediaPlayback">
+            <intent-filter>
+                <action android:name="androidx.media3.session.MediaSessionService" />
+            </intent-filter>
+        </service>
 
         <service
             android:name=".DownloadService"

@@ -1,19 +1,24 @@
 package com.nan.nantube.ui
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import com.nan.nantube.MusicPlaybackService
 import com.nan.nantube.data.Account
 import com.nan.nantube.data.MusicItem
 import com.nan.nantube.data.ShortsMedia
@@ -34,6 +39,27 @@ import kotlinx.coroutines.withContext
 data class Track(val id: String, val title: String, val artist: String?, val art: String?, val local: Boolean = false)
 
 enum class RepeatKind { Off, All, One }
+
+/**
+ * Vỏ của trình phát cho MediaSession (thông báo / bảng điều khiển nhanh / màn khóa / tai nghe): mỗi bài là một nguồn riêng nên
+ * ExoPlayer không tự có "bài kế / bài trước"; nút Sau / Trước của hệ thống được chuyển thẳng vào hàng đợi của [MusicPlayer].
+ */
+private class SessionPlayer(player: Player) : ForwardingPlayer(player) {
+    override fun getAvailableCommands(): Player.Commands = super.getAvailableCommands().buildUpon()
+        .addAll(
+            Player.COMMAND_SEEK_TO_NEXT, Player.COMMAND_SEEK_TO_PREVIOUS,
+            Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM, Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM
+        )
+        .build()
+
+    override fun isCommandAvailable(command: Int): Boolean = availableCommands.contains(command)
+    override fun hasNextMediaItem(): Boolean = true
+    override fun hasPreviousMediaItem(): Boolean = true
+    override fun seekToNext() { MusicPlayer.next() }
+    override fun seekToNextMediaItem() { MusicPlayer.next() }
+    override fun seekToPrevious() { MusicPlayer.prev() }
+    override fun seekToPreviousMediaItem() { MusicPlayer.prev() }
+}
 
 /**
  * Trình phát nhạc dùng chung cho cả app (tab Music và mục nhạc đã tải).
@@ -72,10 +98,37 @@ object MusicPlayer {
     private var app: Context? = null
     private var account: Account? = null
     private var player: ExoPlayer? = null
+    private var sessionPlayer: Player? = null
     private var job: Job? = null
     private var historyJob: Job? = null
     private var retried = false
     private val past = ArrayList<Int>()
+
+    /** Trình phát cho MediaSession của [MusicPlaybackService]; null khi chưa / không còn phát nhạc. */
+    fun sessionPlayer(): Player? = sessionPlayer
+
+    /** Bật dịch vụ nền để nhạc vẫn phát khi thoát app / tắt màn hình (và hiện thông báo điều khiển). */
+    private fun startService() {
+        val context = app ?: return
+        if (MusicPlaybackService.running) return
+        try {
+            context.startService(Intent(context, MusicPlaybackService::class.java))
+        } catch (_: Exception) {
+            // Android chặn khởi động dịch vụ khi app đang ở nền: nhạc vẫn phát, chỉ chưa có thông báo.
+        }
+    }
+
+    private fun mediaItem(track: Track, uri: Uri): MediaItem = MediaItem.Builder()
+        .setUri(uri)
+        .setMediaId(track.id)
+        .setMediaMetadata(
+            MediaMetadata.Builder()
+                .setTitle(track.title)
+                .setArtist(track.artist)
+                .setArtworkUri(track.art?.let { Uri.parse(it) })
+                .build()
+        )
+        .build()
 
     fun position(): Long = player?.currentPosition ?: 0L
     fun duration(): Long = player?.duration?.takeIf { it > 0 } ?: 0L
@@ -110,6 +163,8 @@ object MusicPlayer {
                 AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(), true
             )
             p.setHandleAudioBecomingNoisy(true)
+            // Giữ CPU (và Wi-Fi khi phát qua mạng) thức để nhạc không đứt khi tắt màn hình.
+            p.setWakeMode(C.WAKE_MODE_NETWORK)
             p.addListener(object : Player.Listener {
                 override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying }
                 override fun onPlaybackStateChanged(state: Int) {
@@ -122,6 +177,7 @@ object MusicPlayer {
                 override fun onPlayerError(e: PlaybackException) { onFailed(e) }
             })
             player = p
+            sessionPlayer = SessionPlayer(p)
         }
     }
 
@@ -140,6 +196,7 @@ object MusicPlayer {
                 p.setMediaSource(source, resumeMs)
                 p.prepare()
                 p.playWhenReady = true
+                startService()
                 trackHistory(track)
             } catch (e: CancellationException) {
                 throw e
@@ -216,11 +273,11 @@ object MusicPlayer {
         val context = checkNotNull(app)
         if (track.local) {
             val uri = VideoDownloads.audioUri(context, track.id) ?: throw IllegalStateException("Không tìm thấy file âm thanh đã tải.")
-            return ProgressiveMediaSource.Factory(DefaultDataSource.Factory(context)).createMediaSource(MediaItem.fromUri(uri))
+            return ProgressiveMediaSource.Factory(DefaultDataSource.Factory(context)).createMediaSource(mediaItem(track, uri))
         }
         val plan = ShortsPlayback.plan(context, account, VideoItem(track.id, track.title, track.artist, null, null, false)).await()
         val stream = plan.audio ?: plan.audios.firstOrNull() ?: plan.muxed ?: throw IllegalStateException("YouTube không trả luồng âm thanh cho bài này.")
-        return ProgressiveMediaSource.Factory(ShortsMedia.dataSourceFactory(context)).createMediaSource(MediaItem.fromUri(stream.url))
+        return ProgressiveMediaSource.Factory(ShortsMedia.dataSourceFactory(context)).createMediaSource(mediaItem(track, Uri.parse(stream.url)))
     }
 
     /** Như recovery của meetube: link bị từ chối thì bỏ kế hoạch cũ, lấy link mới và phát tiếp đúng chỗ đang nghe (một lần). */
@@ -286,6 +343,9 @@ object MusicPlayer {
     fun close() {
         job?.cancel()
         historyJob?.cancel()
+        // Dừng dịch vụ nền (gỡ thông báo) trước khi giải phóng trình phát.
+        app?.let { runCatching { it.stopService(Intent(it, MusicPlaybackService::class.java)) } }
+        sessionPlayer = null
         player?.release()
         player = null
         queue = emptyList()

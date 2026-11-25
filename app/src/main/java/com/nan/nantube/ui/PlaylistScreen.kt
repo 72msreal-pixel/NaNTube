@@ -1,5 +1,6 @@
 package com.nan.nantube.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -49,6 +50,8 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.alpha
@@ -63,6 +66,7 @@ import com.composables.icons.lucide.ArrowLeft
 import com.composables.icons.lucide.Lucide
 import com.composables.icons.lucide.Play
 import com.nan.nantube.data.Account
+import com.nan.nantube.data.PlaylistRepository
 import com.nan.nantube.data.VideoDownloads
 import com.nan.nantube.data.VideoItem
 
@@ -111,6 +115,16 @@ fun PlaylistScreen(list: OpenList, account: Account?, onSaveToPlaylist: (VideoIt
     LaunchedEffect(feed, feed.items.size) { if (!downloads) feed.classifyMusic() }
 
     var kind by remember { mutableStateOf(ListKind.All) }
+    // "Chọn video muốn tải": chạm một video thì mở bảng Tải xuống bình thường của nó.
+    var picking by remember { mutableStateOf(false) }
+    var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var selectingAll by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    fun endPicking() {
+        picking = false
+        selected = emptySet()
+    }
+    BackHandler(enabled = picking) { endPicking() }
     var searching by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
     var voiceOpen by remember { mutableStateOf(false) }
@@ -126,6 +140,25 @@ fun PlaylistScreen(list: OpenList, account: Account?, onSaveToPlaylist: (VideoIt
                 ListKind.Music -> it.isMusic
             } && (q.isEmpty() || it.title.contains(q, ignoreCase = true) || (it.channel?.contains(q, ignoreCase = true) == true))
         }
+    }
+
+    /** Kéo hết các trang của danh sách (UI cũng tự tải trang kế nên chờ khi đang có lượt tải). */
+    suspend fun loadEverything(onCount: (Int) -> Unit): List<VideoItem> {
+        var fails = 0
+        while (feed.hasMore) {
+            onCount(feed.items.size)
+            if (feed.loading || feed.loadingMore) {
+                kotlinx.coroutines.delay(300)
+                continue
+            }
+            feed.loadMore(listAccount)
+            if (feed.moreFailed) {
+                if (++fails >= 5) break
+                kotlinx.coroutines.delay(MORE_RETRY_MS)
+            }
+        }
+        onCount(feed.items.size)
+        return feed.items
     }
 
     val listState = rememberLazyListState()
@@ -145,6 +178,25 @@ fun PlaylistScreen(list: OpenList, account: Account?, onSaveToPlaylist: (VideoIt
             kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { feed.loadMore(account) }
         }
     }
+
+    // Mục "Xóa khỏi danh sách" trong menu ba chấm: chỉ với danh sách của chính tài khoản (Đã thích / Xem sau / Âm thanh);
+    // thực chất là hủy like / hủy lưu video rồi gỡ ngay dòng khỏi trang.
+    val removal: RemoveFromList? = if (downloads || list.isPublic) null else when (list.key) {
+        LibraryCovers.LIST_LIKED -> RemoveFromList("Xóa khỏi Video đã thích", "Đã bỏ thích video") { v ->
+            PlaylistRepository.unlike(listAccount, v.id)
+            feed.remove(listAccount, v.id)
+        }
+        LibraryCovers.LIST_LATER -> RemoveFromList("Xóa khỏi danh sách Xem sau", "Đã xóa khỏi Xem sau") { v ->
+            PlaylistRepository.remove(listAccount, PlaylistRepository.WATCH_LATER, v.id)
+            feed.remove(listAccount, v.id)
+        }
+        LibraryCovers.LIST_SOUNDS -> RemoveFromList("Xóa khỏi danh sách âm thanh", "Đã xóa khỏi danh sách âm thanh") { v ->
+            PlaylistRepository.remove(listAccount, PlaylistRepository.SOUNDS, v.id)
+            feed.remove(listAccount, v.id)
+        }
+        else -> null
+    }
+    val deleteDownload: (suspend (VideoItem) -> Unit)? = if (downloads) ({ v: VideoItem -> VideoDownloads.delete(context, account, v) }) else null
 
     val first = feed.items.firstOrNull()
     Box(Modifier.fillMaxSize()) {
@@ -250,7 +302,7 @@ fun PlaylistScreen(list: OpenList, account: Account?, onSaveToPlaylist: (VideoIt
                         searching = false // giữ nguyên chữ đã gõ; bấm kính lúp để mở lại gõ tiếp
                     }
                 },
-                state = listState, contentPadding = PaddingValues(bottom = 16.dp)) {
+                state = listState, contentPadding = PaddingValues(bottom = if (picking) 96.dp else 16.dp)) {
                 item {
                     Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
                         Box(
@@ -266,13 +318,13 @@ fun PlaylistScreen(list: OpenList, account: Account?, onSaveToPlaylist: (VideoIt
                                 )
                             }
                         }
-                        Text(list.title, fontSize = 32.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 16.dp))
+                        Text(list.title, fontSize = 24.sp, lineHeight = 30.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 16.dp))
                         if (list.isPublic) {
-                            list.owner?.let { Text("của $it", fontSize = 14.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 12.dp)) }
+                            list.owner?.let { Text("của $it", fontSize = 14.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 12.dp)) }
                         } else if (listAccount != null) {
                             Row(Modifier.padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Avatar(listAccount.name.take(1).uppercase(), 28.dp, photoUrl = listAccount.photo)
-                                Text("của ${listAccount.name}", fontSize = 14.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(start = 8.dp))
+                                Avatar(listAccount.name.take(1).uppercase(), 26.dp, photoUrl = listAccount.photo)
+                                Text("của ${listAccount.name}", fontSize = 14.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(start = 8.dp))
                             }
                         }
                         val meta = listOfNotNull(
@@ -280,26 +332,37 @@ fun PlaylistScreen(list: OpenList, account: Account?, onSaveToPlaylist: (VideoIt
                             "Riêng tư".takeIf { !downloads && !list.isPublic && list.key != LibraryCovers.LIST_UPLOADS },
                             feed.total
                         ).joinToString(" • ")
-                        Text(meta, fontSize = 14.sp, color = NanColors.TextSoft, modifier = Modifier.padding(top = 10.dp))
+                        Text(meta, fontSize = 12.sp, lineHeight = 16.sp, color = NanColors.TextSoft, modifier = Modifier.padding(top = 10.dp))
                         if (!downloads) Row(Modifier.padding(top = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                             Row(
                                 Modifier
                                     .weight(1f)
-                                    .height(48.dp)
+                                    .height(40.dp)
                                     .clip(RoundedCornerShape(50))
                                     .background(Color(0xFFF1F1F1))
                                     .clickable(enabled = first != null) { first?.let { openVideo(context, it, feed.items) } },
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.Center
                             ) {
-                                Icon(Lucide.Play, null, Modifier.size(22.dp), tint = Color.Black)
-                                Text("  Phát tất cả", color = Color.Black, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                                Icon(Lucide.Play, null, Modifier.size(20.dp), tint = Color.Black)
+                                Text("  Phát tất cả", color = Color.Black, fontSize = 14.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium)
                             }
-                            Spacer(Modifier.width(12.dp))
+                            Spacer(Modifier.width(8.dp))
                             Box(
-                                Modifier.size(48.dp).clip(CircleShape).background(Color(0xFF3F3F3F)),
+                                Modifier.size(40.dp).clip(CircleShape).background(Color(0xFF3F3F3F))
+                                    .clickable(enabled = first != null) {
+                                        PlaylistDownloadPanel.open(
+                                            PlaylistDownloadTarget(
+                                                title = list.title,
+                                                countLabel = feed.total,
+                                                account = listAccount,
+                                                loadAll = { onCount -> loadEverything(onCount) },
+                                                onPick = { picking = true }
+                                            )
+                                        )
+                                    },
                                 contentAlignment = Alignment.Center
-                            ) { Icon(Lucide.Download, null, Modifier.size(24.dp)) }
+                            ) { Icon(Lucide.Download, null, Modifier.size(20.dp)) }
                         }
                     }
                 }
@@ -310,17 +373,25 @@ fun PlaylistScreen(list: OpenList, account: Account?, onSaveToPlaylist: (VideoIt
                     ) {
                         items(ListKind.entries.toList()) { k ->
                             val on = k == kind
-                            Text(
-                                when (k) { ListKind.All -> "Tất cả"; ListKind.Video -> "Video"; ListKind.Shorts -> "Shorts"; ListKind.Music -> "Âm nhạc" },
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = if (on) Color.Black else Color.White,
-                                modifier = Modifier
+                            // Chip như YouTube: cao 32dp, chữ 14sp, đệm ngang 12dp, bo 8dp.
+                            Box(
+                                Modifier
+                                    .height(32.dp)
                                     .clip(RoundedCornerShape(8.dp))
                                     .background(if (on) Color(0xFFF1F1F1) else NanColors.Surface)
                                     .clickable { kind = k }
-                                    .padding(horizontal = 14.dp, vertical = 8.dp)
-                            )
+                                    .padding(horizontal = 12.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    when (k) { ListKind.All -> "Tất cả"; ListKind.Video -> "Video"; ListKind.Shorts -> "Shorts"; ListKind.Music -> "Âm nhạc" },
+                                    fontSize = 14.sp,
+                                    lineHeight = 20.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = if (on) Color.Black else Color.White,
+                                    maxLines = 1
+                                )
+                            }
                         }
                     }
                 }
@@ -350,7 +421,10 @@ fun PlaylistScreen(list: OpenList, account: Account?, onSaveToPlaylist: (VideoIt
                         val play: (() -> Unit)? = if (downloads && row.music) {
                             { MusicPlayer.playVideos(context, account, shown.filter { it.music }, row, "Nhạc đã tải", local = true) }
                         } else null
-                        HistoryVideoRow(row, listAccount, onSaveToPlaylist, displayOnly = downloads, queue = shown, onClick = play)
+                        val pick: (() -> Unit)? = if (picking && !downloads) {
+                            { selected = if (row.id in selected) selected - row.id else selected + row.id }
+                        } else null
+                        HistoryVideoRow(row, listAccount, onSaveToPlaylist, displayOnly = downloads, queue = shown, onClick = pick ?: play, selectMode = picking && !downloads, selected = row.id in selected, removeFromList = removal, onDeleteDownload = deleteDownload)
                     }
                 }
                 if (feed.loadingMore) {
@@ -359,6 +433,104 @@ fun PlaylistScreen(list: OpenList, account: Account?, onSaveToPlaylist: (VideoIt
                             CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(24.dp))
                         }
                     }
+                }
+            }
+        }
+        if (picking) {
+            // Thanh chọn nhiều video như YouTube: bỏ chọn (X), số đã chọn, Chọn tất cả, Tải xuống.
+            val count = selected.size
+            val allSelected = shown.isNotEmpty() && shown.all { it.id in selected }
+            Row(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(horizontal = 12.dp, vertical = 12.dp)
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(50))
+                    .background(Color(0xF2161616))
+                    .padding(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    Modifier.size(44.dp).clip(CircleShape).background(NanColors.Surface).clickable { endPicking() },
+                    contentAlignment = Alignment.Center
+                ) { Icon(IconClose, "Hủy chọn", Modifier.size(20.dp)) }
+                Text(
+                    "Đã chọn $count", fontSize = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1,
+                    modifier = Modifier.weight(1f).padding(horizontal = 14.dp)
+                )
+                Box(
+                    Modifier
+                        .height(44.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(NanColors.Surface)
+                        .clickable(enabled = !selectingAll) {
+                            if (allSelected) {
+                                selected = emptySet()
+                            } else {
+                                // Chọn hết cả danh sách (kể cả các trang chưa tải), theo chip đang chọn.
+                                selectingAll = true
+                                scope.launch {
+                                    try {
+                                        val q = query.trim()
+                                        val all = loadEverything { }
+                                        selected = selected + all.filter {
+                                            when (kind) {
+                                                ListKind.All -> true
+                                                ListKind.Video -> !it.isShort && !it.music
+                                                ListKind.Shorts -> it.isShort
+                                                ListKind.Music -> it.isMusic
+                                            } && (q.isEmpty() || it.title.contains(q, ignoreCase = true) || (it.channel?.contains(q, ignoreCase = true) == true))
+                                        }.map { it.id }
+                                    } finally {
+                                        selectingAll = false
+                                    }
+                                }
+                            }
+                        }
+                        .padding(horizontal = 16.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        when {
+                            selectingAll -> "Đang chọn…"
+                            allSelected -> "Bỏ chọn tất cả"
+                            else -> "Chọn tất cả"
+                        },
+                        fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                Row(
+                    Modifier
+                        .height(44.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(if (count > 0) Color(0xFFF1F1F1) else Color(0xFF3F3F3F))
+                        .clickable(enabled = count > 0) {
+                            val picked = feed.items.filter { it.id in selected }
+                            endPicking()
+                            when {
+                                // 1 video: bảng Tải xuống đầy đủ (có cả tải đoạn video).
+                                picked.size == 1 -> DownloadPanel.open(picked[0], listAccount)
+                                // Nhiều video: chỉ tải video / âm thanh.
+                                picked.size > 1 -> PlaylistDownloadPanel.open(
+                                    PlaylistDownloadTarget(
+                                        title = list.title,
+                                        countLabel = "${picked.size} video",
+                                        account = listAccount,
+                                        loadAll = { _ -> picked },
+                                        onPick = { },
+                                        picked = true
+                                    )
+                                )
+                            }
+                        }
+                        .padding(horizontal = 18.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val tint = if (count > 0) Color.Black else Color(0xFF8A8A8A)
+                    Icon(Lucide.Download, null, Modifier.size(20.dp), tint = tint)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Tải xuống", fontSize = 14.sp, fontWeight = FontWeight.Medium, color = tint, maxLines = 1)
                 }
             }
         }

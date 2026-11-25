@@ -176,7 +176,7 @@ private fun TopBarButton(
 fun ChipRow(labels: List<String>, selected: Int, onSelect: (Int) -> Unit) {
     LazyRow(
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp)
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         itemsIndexed(labels) { i, label ->
             val on = i == selected
@@ -186,12 +186,12 @@ fun ChipRow(labels: List<String>, selected: Int, onSelect: (Int) -> Unit) {
                     .clip(RoundedCornerShape(8.dp))
                     .background(if (on) Color(0xFFF1F1F1) else NanColors.Surface)
                     .clickable { onSelect(i) }
-                    .padding(horizontal = 13.dp),
+                    .padding(horizontal = 12.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
                     label,
-                    fontSize = 13.5.sp,
+                    fontSize = 14.sp,
                     fontWeight = FontWeight.Medium,
                     color = if (on) Color.Black else Color.White,
                     maxLines = 1

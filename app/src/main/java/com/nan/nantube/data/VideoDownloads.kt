@@ -97,6 +97,60 @@ object VideoDownloads {
         VideoPage(items, null, total = "${items.size} mục")
     }
 
+    /**
+     * Xóa file đã tải của [video] (MP4 với video, M4A/MP3 với âm thanh) khỏi thiết bị cùng sổ ghi nhận,
+     * rồi báo cho danh sách "Nội dung đã tải" tự tải lại.
+     */
+    suspend fun delete(context: Context, account: Account?, video: VideoItem) = withContext(Dispatchers.IO) {
+        NanStorage.init(context)
+        val id = video.id
+        val exts = if (video.music) setOf("m4a", "mp3") else setOf("mp4")
+        fun wanted(name: String): Boolean {
+            val m = savedName.matchEntire(name) ?: return false
+            return m.groupValues[2] == id && m.groupValues[3] in exts
+        }
+        if (Build.VERSION.SDK_INT >= 29) {
+            val resolver = context.contentResolver
+            val where = "${MediaStore.Downloads.OWNER_PACKAGE_NAME} = ? AND ${MediaStore.Downloads.DISPLAY_NAME} LIKE ?"
+            val uris = resolver.query(
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                arrayOf(MediaStore.Downloads._ID, MediaStore.Downloads.DISPLAY_NAME),
+                where, arrayOf(context.packageName, "%-$id%"), null
+            )?.use { c ->
+                buildList {
+                    while (c.moveToNext()) {
+                        if (wanted(c.getString(1).orEmpty())) {
+                            add(android.content.ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, c.getLong(0)))
+                        }
+                    }
+                }
+            }.orEmpty()
+            uris.forEach { resolver.delete(it, null, null) }
+        } else {
+            context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)?.listFiles()
+                ?.filter { it.isFile && wanted(it.name) }
+                ?.forEach { it.delete() }
+        }
+        val prefs = context.getSharedPreferences(METADATA_PREFS, Context.MODE_PRIVATE)
+        if (video.music) {
+            prefs.edit().remove("a$id").apply()
+        } else {
+            prefs.edit().remove(id).apply()
+            val records = readRecords(account)
+            val entry = records.optJSONObject(id)
+            if (entry != null) {
+                // File khôi phục trong thư mục Tải xuống chung (sau khi cài lại app): thử xóa luôn, không được thì thôi.
+                val name = entry.optString("file").takeIf { it.isNotBlank() }
+                if (name != null && NanStorage.hasAccess()) {
+                    runCatching { File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), name).delete() }
+                }
+                records.remove(id)
+                NanStorage.writeJson(RECORDS, account, records)
+            }
+        }
+        revision.update { it + 1 }
+    }
+
     /** Địa chỉ file âm thanh (M4A/MP3) đã tải của video [id] trong thư mục Tải xuống, để trình phát nhạc mở. Null nếu không còn. */
     suspend fun audioUri(context: Context, id: String): android.net.Uri? = withContext(Dispatchers.IO) {
         if (Build.VERSION.SDK_INT >= 29) {

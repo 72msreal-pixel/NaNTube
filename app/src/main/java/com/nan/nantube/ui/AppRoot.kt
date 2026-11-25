@@ -264,6 +264,7 @@ fun AppRoot() {
                 SaveToPlaylistSheet(video, account, onDismiss = { saveVideo = null })
             }
             DownloadSheet()
+            PlaylistDownloadSheet()
             if (showAccounts) {
                 AccountPopup(
                     onDismiss = { showAccounts = false },

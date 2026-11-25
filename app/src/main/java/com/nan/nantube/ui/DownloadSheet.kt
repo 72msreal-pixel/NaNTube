@@ -38,6 +38,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -541,5 +542,211 @@ private fun TimeField(label: String, value: String, onChange: (String) -> Unit, 
                 .background(NanColors.Surface)
                 .padding(horizontal = 14.dp, vertical = 12.dp)
         )
+    }
+}
+
+// ---- Bảng Tải xuống của cả danh sách phát (nút tải cạnh "Phát tất cả") ------------------------------
+
+/** Danh sách phát đang mở bảng tải: tên, số video, tài khoản, cách lấy hết video và cách vào chế độ "Chọn video muốn tải". */
+class PlaylistDownloadTarget(
+    val title: String,
+    val countLabel: String?,
+    val account: Account?,
+    /** Tải nốt mọi trang của danh sách rồi trả toàn bộ video; [onCount] báo số video đã lấy được. */
+    val loadAll: suspend (onCount: (Int) -> Unit) -> List<VideoItem>,
+    /** Vào chế độ chọn: chạm một video trong danh sách thì mở bảng Tải xuống bình thường của video đó. */
+    val onPick: () -> Unit,
+    /** true = [loadAll] trả đúng các video người dùng đã chọn (từ 2 video trở lên): vào thẳng trang Tải video / Tải âm thanh. */
+    val picked: Boolean = false
+)
+
+object PlaylistDownloadPanel {
+    var target by mutableStateOf<PlaylistDownloadTarget?>(null)
+        private set
+
+    fun open(target: PlaylistDownloadTarget) {
+        this.target = target
+    }
+
+    fun close() {
+        target = null
+    }
+}
+
+private enum class ListStep { Root, All, AllVideo, AllAudio, Quality, AudioType }
+
+/** Mức đồ họa chọn sẵn khi tải cả danh sách (không hỏi từng video); null = cao nhất tải được. */
+private val ListQualities = listOf<Int?>(null, 1080, 720, 480, 360)
+
+@Composable
+fun PlaylistDownloadSheet() {
+    val target = PlaylistDownloadPanel.target ?: return
+    key(target) { PlaylistDownloadContent(target, onDismiss = { PlaylistDownloadPanel.close() }) }
+}
+
+@Composable
+private fun PlaylistDownloadContent(target: PlaylistDownloadTarget, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val stack = remember { mutableStateListOf(if (target.picked) ListStep.All else ListStep.Root) }
+    val step = stack.last()
+    var height by remember { mutableStateOf<Int?>(null) }
+    var audioFormat by remember { mutableStateOf(AudioFormat.M4A) }
+    var preparing by remember { mutableStateOf(false) }
+    var found by remember { mutableIntStateOf(0) }
+    val scope = rememberCoroutineScope()
+    val drag = remember { SheetDrag(scope, onDismiss) }
+
+    fun back() {
+        if (preparing || stack.size <= 1) onDismiss() else stack.removeAt(stack.lastIndex)
+    }
+    BackHandler { back() }
+
+    /** Lấy hết các trang của danh sách, bỏ video đã tải, rồi giao cho dịch vụ tải một lượt. */
+    fun startAll(audio: Boolean) {
+        if (preparing) return
+        preparing = true
+        val app = context.applicationContext
+        scope.launch {
+            try {
+                val videos = target.loadAll { found = it }
+                val have = runCatching { VideoDownloads.page(app, target.account).items }.getOrDefault(emptyList())
+                    .filter { it.music == audio }.mapTo(HashSet()) { it.id }
+                val todo = videos.filter { it.id !in have }
+                if (todo.isEmpty()) {
+                    Toast.makeText(app, "Các video trong danh sách này đã được tải hết", Toast.LENGTH_SHORT).show()
+                } else {
+                    DownloadService.startBatch(
+                        app, target.account?.id, todo,
+                        DownloadRequest(audioOnly = audio, height = if (audio) null else height, audioFormat = audioFormat)
+                    )
+                    val skipped = videos.size - todo.size
+                    Toast.makeText(
+                        app,
+                        "Đang chuẩn bị tải ${todo.size} " + (if (audio) "âm thanh" else "video") +
+                            if (skipped > 0) " (bỏ qua $skipped đã tải)" else "",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+                onDismiss()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                preparing = false
+                Toast.makeText(app, e.shortMessage ?: "Không bắt đầu được việc tải danh sách", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    val count = target.countLabel?.let { " · $it" }.orEmpty()
+
+    Box(Modifier.fillMaxSize()) {
+        Box(Modifier.fillMaxSize().drawBehind { drawRect(Scrim, alpha = 1f - drag.pulled()) }.plainClickable(onDismiss)) {
+            Column(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .heightIn(max = (LocalConfiguration.current.screenHeightDp * 0.85f).dp)
+                    .graphicsLayer { translationY = (-drag.lift.value).coerceAtLeast(0f) }
+                    .layout { measurable, c ->
+                        drag.maxPx = c.maxHeight
+                        val lift = drag.lift.value
+                        val fixed = if (lift > 0f) (drag.peekPx + lift).toInt().coerceAtMost(c.maxHeight) else null
+                        val p = measurable.measure(if (fixed != null) c.copy(minHeight = fixed, maxHeight = fixed) else c)
+                        if (fixed == null) drag.peekPx = p.height
+                        layout(p.width, p.height) { p.place(0, 0) }
+                    }
+                    .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
+                    .background(NanColors.Background)
+                    .plainClickable { }
+                    .navigationBarsPadding()
+                    .imePadding()
+            ) {
+                PanelHandle(drag::drag, drag::release)
+                Header(
+                    title = when (step) {
+                        ListStep.Root -> "Tải xuống"
+                        ListStep.All -> if (target.picked) "Tải ${target.countLabel ?: "video đã chọn"}" else "Tải cả danh sách phát"
+                        ListStep.AllVideo -> "Tải video"
+                        ListStep.AllAudio -> "Tải âm thanh"
+                        ListStep.Quality -> "Đồ họa"
+                        ListStep.AudioType -> "Loại âm thanh"
+                    },
+                    showBack = stack.size > 1 && !preparing,
+                    onBack = { back() }
+                )
+                Column(Modifier.weight(1f, fill = drag.lift.value > 0f).fillMaxWidth().verticalScroll(rememberScrollState())) {
+                    if (preparing) {
+                        Loading()
+                        PanelNote("Đang lấy danh sách… $found video")
+                    } else when (step) {
+                        ListStep.Root -> {
+                            ListOptionRow(Lucide.Check, "Chọn video muốn tải", "Chọn 1 video để tải cả đoạn video, chọn nhiều video để tải video hoặc âm thanh") {
+                                onDismiss()
+                                target.onPick()
+                            }
+                            ListOptionRow(Lucide.Download, "Tải cả danh sách phát", "Chỉ tải video hoặc âm thanh" + count) { stack.add(ListStep.All) }
+                        }
+
+                        ListStep.All -> {
+                            OptionRow(VideoIcon, "Tải video") { stack.add(ListStep.AllVideo) }
+                            OptionRow(MusicIcon, "Tải âm thanh") { stack.add(ListStep.AllAudio) }
+                            PanelNote("Video đã tải rồi sẽ được bỏ qua.")
+                        }
+
+                        ListStep.AllVideo -> {
+                            OptionRow(Lucide.Settings, "Đồ họa", height?.let { "${it}p" } ?: "Cao nhất", chevron = true) { stack.add(ListStep.Quality) }
+                            PanelNote("Video MP4" + count)
+                        }
+
+                        ListStep.Quality -> {
+                            ListQualities.forEach { q ->
+                                ChoiceRow(q?.let { "${it}p" } ?: "Cao nhất", if (q == null) "Mức cao nhất mỗi video có (tối đa 1080p)" else "Video không có mức này sẽ lấy mức gần nhất thấp hơn", q == height) {
+                                    height = q
+                                    back()
+                                }
+                            }
+                        }
+
+                        ListStep.AllAudio -> {
+                            OptionRow(WaveIcon, "Loại âm thanh", audioFormat.label, chevron = true) { stack.add(ListStep.AudioType) }
+                            PanelNote(audioFormat.label + count)
+                        }
+
+                        ListStep.AudioType -> {
+                            ChoiceRow(AudioFormat.M4A.label, "Giữ nguyên chất lượng gốc", audioFormat == AudioFormat.M4A) {
+                                audioFormat = AudioFormat.M4A
+                                back()
+                            }
+                            ChoiceRow(AudioFormat.MP3.label, "192 kbps, mở được trên mọi thiết bị", audioFormat == AudioFormat.MP3) {
+                                audioFormat = AudioFormat.MP3
+                                back()
+                            }
+                        }
+                    }
+                }
+                when {
+                    preparing -> Spacer(Modifier.height(12.dp))
+                    step == ListStep.AllVideo -> WhiteButton("Tải xuống") { startAll(false) }
+                    step == ListStep.AllAudio -> WhiteButton("Tải xuống") { startAll(true) }
+                    else -> Spacer(Modifier.height(12.dp))
+                }
+            }
+        }
+    }
+}
+
+/** Dòng chọn có biểu tượng, tên và một dòng mô tả bên dưới. */
+@Composable
+private fun ListOptionRow(icon: ImageVector, label: String, note: String, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 20.dp, vertical = 15.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(icon, null, Modifier.size(24.dp), tint = Color.White)
+        Spacer(Modifier.width(20.dp))
+        Column(Modifier.weight(1f)) {
+            Text(label, fontSize = 17.sp, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(note, fontSize = 13.sp, color = NanColors.TextSecondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
     }
 }

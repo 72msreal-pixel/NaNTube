@@ -72,6 +72,8 @@ dependencies {
     implementation("androidx.media3:media3-datasource:1.4.1")
     implementation("androidx.media3:media3-database:1.4.1")
     implementation("androidx.media3:media3-ui:1.4.1")
+    // Phiên media + thông báo phát nhạc nền (bảng điều khiển nhanh, màn khóa, tai nghe).
+    implementation("androidx.media3:media3-session:1.4.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     // Đường tải phụ đề giống meetube (OkHttp, HTTP/2) thay cho HttpURLConnection.
     implementation("com.squareup.okhttp3:okhttp:4.12.0")

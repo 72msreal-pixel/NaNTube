@@ -28,6 +28,9 @@ data class PlaylistOption(
 object PlaylistRepository {
     const val WATCH_LATER = "WL"
 
+    /** Mã danh sách "Video đã thích". */
+    const val LIKED = "LL"
+
     /** Mã danh sách "Âm thanh" của YouTube (âm thanh Shorts đã lưu). */
     const val SOUNDS = "SE"
 
@@ -83,6 +86,23 @@ object PlaylistRepository {
             account, playlistId,
             JSONObject().put("action", "ACTION_ADD_VIDEO").put("addedVideoId", videoId)
         )
+
+    /**
+     * Bỏ thích video (xóa khỏi "Video đã thích"): dùng đúng thao tác bỏ thích của YouTube (like/removelike);
+     * không được thì xóa thẳng khỏi danh sách LL.
+     */
+    suspend fun unlike(account: Account?, videoId: String) {
+        requireNotNull(account) { "Hãy đăng nhập để bỏ thích video" }
+        try {
+            val body = JSONObject().put("target", JSONObject().put("videoId", videoId))
+            val json = InnerTube.callAny("like/removelike", body, account)
+            json.optJSONObject("error")?.let { error(it.optString("message").ifBlank { "YouTube không bỏ thích được video" }) }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            remove(account, LIKED, videoId)
+        }
+    }
 
     suspend fun remove(account: Account?, playlistId: String, videoId: String) =
         edit(

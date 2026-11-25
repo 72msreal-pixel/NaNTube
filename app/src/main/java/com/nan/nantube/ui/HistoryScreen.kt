@@ -22,7 +22,9 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.border
 import androidx.compose.foundation.shape.CircleShape
+import com.composables.icons.lucide.Check
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -185,7 +187,8 @@ fun HistoryScreen(base: HistoryFeed, account: Account?, onSaveToPlaylist: (Video
         }
         Text(
             "Video đã xem",
-            fontSize = 32.sp,
+            fontSize = 24.sp,
+            lineHeight = 30.sp,
             fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp)
         )
@@ -232,22 +235,30 @@ fun HistoryScreen(base: HistoryFeed, account: Account?, onSaveToPlaylist: (Video
             }
         }
         LazyRow(
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             items(tabs, key = { it.label }) { t ->
                 val on = t.label == tab.label
-                Text(
-                    t.label,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = if (on) Color.Black else Color.White,
-                    modifier = Modifier
+                // Chip như YouTube: cao 32dp, chữ 14sp, đệm ngang 12dp, bo 8dp.
+                Box(
+                    Modifier
+                        .height(32.dp)
                         .clip(RoundedCornerShape(8.dp))
                         .background(if (on) Color(0xFFF1F1F1) else NanColors.Surface)
                         .clickable { selected = t.label }
-                        .padding(horizontal = 14.dp, vertical = 5.dp)
-                )
+                        .padding(horizontal = 12.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        t.label,
+                        fontSize = 14.sp,
+                        lineHeight = 20.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = if (on) Color.Black else Color.White,
+                        maxLines = 1
+                    )
+                }
             }
         }
 
@@ -323,7 +334,11 @@ fun HistoryVideoRow(
     displayOnly: Boolean = false,
     onRemoved: ((VideoItem) -> Unit)? = null,
     queue: List<VideoItem> = emptyList(),
-    onClick: (() -> Unit)? = null
+    onClick: (() -> Unit)? = null,
+    removeFromList: RemoveFromList? = null,
+    onDeleteDownload: (suspend (VideoItem) -> Unit)? = null,
+    selectMode: Boolean = false,
+    selected: Boolean = false
 ) {
     val context = LocalContext.current
     val click = when {
@@ -331,10 +346,14 @@ fun HistoryVideoRow(
         displayOnly -> Modifier
         else -> Modifier.clickable { openVideo(context, video, queue) }
     }
-    Row(Modifier.fillMaxWidth().then(click).padding(horizontal = 16.dp, vertical = 6.dp)) {
+    Row(
+        Modifier.fillMaxWidth().then(click)
+            .background(if (selectMode && selected) Color(0x26FFFFFF) else Color.Transparent)
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+    ) {
         Box(
             Modifier
-                .width(164.dp)
+                .width(180.dp)
                 .aspectRatio(16f / 9f)
                 .clip(RoundedCornerShape(12.dp))
                 .background(NanColors.Surface)
@@ -351,22 +370,42 @@ fun HistoryVideoRow(
                 DurationBadge(video.duration, video.isMusic, video.live)
             }
             WatchProgress(video.watchedProgress())
+            if (selectMode) SelectDot(selected, Modifier.align(Alignment.TopStart).padding(8.dp))
         }
-        Column(Modifier.weight(1f).padding(start = 12.dp)) {
+        Column(Modifier.weight(1f).padding(start = 16.dp)) {
+            // Như dòng video của YouTube: tiêu đề 14sp (dòng 20dp), kênh / lượt xem 12sp (dòng 18dp).
             Text(
                 video.title,
-                fontSize = 15.sp,
+                fontSize = 14.sp,
+                lineHeight = 20.sp,
                 fontWeight = FontWeight.Medium,
-                maxLines = 3,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
             video.channel?.let {
-                Text(it, fontSize = 12.sp, color = NanColors.TextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
+                Text(it, fontSize = 12.sp, lineHeight = 18.sp, color = NanColors.TextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
             }
             video.views?.let {
-                Text(it, fontSize = 12.sp, color = NanColors.TextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(it, fontSize = 12.sp, lineHeight = 18.sp, color = NanColors.TextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
-        if (!displayOnly) VideoMoreButton(video, account, onSaveToPlaylist, onRemoved = onRemoved)
+        if (selectMode) Unit
+        else if (!displayOnly) VideoMoreButton(video, account, onSaveToPlaylist, onRemoved = onRemoved, removeFromList = removeFromList)
+        else if (onDeleteDownload != null) DownloadedMoreButton(video, onDeleteDownload)
+    }
+}
+
+/** Vòng chọn ở góc ảnh bìa khi chọn nhiều video: rỗng = chưa chọn, trắng có dấu tích = đã chọn. */
+@Composable
+fun SelectDot(selected: Boolean, modifier: Modifier = Modifier) {
+    Box(
+        modifier
+            .size(24.dp)
+            .clip(CircleShape)
+            .background(if (selected) Color.White else Color(0x66000000))
+            .border(2.dp, Color.White, CircleShape),
+        contentAlignment = Alignment.Center
+    ) {
+        if (selected) Icon(Lucide.Check, null, Modifier.size(16.dp), tint = Color.Black)
     }
 }

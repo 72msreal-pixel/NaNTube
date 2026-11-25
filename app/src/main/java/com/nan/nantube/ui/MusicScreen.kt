@@ -152,9 +152,9 @@ private fun SongRow(item: MusicItem, account: Account?, onSaveToPlaylist: (Video
         Cover(item.art, 52.dp, 6.dp)
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Text(item.title, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(item.title, fontSize = 14.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
             item.subtitle?.let {
-                Text(it, fontSize = 12.sp, color = NanColors.TextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(it, fontSize = 12.sp, lineHeight = 18.sp, color = NanColors.TextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
         item.asVideo()?.let { VideoMoreButton(it, account, onSaveToPlaylist) }

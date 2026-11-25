@@ -96,6 +96,65 @@ private val SheetScrim = Color(0x99000000)
 
 // ---- Menu "⋯" của video ---------------------------------------------------------------------
 
+/** Thao tác "Xóa khỏi danh sách" của trang một danh sách phát (bỏ thích / xóa khỏi Xem sau…): nhãn, thông báo và việc cần làm. */
+class RemoveFromList(val label: String, val done: String, val action: suspend (VideoItem) -> Unit)
+
+private fun shareVideo(context: Context, video: VideoItem) {
+    try {
+        val send = Intent(Intent.ACTION_SEND)
+            .setType("text/plain")
+            .putExtra(Intent.EXTRA_TEXT, video.watchUrl)
+        context.startActivity(Intent.createChooser(send, null))
+    } catch (_: Exception) {
+        showToast(context, "Không mở được trình chia sẻ")
+    }
+}
+
+/**
+ * Nút ba chấm của video trong "Nội dung đã tải": chia sẻ, hoặc xóa file đã tải khỏi thiết bị (có hỏi lại).
+ * [onDelete] xóa file; danh sách tự tải lại khi file đã mất.
+ */
+@Composable
+fun DownloadedMoreButton(video: VideoItem, onDelete: suspend (VideoItem) -> Unit, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    var open by remember { mutableStateOf(false) }
+    var confirm by remember { mutableStateOf(false) }
+    Box(modifier) {
+        MoreButton(width = 32.dp) { open = true }
+        DropdownMenu(
+            expanded = open,
+            onDismissRequest = { open = false },
+            shape = RoundedCornerShape(16.dp),
+            containerColor = NanColors.Surface,
+            tonalElevation = 0.dp
+        ) {
+            MenuRow(ShareIcon, "Chia sẻ") {
+                open = false
+                shareVideo(context, video)
+            }
+            MenuRow(TrashIcon, "Xóa khỏi nội dung đã tải") {
+                open = false
+                confirm = true
+            }
+        }
+    }
+    if (confirm) {
+        AlertDialog(
+            onDismissRequest = { confirm = false },
+            text = { Text("Xóa \"${video.title}\" khỏi thiết bị?", fontSize = 16.sp) },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirm = false
+                    runAction(context, "Đã xóa khỏi nội dung đã tải", "Không xóa được file đã tải") { onDelete(video) }
+                }) { Text("Xóa", fontSize = 14.sp, fontWeight = FontWeight.Medium) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirm = false }) { Text("Hủy", fontSize = 14.sp, fontWeight = FontWeight.Medium) }
+            }
+        )
+    }
+}
+
 /**
  * Nút ba chấm trên thẻ video; chạm vào hiện bảng menu nổi như của YouTube.
  * [onSaveToPlaylist] mở bảng "Lưu vào…" (nằm ở AppRoot để phủ cả thanh dưới).
@@ -106,7 +165,8 @@ fun VideoMoreButton(
     account: Account?,
     onSaveToPlaylist: (VideoItem) -> Unit,
     modifier: Modifier = Modifier,
-    onRemoved: ((VideoItem) -> Unit)? = null
+    onRemoved: ((VideoItem) -> Unit)? = null,
+    removeFromList: RemoveFromList? = null
 ) {
     val context = LocalContext.current
     var open by remember { mutableStateOf(false) }
@@ -147,6 +207,14 @@ fun VideoMoreButton(
                     context.startActivity(Intent.createChooser(send, null))
                 } catch (_: Exception) {
                     showToast(context, "Không mở được trình chia sẻ")
+                }
+            }
+            if (removeFromList != null) {
+                MenuRow(TrashIcon, removeFromList.label) {
+                    open = false
+                    runAction(context, removeFromList.done, "Không xóa được video khỏi danh sách") {
+                        removeFromList.action(video)
+                    }
                 }
             }
             if (onRemoved != null) {

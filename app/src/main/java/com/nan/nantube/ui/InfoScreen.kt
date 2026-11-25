@@ -397,13 +397,14 @@ private fun WatchedCard(video: VideoItem, account: Account?, onSaveToPlaylist: (
 private fun LibraryChip(text: String, selected: Boolean = false, dropdown: Boolean = false, onClick: () -> Unit) {
     Row(
         Modifier
+            .height(32.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(if (selected) Color(0xFFF1F1F1) else NanColors.Surface)
             .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 4.dp),
+            .padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(text, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = if (selected) Color.Black else Color.White)
+        Text(text, fontSize = 14.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium, maxLines = 1, color = if (selected) Color.Black else Color.White)
         if (dropdown) {
             Spacer(Modifier.width(4.dp))
             Icon(Lucide.ChevronDown, null, Modifier.size(18.dp))
@@ -417,7 +418,7 @@ private fun LibraryRow(item: LibraryItem, coverUrl: String?, onClick: () -> Unit
         Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Column(Modifier.width(164.dp)) {
+        Column(Modifier.width(180.dp)) {
             Box(
                 Modifier
                     .padding(horizontal = 14.dp)
@@ -434,9 +435,9 @@ private fun LibraryRow(item: LibraryItem, coverUrl: String?, onClick: () -> Unit
             )
         }
         Column(Modifier.weight(1f).padding(horizontal = 16.dp)) {
-            Text(item.title, fontSize = 18.sp, fontWeight = FontWeight.Medium)
+            Text(item.title, fontSize = 14.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium)
             if (item.subtitle != null) {
-                Text(item.subtitle, fontSize = 14.sp, color = NanColors.TextSecondary)
+                Text(item.subtitle, fontSize = 12.sp, lineHeight = 18.sp, color = NanColors.TextSecondary)
             }
         }
         if (item.hasMenu) MoreButton()

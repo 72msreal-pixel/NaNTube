@@ -19,6 +19,8 @@ import com.nan.nantube.data.AudioFormat
 import com.nan.nantube.data.DownloadRequest
 import com.nan.nantube.data.VideoDownloads
 import com.nan.nantube.data.VideoItem
+import org.json.JSONArray
+import org.json.JSONObject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -32,8 +34,12 @@ class DownloadService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val gate = Mutex()
     private var pending = 0
+    private var batchOk = 0
+    private var batchFail = 0
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val batchJson = intent?.getStringExtra(EXTRA_BATCH)
+        if (batchJson != null) return startBatch(intent, batchJson)
         val id = intent?.getStringExtra(EXTRA_ID)
         val title = intent?.getStringExtra(EXTRA_TITLE)
         startAsForeground(progressNotification(title ?: "video", -1))
@@ -47,35 +53,91 @@ class DownloadService : Service() {
             id, title, intent?.getStringExtra(EXTRA_CHANNEL), intent?.getStringExtra(EXTRA_DURATION),
             null, intent?.getBooleanExtra(EXTRA_SHORT, false) == true
         )
-        val request = DownloadRequest(
-            audioOnly = intent?.getBooleanExtra(EXTRA_AUDIO_ONLY, false) == true,
-            height = intent?.getIntExtra(EXTRA_HEIGHT, 0)?.takeIf { it > 0 },
-            audioFormat = AudioFormat.entries.firstOrNull { it.name == intent?.getStringExtra(EXTRA_AUDIO_FORMAT) } ?: AudioFormat.M4A,
-            clipStartMs = intent?.getLongExtra(EXTRA_CLIP_START, 0) ?: 0,
-            clipEndMs = intent?.getLongExtra(EXTRA_CLIP_END, 0) ?: 0
-        )
+        val request = readRequest(intent)
         pending++
         scope.launch {
             gate.withLock { process(account, video, request) }
-            pending--
-            if (pending == 0) {
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
+            finishOne()
+        }
+        return START_NOT_STICKY
+    }
+
+    private fun readRequest(intent: Intent?) = DownloadRequest(
+        audioOnly = intent?.getBooleanExtra(EXTRA_AUDIO_ONLY, false) == true,
+        height = intent?.getIntExtra(EXTRA_HEIGHT, 0)?.takeIf { it > 0 },
+        audioFormat = AudioFormat.entries.firstOrNull { it.name == intent?.getStringExtra(EXTRA_AUDIO_FORMAT) } ?: AudioFormat.M4A,
+        clipStartMs = intent?.getLongExtra(EXTRA_CLIP_START, 0) ?: 0,
+        clipEndMs = intent?.getLongExtra(EXTRA_CLIP_END, 0) ?: 0
+    )
+
+    private fun finishOne() {
+        pending--
+        if (pending == 0) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
+    }
+
+    /** Tải cả danh sách phát: các video xếp hàng tải lần lượt, thông báo hiện "(3/120) tên video" rồi một thông báo tổng kết. */
+    private fun startBatch(intent: Intent?, json: String): Int {
+        val accountId = intent?.getStringExtra(EXTRA_ACCOUNT)
+        val account = AccountStore.accounts.firstOrNull { it.id == accountId }
+        val request = readRequest(intent)
+        val videos = try {
+            val array = JSONArray(json)
+            (0 until array.length()).mapNotNull { i ->
+                val o = array.optJSONObject(i) ?: return@mapNotNull null
+                val id = o.optString("id").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                VideoItem(
+                    id, o.optString("title").ifBlank { id }, o.optString("channel").takeIf { it.isNotBlank() },
+                    o.optString("duration").takeIf { it.isNotBlank() }, null, o.optBoolean("short")
+                )
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+        startAsForeground(progressNotification("danh sách phát", -1))
+        if (videos.isEmpty()) {
+            if (pending == 0) stopSelf()
+            return START_NOT_STICKY
+        }
+        batchOk = 0
+        batchFail = 0
+        pending += videos.size
+        videos.forEachIndexed { i, video ->
+            scope.launch {
+                gate.withLock { process(account, video, request, i + 1, videos.size) }
+                finishOne()
             }
         }
         return START_NOT_STICKY
     }
 
-    private suspend fun process(account: Account?, video: VideoItem, request: DownloadRequest) {
+    private suspend fun process(account: Account?, video: VideoItem, request: DownloadRequest, batchIndex: Int = 0, batchTotal: Int = 0) {
+        val batch = batchTotal > 0
+        val label = if (batch) "($batchIndex/$batchTotal) ${video.title}" else video.title
+        if (batch) notify(FOREGROUND_ID, progressNotification(label, -1))
+        var ok = true
         val result = try {
             VideoDownloads.download(this, account, video, request) { percent ->
-                notify(FOREGROUND_ID, progressNotification(video.title, percent))
+                notify(FOREGROUND_ID, progressNotification(label, percent))
             }
             "Đã tải xong: ${video.title}"
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            ok = false
             "Không tải được ${video.title}: ${e.message ?: "lỗi không rõ"}"
+        }
+        if (batch) {
+            // Tải hàng loạt: không báo từng video (tránh hàng trăm thông báo), chỉ tổng kết ở video cuối.
+            if (ok) batchOk++ else batchFail++
+            if (batchIndex == batchTotal) {
+                val summary = "Đã tải xong $batchOk video" + if (batchFail > 0) ", $batchFail video lỗi" else ""
+                notify(BATCH_RESULT_ID, resultNotification(summary))
+                Toast.makeText(applicationContext, summary, Toast.LENGTH_LONG).show()
+            }
+            return
         }
         notify(video.id.hashCode(), resultNotification(result))
         Toast.makeText(applicationContext, result, Toast.LENGTH_LONG).show()
@@ -141,6 +203,8 @@ class DownloadService : Service() {
     companion object {
         private const val CHANNEL_ID = "nantube_download"
         private const val FOREGROUND_ID = 7803
+        private const val BATCH_RESULT_ID = 7804
+        private const val EXTRA_BATCH = "batch_videos"
         private const val EXTRA_ID = "video_id"
         private const val EXTRA_TITLE = "video_title"
         private const val EXTRA_CHANNEL = "video_channel"
@@ -152,6 +216,24 @@ class DownloadService : Service() {
         private const val EXTRA_AUDIO_FORMAT = "audio_format"
         private const val EXTRA_CLIP_START = "clip_start"
         private const val EXTRA_CLIP_END = "clip_end"
+
+        /** Tải nhiều video một lượt (cả danh sách phát) bằng một yêu cầu duy nhất, theo thứ tự trong [videos]. */
+        fun startBatch(context: Context, accountId: String?, videos: List<VideoItem>, request: DownloadRequest) {
+            val array = JSONArray()
+            videos.forEach {
+                array.put(
+                    JSONObject().put("id", it.id).put("title", it.title).put("channel", it.channel)
+                        .put("duration", it.duration).put("short", it.isShort)
+                )
+            }
+            val intent = Intent(context, DownloadService::class.java)
+                .putExtra(EXTRA_BATCH, array.toString())
+                .putExtra(EXTRA_ACCOUNT, accountId)
+                .putExtra(EXTRA_AUDIO_ONLY, request.audioOnly)
+                .putExtra(EXTRA_HEIGHT, request.height ?: 0)
+                .putExtra(EXTRA_AUDIO_FORMAT, request.audioFormat.name)
+            ContextCompat.startForegroundService(context, intent)
+        }
 
         fun start(context: Context, accountId: String?, video: VideoItem, request: DownloadRequest = DownloadRequest()) {
             val intent = Intent(context, DownloadService::class.java)
