@@ -1,0 +1,632 @@
+package com.nan.nantube.ui
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.graphics.Outline
+import android.graphics.PixelFormat
+import android.os.Build
+import android.os.IBinder
+import android.util.DisplayMetrics
+import android.view.ContextThemeWrapper
+import android.view.Gravity
+import android.view.LayoutInflater
+import android.view.MotionEvent
+import android.view.VelocityTracker
+import android.view.View
+import android.view.ViewConfiguration
+import android.view.ViewGroup
+import android.view.ViewOutlineProvider
+import android.view.WindowManager
+import android.view.animation.LinearInterpolator
+import android.view.animation.PathInterpolator
+import android.widget.FrameLayout
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.app.NotificationCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.ViewModelStoreOwner
+import androidx.lifecycle.setViewTreeLifecycleOwner
+import androidx.lifecycle.setViewTreeViewModelStoreOwner
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
+import androidx.savedstate.SavedStateRegistry
+import androidx.savedstate.SavedStateRegistryController
+import androidx.savedstate.SavedStateRegistryOwner
+import androidx.savedstate.setViewTreeSavedStateRegistryOwner
+import coil.compose.AsyncImage
+import com.nan.nantube.MainActivity
+import com.nan.nantube.R
+import com.nan.nantube.data.PipPrefs
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.exp
+import kotlin.math.hypot
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.roundToInt
+import kotlin.math.sin
+import kotlin.math.sqrt
+
+/**
+ * Cửa sổ Short nổi do app tự vẽ (bật ở Cài đặt → Thử nghiệm các tính năng mới → "Cải thiện trải nghiệm dùng PiP"): thay cho PiP của
+ * hệ thống nên chạm vào video là ẩn / hiện nút ngay, kéo đi đâu cũng được. Dùng chung phiên [ShortsMini] (danh sách, vị trí, tạm dừng)
+ * và các ô phát của [ShortsPool], nên quay lại app là thẻ mini trong app tiếp tục đúng chỗ.
+ */
+object PipOverlay {
+    /** Cửa sổ nổi đang giữ việc phát: các bộ phát trong app không được dừng video khi app rời màn hình. */
+    @Volatile
+    var active = false
+        private set
+
+    /** Có dùng được không: đã bật cài đặt, có quyền vẽ và có Short đang ở chế độ mini. */
+    fun available(context: Context): Boolean =
+        PipPrefs.enhanced && PipPrefs.canDraw(context) && ShortsMini.open && !ShortsMini.paused
+
+    fun start(context: Context): Boolean {
+        if (!available(context)) return false
+        active = true
+        return try {
+            val intent = Intent(context, PipOverlayService::class.java)
+            if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent) else context.startService(intent)
+            true
+        } catch (_: Exception) {
+            active = false
+            false
+        }
+    }
+
+    /** App về màn hình trước: bỏ cửa sổ nổi (thẻ mini trong app hiện lại). */
+    fun stop(context: Context) {
+        if (!active) return
+        active = false
+        runCatching { context.stopService(Intent(context, PipOverlayService::class.java)) }
+    }
+
+    internal fun clear() {
+        active = false
+    }
+}
+
+class PipOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner, ViewModelStoreOwner {
+    private val registry = LifecycleRegistry(this)
+    private val savedState = SavedStateRegistryController.create(this)
+    private val store = ViewModelStore()
+    override val lifecycle: Lifecycle get() = registry
+    override val savedStateRegistry: SavedStateRegistry get() = savedState.savedStateRegistry
+    override val viewModelStore: ViewModelStore get() = store
+
+    private lateinit var wm: WindowManager
+    private var root: OverlayRoot? = null
+    private var params: WindowManager.LayoutParams? = null
+    private var vertical = true
+    private var closing = false
+    private var settle: android.animation.ValueAnimator? = null
+    private val dm = DisplayMetrics()
+
+    private val density get() = resources.displayMetrics.density
+    private val winW get() = ((if (vertical) 132f else 200f) * density).roundToInt()
+    private val winH get() = ((if (vertical) 132f * 16f / 9f else 200f * 9f / 16f) * density).roundToInt()
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        savedState.performAttach()
+        savedState.performRestore(null)
+        registry.currentState = Lifecycle.State.CREATED
+        wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        startAsForeground()
+        if (root == null) {
+            if (!PipPrefs.canDraw(this) || !ShortsMini.open) {
+                shutdown()
+                return START_NOT_STICKY
+            }
+            try {
+                show()
+            } catch (_: Exception) {
+                shutdown()
+            }
+        }
+        return START_NOT_STICKY
+    }
+
+    private fun startAsForeground() {
+        val manager = getSystemService(NotificationManager::class.java)
+        if (Build.VERSION.SDK_INT >= 26) {
+            manager.createNotificationChannel(NotificationChannel(CHANNEL_ID, "Short nổi", NotificationManager.IMPORTANCE_LOW))
+        }
+        val tap = Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        val open = PendingIntent.getActivity(this, 0, tap, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_pip_play)
+            .setContentTitle("NaNTube")
+            .setContentText("Đang phát Short trong cửa sổ nổi")
+            .setContentIntent(open)
+            .setOngoing(true)
+            .setSilent(true)
+            .build()
+        try {
+            if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+            else startForeground(NOTIFICATION_ID, notification)
+        } catch (_: Exception) {
+            // Không lên được dịch vụ nền: vẫn thử vẽ cửa sổ, hệ thống có thể dừng sớm.
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun realMetrics(): DisplayMetrics {
+        wm.defaultDisplay.getRealMetrics(dm)
+        return dm
+    }
+
+    private fun systemBar(name: String): Int {
+        val id = resources.getIdentifier(name, "dimen", "android")
+        return if (id > 0) resources.getDimensionPixelSize(id) else 0
+    }
+
+    private val margin get() = (12 * density).roundToInt()
+    private val minY get() = systemBar("status_bar_height") + (8 * density).roundToInt()
+    private val homeX get() = realMetrics().widthPixels - winW - margin
+    private val leftX get() = margin
+    private val homeY get() = realMetrics().heightPixels - winH - systemBar("navigation_bar_height") - (96 * density).roundToInt()
+
+    private fun show() {
+        val themed = ContextThemeWrapper(this, R.style.Theme_NaNTube)
+        val host = object : OverlayRoot.Host {
+            override fun x() = params?.x ?: 0
+            override fun y() = params?.y ?: 0
+            override fun moveTo(x: Int, y: Int) = place(x, y)
+            override fun onGrab() {
+                settle?.cancel()
+            }
+            override fun onRelease(vx: Float, vy: Float) = release(vx, vy)
+        }
+        val view = OverlayRoot(themed, host)
+        val compose = ComposeView(themed).apply {
+            setContent {
+                NaNTubeTheme {
+                    OverlayContent(
+                        onClose = { closeShrink() },
+                        onExpand = { expand() },
+                        onGone = { shutdown() },
+                        onShape = { v -> reshape(v) }
+                    )
+                }
+            }
+        }
+        view.addView(compose, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        view.setViewTreeLifecycleOwner(this)
+        view.setViewTreeSavedStateRegistryOwner(this)
+        view.setViewTreeViewModelStoreOwner(this)
+        view.outlineProvider = object : ViewOutlineProvider() {
+            override fun getOutline(v: View, outline: Outline) {
+                outline.setRoundRect(0, 0, v.width, v.height, 12 * density)
+            }
+        }
+        view.clipToOutline = true
+
+        val type = overlayType()
+        val lp = WindowManager.LayoutParams(
+            winW, winH, type,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = lastX ?: homeX
+            y = lastY ?: homeY
+        }
+        params = lp
+        root = view
+        view.alpha = 0f
+        view.scaleX = 0.9f
+        view.scaleY = 0.9f
+        wm.addView(view, lp)
+        registry.currentState = Lifecycle.State.STARTED
+        registry.currentState = Lifecycle.State.RESUMED
+        // Vào: nở từ 90% và hiện dần (emphasized decelerate, như thẻ mini trong app / meetube).
+        view.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(250).setInterpolator(EMPH_DECEL).start()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun overlayType(): Int =
+        if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else WindowManager.LayoutParams.TYPE_PHONE
+
+    private fun place(x: Int, y: Int) {
+        val view = root ?: return
+        val lp = params ?: return
+        val m = realMetrics()
+        lp.x = x.coerceIn(-winW, m.widthPixels)
+        lp.y = y.coerceIn(0, max(0, m.heightPixels - winH))
+        lastX = lp.x
+        lastY = lp.y
+        runCatching { wm.updateViewLayout(view, lp) }
+        // Thò ra khỏi mép càng nhiều càng mờ: thả ở đó là đóng.
+        val over = if (lp.x < 0) -lp.x else max(0, lp.x + winW - m.widthPixels)
+        view.alpha = 1f - 0.85f * min(1f, over.toFloat() / winW)
+    }
+
+    /** Video đổi hướng (dọc / ngang): đổi cỡ cửa sổ, giữ góc đang đứng. */
+    private fun reshape(isVertical: Boolean) {
+        if (isVertical == vertical) return
+        vertical = isVertical
+        val view = root ?: return
+        val lp = params ?: return
+        lp.width = winW
+        lp.height = winH
+        place(lp.x.coerceAtMost(max(leftX, homeX)), lp.y.coerceAtMost(homeY))
+        runCatching { wm.updateViewLayout(view, lp) }
+    }
+
+    private fun release(vx: Float, vy: Float) {
+        val lp = params ?: return
+        val m = realMetrics()
+        val over = if (lp.x < 0) lp.x else max(0, lp.x + winW - m.widthPixels)
+        val thrownAway = abs(vx) > 1800f * density && abs(vx) > abs(vy) * 1.5f
+        if (thrownAway || abs(over) > winW / 2) {
+            val dir = if (thrownAway) (if (vx > 0) 1 else -1) else (if (over > 0) 1 else -1)
+            val target = if (dir > 0) m.widthPixels else -winW
+            val speed = max(abs(vx), 450f * density * 2f)
+            val ms = (1000f * abs(target - lp.x) / speed).roundToInt().coerceIn(110, 240).toLong()
+            flyAway(target, ms)
+            return
+        }
+        // Về góc gần nhất theo hướng ném: trái / phải tự hít, dọc nằm đúng chỗ thả, gần mép trên / dưới thì hít vào mép.
+        val throwS = 0.18f
+        val centerX = lp.x + winW / 2f + vx * throwS
+        val x = if (abs(centerX - (homeX + winW / 2f)) < abs(centerX - (leftX + winW / 2f))) homeX else leftX
+        val top = min(minY, homeY)
+        var y = (lp.y + vy * throwS).roundToInt().coerceIn(top, max(top, homeY))
+        val snap = (48 * density).roundToInt()
+        if (homeY - y < snap) y = homeY else if (y - top < snap) y = top
+        springTo(lp.x, lp.y, x, y, vx, vy)
+    }
+
+    /** Lò xo (độ cứng 550, tắt dần 0.75 như SNAP của meetube) từ chỗ thả tới góc, tính công thức đóng. */
+    private fun springTo(fromX: Int, fromY: Int, toX: Int, toY: Int, vx: Float, vy: Float) {
+        val sx = SpringCurve(fromX.toFloat(), toX.toFloat(), vx)
+        val sy = SpringCurve(fromY.toFloat(), toY.toFloat(), vy)
+        val total = max(sx.settleMs, sy.settleMs).coerceAtLeast(1L)
+        settle?.cancel()
+        settle = android.animation.ValueAnimator.ofFloat(0f, total.toFloat()).apply {
+            duration = total
+            interpolator = LinearInterpolator()
+            addUpdateListener {
+                val t = (it.animatedValue as Float) / 1000f
+                place(sx.at(t).roundToInt(), sy.at(t).roundToInt())
+            }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    if (settle === animation) place(toX, toY)
+                }
+            })
+            start()
+        }
+    }
+
+    private fun flyAway(target: Int, ms: Long) {
+        if (closing) return
+        closing = true
+        ShortsMini.paused = true
+        ShortsPool.pauseAll()
+        val lp = params ?: return
+        settle?.cancel()
+        val from = lp.x
+        settle = android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = ms
+            interpolator = LinearInterpolator()
+            addUpdateListener {
+                val f = it.animatedValue as Float
+                val view = root ?: return@addUpdateListener
+                lp.x = (from + (target - from) * f).roundToInt()
+                runCatching { wm.updateViewLayout(view, lp) }
+                view.alpha = min(view.alpha, 1f - f)
+            }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    finishClose()
+                }
+            })
+            start()
+        }
+    }
+
+    /** Nút X: thẻ co về 90% và mờ đi (emphasized accelerate), tiếng tắt ngay, rồi mới đóng phiên. */
+    private fun closeShrink() {
+        if (closing) return
+        closing = true
+        ShortsMini.paused = true
+        ShortsPool.pauseAll()
+        settle?.cancel()
+        root?.animate()?.alpha(0f)?.scaleX(0.9f)?.scaleY(0.9f)?.setDuration(200)?.setInterpolator(EMPH_ACCEL)
+            ?.withEndAction { finishClose() }?.start() ?: finishClose()
+    }
+
+    private fun finishClose() {
+        ShortsMini.close()
+        shutdown()
+    }
+
+    /** Nút mở rộng: về app, xem Short toàn màn hình đúng video đang phát. */
+    private fun expand() {
+        if (closing) return
+        closing = true
+        ShortsMini.expand()
+        try {
+            startActivity(
+                Intent(this, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            )
+        } catch (_: Exception) {
+        }
+        shutdown()
+    }
+
+    private fun shutdown() {
+        settle?.cancel()
+        settle = null
+        root?.let { view ->
+            root = null
+            runCatching { wm.removeView(view) }
+        }
+        PipOverlay.clear()
+        stopForeground(true)
+        stopSelf()
+    }
+
+    override fun onDestroy() {
+        settle?.cancel()
+        root?.let { runCatching { wm.removeView(it) } }
+        root = null
+        PipOverlay.clear()
+        registry.currentState = Lifecycle.State.DESTROYED
+        store.clear()
+        super.onDestroy()
+    }
+
+    companion object {
+        private const val CHANNEL_ID = "pip_overlay"
+        private const val NOTIFICATION_ID = 7421
+        private val EMPH_DECEL = PathInterpolator(0.05f, 0.7f, 0.1f, 1f)
+        private val EMPH_ACCEL = PathInterpolator(0.3f, 0f, 0.8f, 0.15f)
+
+        // Nhớ chỗ cửa sổ nằm giữa các lần hiện.
+        private var lastX: Int? = null
+        private var lastY: Int? = null
+    }
+}
+
+/** Lò xo tắt dần (độ cứng 550, hệ số tắt 0.75) bắt đầu từ vận tốc ngón tay: giải theo công thức đóng như Motion.Spring của meetube. */
+private class SpringCurve(private val from: Float, private val to: Float, private val velocity: Float) {
+    private val omega = sqrt(550.0)
+    private val zeta = 0.75
+    private val x0 = (from - to).toDouble()
+    val settleMs: Long
+
+    init {
+        var settled = 0L
+        if (abs(to - from) > 1e-3f || abs(velocity) > 1f) {
+            for (ms in 1..2000) if (abs(offset(ms / 1000.0)) > 0.5) settled = ms.toLong()
+        }
+        settleMs = settled
+    }
+
+    private fun offset(t: Double): Double {
+        val damped = omega * sqrt(1.0 - zeta * zeta)
+        return exp(-zeta * omega * t) * (x0 * cos(damped * t) + (velocity + zeta * omega * x0) / damped * sin(damped * t))
+    }
+
+    fun at(t: Float): Float = (to + offset(t.toDouble())).toFloat()
+}
+
+/**
+ * Gốc của cửa sổ nổi: nhận cú vuốt / kéo ở mức View (toạ độ màn hình, nên không giật khi chính cửa sổ đang dịch chuyển) và chỉ chặn
+ * khi ngón đã đi quá ngưỡng. Chặn rồi thì Compose bên trong nhận CANCEL, nên kéo xong không bao giờ bị tính là bấm vào video.
+ */
+private class OverlayRoot(context: Context, private val host: Host) : FrameLayout(context) {
+    interface Host {
+        fun x(): Int
+        fun y(): Int
+        fun moveTo(x: Int, y: Int)
+        fun onGrab()
+        fun onRelease(vx: Float, vy: Float)
+    }
+
+    private val slop = ViewConfiguration.get(context).scaledTouchSlop
+    private var downX = 0f
+    private var downY = 0f
+    private var startX = 0
+    private var startY = 0
+    private var dragging = false
+    private var velocity: VelocityTracker? = null
+
+    private fun track(e: MotionEvent) {
+        val raw = MotionEvent.obtain(e)
+        raw.setLocation(e.rawX, e.rawY)
+        velocity?.addMovement(raw)
+        raw.recycle()
+    }
+
+    override fun onInterceptTouchEvent(e: MotionEvent): Boolean {
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                downX = e.rawX
+                downY = e.rawY
+                startX = host.x()
+                startY = host.y()
+                dragging = false
+                velocity?.recycle()
+                velocity = VelocityTracker.obtain()
+                track(e)
+            }
+            MotionEvent.ACTION_MOVE -> {
+                track(e)
+                if (!dragging && hypot(e.rawX - downX, e.rawY - downY) > slop) {
+                    dragging = true
+                    host.onGrab()
+                    startX = host.x()
+                    startY = host.y()
+                    downX = e.rawX
+                    downY = e.rawY
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                velocity?.recycle()
+                velocity = null
+            }
+        }
+        return dragging
+    }
+
+    override fun onTouchEvent(e: MotionEvent): Boolean {
+        if (!dragging) return true
+        track(e)
+        when (e.actionMasked) {
+            MotionEvent.ACTION_MOVE -> host.moveTo(startX + (e.rawX - downX).roundToInt(), startY + (e.rawY - downY).roundToInt())
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                dragging = false
+                var vx = 0f
+                var vy = 0f
+                velocity?.let {
+                    it.computeCurrentVelocity(1000)
+                    vx = it.xVelocity
+                    vy = it.yVelocity
+                    it.recycle()
+                }
+                velocity = null
+                host.onRelease(if (e.actionMasked == MotionEvent.ACTION_CANCEL) 0f else vx, if (e.actionMasked == MotionEvent.ACTION_CANCEL) 0f else vy)
+            }
+        }
+        return true
+    }
+}
+
+@Composable
+private fun OverlayContent(onClose: () -> Unit, onExpand: () -> Unit, onGone: () -> Unit, onShape: (Boolean) -> Unit) {
+    val video = ShortsMini.current
+    if (video == null) {
+        LaunchedEffect(Unit) { onGone() }
+        return
+    }
+    val list = ShortsMini.list
+    val idx = ShortsMini.index
+
+    // Giữ ô phát của video này + kế + trước, chỉ phát video đang hiện.
+    LaunchedEffect(video.id, list) {
+        ShortsPool.window(listOfNotNull(list.getOrNull(idx), list.getOrNull(idx + 1), list.getOrNull(idx - 1)))
+    }
+    val slot = ShortsPool.slot(video.id)
+    LaunchedEffect(video.id, slot, ShortsMini.paused) { ShortsPool.setActive(video.id, !ShortsMini.paused) }
+    val ended = slot?.ended == true
+    LaunchedEffect(ended, video.id) { if (ended && ShortsPool.autoScroll) ShortsMini.next() }
+    // Vào từ màn Short toàn màn hình thì ô phát vừa bị bộ phát cũ dừng: giành lại vài lần cho chắc.
+    LaunchedEffect(video.id) {
+        repeat(6) {
+            kotlinx.coroutines.delay(500)
+            ShortsPool.setActive(video.id, !ShortsMini.paused)
+        }
+    }
+    val vertical = slot?.vertical ?: true
+    LaunchedEffect(vertical) { onShape(vertical) }
+
+    var controlsVisible by remember { mutableStateOf(true) }
+    LaunchedEffect(controlsVisible, ShortsMini.paused, video.id) {
+        if (controlsVisible && !ShortsMini.paused) {
+            kotlinx.coroutines.delay(3000)
+            controlsVisible = false
+        }
+    }
+    val controlsAlpha by animateFloatAsState(
+        targetValue = if (controlsVisible) 1f else 0f,
+        animationSpec = tween(if (controlsVisible) MINI_FADE_IN_MS else MINI_FADE_OUT_MS, easing = StandardEasing),
+        label = "overlayControls"
+    )
+
+    Box(
+        Modifier.fillMaxSize().background(Color.Black)
+            // Chạm vào video (chỗ không có nút) là ẩn / hiện nút, đúng thứ PiP của hệ thống không làm được.
+            .pointerInput(Unit) { detectTapGestures(onTap = { controlsVisible = !controlsVisible }) }
+    ) {
+        AsyncImage(
+            model = video.thumbnail,
+            contentDescription = null,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.fillMaxSize()
+        )
+        AndroidView(
+            factory = { ctx ->
+                (LayoutInflater.from(ctx).inflate(R.layout.shorts_player_view, null) as PlayerView).also { it.player = slot?.player }
+            },
+            update = {
+                it.player = slot?.player
+                it.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+            },
+            onRelease = { it.player = null },
+            modifier = Modifier.fillMaxSize()
+        )
+        if (controlsAlpha > 0.001f) {
+            val enabled = controlsVisible
+            Box(Modifier.fillMaxSize().graphicsLayer { alpha = controlsAlpha }) {
+                Box(
+                    Modifier.fillMaxSize().background(
+                        Brush.verticalGradient(listOf(Color(0x99000000), Color(0x40000000), Color(0x99000000)))
+                    )
+                )
+                MiniButton(Modifier.align(Alignment.TopStart).padding(2.dp), 36.dp, enabled, onClose) { MiniIcon(MiniClose, 22.dp) }
+                MiniButton(Modifier.align(Alignment.TopEnd).padding(2.dp), 36.dp, enabled, onExpand) { MiniIcon(MiniExpand, 22.dp) }
+                Row(
+                    Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    MiniButton(Modifier, 36.dp, enabled, { ShortsMini.prev() }) { MiniIcon(MiniPrev, 24.dp) }
+                    MiniButton(Modifier.padding(horizontal = 2.dp), 44.dp, enabled, { ShortsMini.toggle() }) {
+                        Crossfade(targetState = ShortsMini.paused, animationSpec = tween(MINI_FADE_IN_MS), label = "overlayPlayPause") { paused ->
+                            Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
+                                MiniIcon(if (paused) MiniPlay else MiniPause, 32.dp)
+                            }
+                        }
+                    }
+                    MiniButton(Modifier, 36.dp, enabled, { ShortsMini.next() }) { MiniIcon(MiniNext, 24.dp) }
+                }
+            }
+        }
+    }
+}

@@ -12,6 +12,8 @@
     <!-- Phát nhạc nền: dịch vụ mediaPlayback + giữ CPU / Wi-Fi khi tắt màn hình. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Cửa sổ Short nổi do app tự vẽ (Cài đặt → Thử nghiệm các tính năng mới → Cải thiện trải nghiệm dùng PiP). -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Tìm kiếm bằng giọng nói (màn nghe riêng trong app). -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
@@ -74,6 +76,11 @@
                 <action android:name="androidx.media3.session.MediaSessionService" />
             </intent-filter>
         </service>
+
+        <service
+            android:name=".ui.PipOverlayService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
 
         <service
             android:name=".DownloadService"

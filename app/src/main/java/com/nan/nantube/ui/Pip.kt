@@ -33,6 +33,9 @@ object PipState {
 
     var controls: PipControls? = null
 
+    /** Bộ phát Short toàn màn hình đăng ký: danh sách + vị trí hiện tại, để cửa sổ nổi tiếp tục đúng video khi rời app. */
+    var snapshot: (() -> Pair<List<com.nan.nantube.data.VideoItem>, Int>)? = null
+
     /** MainActivity gán: vào PiP hệ thống ngay. */
     var enter: (() -> Unit)? = null
 

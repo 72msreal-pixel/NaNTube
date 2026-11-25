@@ -18,6 +18,10 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -52,6 +56,8 @@ import com.composables.icons.lucide.Users
 import com.nan.nantube.BuildConfig
 import com.nan.nantube.R
 
+private const val EXPERIMENTS = "Thử nghiệm các tính năng mới"
+
 private data class SettingItem(val icon: ImageVector, val title: String)
 
 private val accountItems = listOf(
@@ -67,7 +73,7 @@ private val accountItems = listOf(
     SettingItem(Lucide.ShieldCheck, "Dữ liệu của bạn trong NaNTube"),
     SettingItem(Lucide.Lock, "Quyền riêng tư"),
     SettingItem(Lucide.Link, "Ứng dụng đã kết nối"),
-    SettingItem(Lucide.FlaskConical, "Thử nghiệm các tính năng mới")
+    SettingItem(Lucide.FlaskConical, EXPERIMENTS)
 )
 
 private val videoItems = listOf(
@@ -83,6 +89,11 @@ private val videoItems = listOf(
 
 @Composable
 fun SettingsScreen(onBack: () -> Unit) {
+    var page by remember { mutableStateOf<String?>(null) }
+    if (page == EXPERIMENTS) {
+        ExperimentsScreen(onBack = { page = null })
+        return
+    }
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 8.dp, vertical = 8.dp),
@@ -99,7 +110,7 @@ fun SettingsScreen(onBack: () -> Unit) {
         LazyColumn(Modifier.fillMaxSize()) {
             item { SectionHeader("Tài khoản") }
             items(accountItems) { item ->
-                SettingRow(item.title) { Icon(item.icon, null, Modifier.size(24.dp)) }
+                SettingRow(item.title, onClick = { if (item.title == EXPERIMENTS) page = EXPERIMENTS }) { Icon(item.icon, null, Modifier.size(24.dp)) }
             }
             item { HorizontalDivider(color = NanColors.Surface) }
             item { SectionHeader("Lựa chọn ưu tiên về video và âm thanh") }
@@ -128,9 +139,9 @@ private fun SectionHeader(text: String) {
 }
 
 @Composable
-private fun SettingRow(title: String, subtitle: String? = null, leading: @Composable () -> Unit) {
+private fun SettingRow(title: String, subtitle: String? = null, onClick: () -> Unit = {}, leading: @Composable () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().clickable { }.padding(horizontal = 16.dp, vertical = 16.dp),
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         leading()

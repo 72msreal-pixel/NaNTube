@@ -1,25 +1,38 @@
 package com.nan.nantube.ui
 
+import android.os.SystemClock
 import android.view.LayoutInflater
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.VectorConverter
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.keyframes
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -30,17 +43,23 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.isSpecified
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathParser
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -52,7 +71,12 @@ import coil.compose.AsyncImage
 import com.nan.nantube.R
 import com.nan.nantube.data.Account
 import com.nan.nantube.data.VideoItem
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
@@ -122,8 +146,28 @@ object ShortsMini {
     }
 }
 
-private val MINI_WIDTH = 132.dp
-private val MINI_HEIGHT = 132.dp * 16 / 9
+internal val MINI_WIDTH = 132.dp
+internal val MINI_HEIGHT = 132.dp * 16 / 9
+
+// Chuyển động lấy theo meetube (Motion.java + MiniCardSwipe.java): cùng đường cong Material 3, cùng thời lượng, cùng lò xo.
+internal val EmphasizedDecelerate = CubicBezierEasing(0.05f, 0.7f, 0.1f, 1f)
+internal val EmphasizedAccelerate = CubicBezierEasing(0.3f, 0f, 0.8f, 0.15f)
+internal val StandardEasing = CubicBezierEasing(0.2f, 0f, 0f, 1f)
+internal const val MINI_ENTER_MS = 250
+internal const val MINI_EXIT_MS = 200
+internal const val MINI_FADE_IN_MS = 150
+internal const val MINI_FADE_OUT_MS = 90
+private const val MINI_POP_MS = 260
+private const val SNAP_STIFFNESS = 550f
+private const val SNAP_DAMPING = 0.75f
+private const val THROW_S = 0.18f
+private const val FLING_VELOCITY_DP = 450f
+/** Ném ngang nhanh cỡ này (và chủ yếu là ngang) thì đóng thẻ thay vì cất vào góc. */
+private const val CLOSE_VELOCITY_DP = 1800f
+private const val FLY_MIN_MS = 110
+/** Chạm xảy ra trong khoảng này sau lần kéo cuối thì coi là đuôi của cú kéo, bỏ qua. */
+private const val TAP_AFTER_DRAG_MS = 250L
+private const val FLY_MAX_MS = 240
 
 private fun miniIcon(name: String, filled: Boolean, vararg paths: String): ImageVector =
     ImageVector.Builder(name, 24.dp, 24.dp, 24f, 24f).apply {
@@ -139,12 +183,12 @@ private fun miniIcon(name: String, filled: Boolean, vararg paths: String): Image
         }
     }.build()
 
-private val MiniClose: ImageVector by lazy { miniIcon("MiniClose", false, "M18 6 6 18", "m6 6 12 12") }
-private val MiniExpand: ImageVector by lazy { miniIcon("MiniExpand", false, "M15 3h6v6", "m21 3-7 7", "m3 21 7-7", "M9 21H3v-6") }
-private val MiniPlay: ImageVector by lazy { miniIcon("MiniPlay", true, "M8,5v14l11,-7z") }
-private val MiniPause: ImageVector by lazy { miniIcon("MiniPause", true, "M6,19h4V5H6v14zM14,5v14h4V5h-4z") }
-private val MiniPrev: ImageVector by lazy { miniIcon("MiniPrev", true, "M6,6h2v12H6zM9.5,12l8.5,6V6z") }
-private val MiniNext: ImageVector by lazy { miniIcon("MiniNext", true, "M6,18l8.5,-6L6,6v12zM16,6v12h2V6h-2z") }
+internal val MiniClose: ImageVector by lazy { miniIcon("MiniClose", false, "M18 6 6 18", "m6 6 12 12") }
+internal val MiniExpand: ImageVector by lazy { miniIcon("MiniExpand", false, "M15 3h6v6", "m21 3-7 7", "m3 21 7-7", "M9 21H3v-6") }
+internal val MiniPlay: ImageVector by lazy { miniIcon("MiniPlay", true, "M8,5v14l11,-7z") }
+internal val MiniPause: ImageVector by lazy { miniIcon("MiniPause", true, "M6,19h4V5H6v14zM14,5v14h4V5h-4z") }
+internal val MiniPrev: ImageVector by lazy { miniIcon("MiniPrev", true, "M6,6h2v12H6zM9.5,12l8.5,6V6z") }
+internal val MiniNext: ImageVector by lazy { miniIcon("MiniNext", true, "M6,18l8.5,-6L6,6v12zM16,6v12h2V6h-2z") }
 
 /** Đặt cuối cây giao diện của AppRoot: tự ẩn khi không có Short nào đang ở chế độ cửa sổ nhỏ. */
 @Composable
@@ -162,7 +206,7 @@ private fun MiniContent(video: VideoItem, account: Account?) {
     val inPip = PipState.inPip
 
     remember(account?.id) { ShortsPool.bind(context, account) }
-    DisposableEffect(Unit) { onDispose { ShortsPool.pagerGone() } }
+    DisposableEffect(Unit) { onDispose { if (!PipOverlay.active) ShortsPool.pagerGone() } }
 
     // Giữ ô phát của video này + kế + trước (kể cả sau khi tab Short vừa nhả), rồi chỉ phát video đang hiện.
     LaunchedEffect(video.id, list) {
@@ -175,7 +219,7 @@ private fun MiniContent(video: VideoItem, account: Account?) {
     }
     // Bật tự vuốt ở menu Short thì hết video là sang video kế như trong Short.
     val ended = slot?.ended == true
-    LaunchedEffect(ended, video.id) { if (ended && ShortsPool.autoScroll) ShortsMini.next() }
+    LaunchedEffect(ended, video.id) { if (ended && ShortsPool.autoScroll && !PipOverlay.active) ShortsMini.next() }
 
     // Báo cho MainActivity: rời app lúc đang phát thì vào PiP; nút Trước / Phát-Tạm dừng / Tiếp của cửa sổ PiP điều khiển cửa sổ này.
     LaunchedEffect(video.id, ShortsMini.paused, slot?.vertical) {
@@ -204,8 +248,8 @@ private fun MiniContent(video: VideoItem, account: Account?) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 // Đang phát mà rời app thì sắp vào PiP: không dừng ở ON_PAUSE; PiP đóng (X) hoặc app tắt hẳn thì dừng ở ON_STOP.
-                Lifecycle.Event.ON_PAUSE -> { if (!PipState.armed && !PipState.inPip) ShortsPool.pauseAll() }
-                Lifecycle.Event.ON_STOP -> { if (!PipState.inPip) ShortsPool.pauseAll() }
+                Lifecycle.Event.ON_PAUSE -> { if (!PipState.armed && !PipState.inPip && !PipOverlay.active) ShortsPool.pauseAll() }
+                Lifecycle.Event.ON_STOP -> { if (!PipState.inPip && !PipOverlay.active) ShortsPool.pauseAll() }
                 Lifecycle.Event.ON_RESUME -> { tick++ }
                 else -> Unit
             }
@@ -214,7 +258,7 @@ private fun MiniContent(video: VideoItem, account: Account?) {
         onDispose { lifecycle.removeObserver(observer) }
     }
     LaunchedEffect(inPip) {
-        if (!inPip && !lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) ShortsPool.pauseAll()
+        if (!inPip && !PipOverlay.active && !lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) ShortsPool.pauseAll()
     }
 
     var controlsVisible by remember { mutableStateOf(true) }
@@ -225,6 +269,58 @@ private fun MiniContent(video: VideoItem, account: Account?) {
         }
     }
 
+    val scope = rememberCoroutineScope()
+    val haptic = LocalHapticFeedback.current
+    var closing by remember { mutableStateOf(false) }
+
+    // Vào: thẻ nở từ 90% và hiện dần, đường cong "emphasized decelerate" của meetube (cửa sổ PiP thì hiện luôn).
+    val cardScale = remember { Animatable(if (inPip) 1f else 0.9f) }
+    val cardAlpha = remember { Animatable(if (inPip) 1f else 0f) }
+    LaunchedEffect(Unit) {
+        launch { cardScale.animateTo(1f, tween(MINI_ENTER_MS, easing = EmphasizedDecelerate)) }
+        cardAlpha.animateTo(1f, tween(MINI_FADE_IN_MS, easing = StandardEasing))
+    }
+
+    // Chuyển sang Short khác (Trước / Tiếp / tự vuốt): thẻ nhún nhẹ để báo đã đổi (Motion.nudge của meetube).
+    val nudge = remember { Animatable(1f) }
+    var firstVideo by remember { mutableStateOf(true) }
+    LaunchedEffect(video.id) {
+        if (firstVideo) {
+            firstVideo = false
+            return@LaunchedEffect
+        }
+        nudge.snapTo(1f)
+        nudge.animateTo(1f, keyframes {
+            durationMillis = MINI_POP_MS
+            0.965f at (MINI_POP_MS * 35 / 100) using StandardEasing
+            1.015f at (MINI_POP_MS * 75 / 100) using StandardEasing
+        })
+    }
+
+    // Nút Phát / Tạm dừng "pop": ép xuống 78%, nảy lên 112%, rồi về 100%.
+    val pop = remember { Animatable(1f) }
+    var firstPause by remember { mutableStateOf(true) }
+    LaunchedEffect(ShortsMini.paused) {
+        if (firstPause) {
+            firstPause = false
+            return@LaunchedEffect
+        }
+        pop.snapTo(1f)
+        pop.animateTo(1f, keyframes {
+            durationMillis = MINI_POP_MS
+            0.78f at (MINI_POP_MS * 35 / 100) using StandardEasing
+            1.12f at (MINI_POP_MS * 75 / 100) using StandardEasing
+        })
+    }
+
+    // Nút mờ đi sau vài giây và hiện lại khi chạm: hiện 150ms, ẩn 90ms.
+    val controlsAlpha by animateFloatAsState(
+        targetValue = if (controlsVisible && !inPip) 1f else 0f,
+        animationSpec = tween(if (controlsVisible) MINI_FADE_IN_MS else MINI_FADE_OUT_MS, easing = StandardEasing),
+        label = "miniControls"
+    )
+    val controlsEnabled = controlsVisible && !inPip && !closing
+
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val maxW = constraints.maxWidth.toFloat()
         val maxH = constraints.maxHeight.toFloat()
@@ -233,35 +329,166 @@ private fun MiniContent(video: VideoItem, account: Account?) {
         val margin = with(density) { 12.dp.toPx() }
         val barPx = with(density) { 64.dp.toPx() }
         val navPx = WindowInsets.navigationBars.getBottom(density).toFloat()
-        val initial = Offset(maxW - w - margin, maxH - h - navPx - barPx - margin)
+        val statusPx = WindowInsets.statusBars.getTop(density).toFloat()
+        val homeX = maxW - w - margin
+        val homeY = maxH - h - navPx - barPx - margin
+        val leftX = margin
+        val topY = min(statusPx + margin, max(homeY, 0f))
+        val initial = Offset(homeX, homeY)
+
+        // Vị trí khi nằm yên / đang kéo (pos) và khi đang bay về góc (settle, lò xo).
         var pos by remember { mutableStateOf(Offset.Unspecified) }
-        fun clamp(o: Offset) = Offset(
-            o.x.coerceIn(0f, (maxW - w).coerceAtLeast(0f)),
+        val settle = remember { Animatable(Offset.Zero, Offset.VectorConverter) }
+        var settling by remember { mutableStateOf(false) }
+        var settleJob by remember { mutableStateOf<Job?>(null) }
+        // Lần cuối ngón còn đang kéo thẻ: một cú kéo / vuốt không được tính là chạm vào video (không bật / tắt nút).
+        var lastDragAt by remember { mutableStateOf(0L) }
+
+        fun restPos() = if (pos.isSpecified) pos else initial
+        fun visual(): Offset = if (settling) settle.value else restPos()
+        fun clampDrag(o: Offset) = Offset(
+            o.x.coerceIn(-w, maxW),
             o.y.coerceIn(0f, (maxH - h).coerceAtLeast(0f))
         )
-        val p = clamp(if (pos.isSpecified) pos else initial)
+        /** Thẻ thò ra khỏi mép bên nào bao nhiêu (âm: mép trái). */
+        fun overhang(x: Float): Float = if (x < 0f) x else max(0f, x + w - maxW)
+
+        fun settleTo(from: Offset, target: Offset, velocity: Offset) {
+            settleJob?.cancel()
+            settleJob = scope.launch {
+                settle.snapTo(from)
+                settling = true
+                settle.animateTo(target, spring(dampingRatio = SNAP_DAMPING, stiffness = SNAP_STIFFNESS), velocity)
+                pos = target
+                settling = false
+            }
+        }
+
+        fun flyAway(from: Offset, toX: Float, ms: Int) {
+            if (closing) return
+            closing = true
+            ShortsMini.paused = true // tiếng tắt ngay, thẻ bay đi rồi mới đóng hẳn
+            controlsVisible = false
+            settleJob?.cancel()
+            settleJob = scope.launch {
+                settle.snapTo(from)
+                settling = true
+                launch { settle.animateTo(Offset(toX, from.y), tween(ms, easing = LinearEasing)) }
+                cardAlpha.animateTo(0f, tween(ms, easing = LinearEasing))
+                ShortsMini.close()
+            }
+        }
+
+        /** Nút X: thẻ co về 90% và mờ đi (emphasized accelerate) rồi mới đóng. */
+        fun closeShrink() {
+            if (closing) return
+            closing = true
+            ShortsMini.paused = true
+            controlsVisible = false
+            scope.launch {
+                launch { cardScale.animateTo(0.9f, tween(MINI_EXIT_MS, easing = EmphasizedAccelerate)) }
+                cardAlpha.animateTo(0f, tween(MINI_EXIT_MS, easing = EmphasizedAccelerate))
+                ShortsMini.close()
+            }
+        }
+
+        fun release(vx: Float, vy: Float) {
+            val from = restPos()
+            val closeSpeed = CLOSE_VELOCITY_DP * density.density
+            val thrownAway = abs(vx) > closeSpeed && abs(vx) > abs(vy) * 1.5f
+            val over = overhang(from.x)
+            if (thrownAway || abs(over) > w / 2f) {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                val dir = if (thrownAway) Math.signum(vx) else Math.signum(over)
+                val target = dir * maxW
+                val speed = max(abs(vx), FLING_VELOCITY_DP * density.density * 2f)
+                val ms = (1000f * abs(target - from.x) / speed).roundToInt().coerceIn(FLY_MIN_MS, FLY_MAX_MS)
+                flyAway(from, target, ms)
+                return
+            }
+            // Về góc gần nhất theo hướng ném: trái / phải tự hít, dọc thì nằm đúng chỗ thả, gần mép trên / dưới thì hít vào mép.
+            val centerX = from.x + w / 2f + vx * THROW_S
+            val x = if (abs(centerX - (homeX + w / 2f)) < abs(centerX - (leftX + w / 2f))) homeX else leftX
+            var y = (from.y + vy * THROW_S).coerceIn(topY, max(topY, homeY))
+            val snap = with(density) { 48.dp.toPx() }
+            if (homeY - y < snap) y = homeY else if (y - topY < snap) y = topY
+            val target = Offset(x, y)
+            pos = from
+            settleTo(from, target, Offset(vx, vy))
+        }
 
         val cardModifier = if (inPip) {
             // Cửa sổ PiP: thẻ phình ra đúng bằng cửa sổ, chỉ còn video.
             Modifier.fillMaxSize()
         } else {
             Modifier
-                .offset { IntOffset(p.x.roundToInt(), p.y.roundToInt()) }
+                .offset { visual().let { IntOffset(it.x.roundToInt(), it.y.roundToInt()) } }
+                .graphicsLayer {
+                    val s = cardScale.value * nudge.value
+                    scaleX = s
+                    scaleY = s
+                    // Thò ra khỏi mép càng nhiều càng mờ: thả ở đó là đóng.
+                    val fade = 1f - 0.85f * min(1f, abs(overhang(visual().x)) / w)
+                    alpha = cardAlpha.value * fade
+                }
                 .size(MINI_WIDTH, MINI_HEIGHT)
                 .shadow(8.dp, RoundedCornerShape(12.dp))
                 .clip(RoundedCornerShape(12.dp))
-                .pointerInput(Unit) {
-                    detectDragGestures { change, drag ->
-                        change.consume()
-                        pos = clamp((if (pos.isSpecified) pos else initial) + drag)
-                    }
+                .pointerInput(maxW, maxH, homeX, homeY, topY) {
+                    val tracker = VelocityTracker()
+                    var total = Offset.Zero
+                    var active = false
+                    detectDragGestures(
+                        onDragStart = {
+                            active = !closing
+                            lastDragAt = SystemClock.uptimeMillis()
+                            if (active) {
+                                // Bắt lại thẻ đang bay về góc ngay dưới ngón tay.
+                                settleJob?.cancel()
+                                if (settling) {
+                                    pos = settle.value
+                                    settling = false
+                                }
+                                tracker.resetTracking()
+                                total = Offset.Zero
+                                controlsVisible = true
+                            }
+                        },
+                        onDrag = { change, drag ->
+                            lastDragAt = SystemClock.uptimeMillis()
+                            if (active) {
+                                change.consume()
+                                total += drag
+                                tracker.addPosition(change.uptimeMillis, total)
+                                pos = clampDrag(restPos() + drag)
+                            }
+                        },
+                        onDragEnd = {
+                            lastDragAt = SystemClock.uptimeMillis()
+                            if (active) {
+                                active = false
+                                val v = tracker.calculateVelocity()
+                                release(v.x, v.y)
+                            }
+                        },
+                        onDragCancel = {
+                            lastDragAt = SystemClock.uptimeMillis()
+                            if (active) {
+                                active = false
+                                release(0f, 0f)
+                            }
+                        }
+                    )
                 }
         }
 
         Box(
             cardModifier
                 .background(Color.Black)
-                .pointerInput(Unit) { detectTapGestures(onTap = { controlsVisible = !controlsVisible }) }
+                .pointerInput(Unit) { detectTapGestures(onTap = {
+                        val afterDrag = SystemClock.uptimeMillis() - lastDragAt < TAP_AFTER_DRAG_MS
+                        if (!closing && !afterDrag) controlsVisible = !controlsVisible
+                    }) }
         ) {
             AsyncImage(
                 model = video.thumbnail,
@@ -285,29 +512,89 @@ private fun MiniContent(video: VideoItem, account: Account?) {
                 modifier = Modifier.fillMaxSize()
             )
 
-            if (controlsVisible && !inPip) {
-                Box(Modifier.fillMaxSize().background(Color(0x66000000)))
-                MiniButton(MiniClose, Modifier.align(Alignment.TopStart).padding(4.dp)) { ShortsMini.close() }
-                MiniButton(MiniExpand, Modifier.align(Alignment.TopEnd).padding(4.dp)) { ShortsMini.expand() }
-                Row(
-                    Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
+            if (controlsAlpha > 0.001f && !inPip) {
+                // Không còn nền tròn đen sau từng nút: chỉ một lớp phủ tối dần ở đỉnh / đáy để biểu tượng trắng vẫn đọc được.
+                Box(
+                    Modifier.fillMaxSize().graphicsLayer { alpha = controlsAlpha }
                 ) {
-                    MiniButton(MiniPrev, Modifier) { ShortsMini.prev() }
-                    MiniButton(if (ShortsMini.paused) MiniPlay else MiniPause, Modifier.padding(horizontal = 6.dp), big = true) { ShortsMini.toggle() }
-                    MiniButton(MiniNext, Modifier) { ShortsMini.next() }
+                    Box(
+                        Modifier.fillMaxSize().background(
+                            Brush.verticalGradient(listOf(Color(0x99000000), Color(0x40000000), Color(0x99000000)))
+                        )
+                    )
+                    MiniButton(Modifier.align(Alignment.TopStart).padding(2.dp), 36.dp, controlsEnabled, ::closeShrink) {
+                        MiniIcon(MiniClose, 22.dp)
+                    }
+                    MiniButton(Modifier.align(Alignment.TopEnd).padding(2.dp), 36.dp, controlsEnabled, { ShortsMini.expand() }) {
+                        MiniIcon(MiniExpand, 22.dp)
+                    }
+                    Row(
+                        Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        MiniButton(Modifier, 36.dp, controlsEnabled, { ShortsMini.prev() }) { MiniIcon(MiniPrev, 24.dp) }
+                        MiniButton(
+                            Modifier.padding(horizontal = 2.dp).graphicsLayer {
+                                scaleX = pop.value
+                                scaleY = pop.value
+                            },
+                            44.dp, controlsEnabled, { ShortsMini.toggle() }
+                        ) {
+                            Crossfade(targetState = ShortsMini.paused, animationSpec = tween(MINI_FADE_IN_MS), label = "playPause") { paused ->
+                                Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
+                                    MiniIcon(if (paused) MiniPlay else MiniPause, 32.dp)
+                                }
+                            }
+                        }
+                        MiniButton(Modifier, 36.dp, controlsEnabled, { ShortsMini.next() }) { MiniIcon(MiniNext, 24.dp) }
+                    }
                 }
             }
         }
     }
 }
 
+/** Nút trần, không nền: ngón bấm thì nút co lại rồi nảy về (lò xo), thả ra mới tính là bấm. */
 @Composable
-private fun MiniButton(icon: ImageVector, modifier: Modifier, big: Boolean = false, onClick: () -> Unit) {
+internal fun MiniButton(
+    modifier: Modifier,
+    size: Dp,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    content: @Composable BoxScope.() -> Unit
+) {
+    var pressed by remember { mutableStateOf(false) }
+    val press by animateFloatAsState(
+        targetValue = if (pressed) 0.82f else 1f,
+        animationSpec = spring(dampingRatio = 0.55f, stiffness = 600f),
+        label = "miniPress"
+    )
+    val clickNow by rememberUpdatedState(onClick)
     Box(
-        modifier.size(if (big) 40.dp else 32.dp).clip(CircleShape).background(Color(0x66000000)).plainClickable(onClick),
-        contentAlignment = Alignment.Center
-    ) {
-        Icon(icon, null, Modifier.size(if (big) 24.dp else 18.dp), tint = Color.White)
-    }
+        modifier
+            .size(size)
+            .graphicsLayer {
+                scaleX = press
+                scaleY = press
+            }
+            .pointerInput(enabled) {
+                if (enabled) {
+                    detectTapGestures(
+                        onPress = {
+                            pressed = true
+                            tryAwaitRelease()
+                            pressed = false
+                        },
+                        onTap = { clickNow() }
+                    )
+                }
+            },
+        contentAlignment = Alignment.Center,
+        content = content
+    )
+}
+
+@Composable
+internal fun MiniIcon(icon: ImageVector, size: Dp) {
+    Icon(icon, null, Modifier.size(size), tint = Color.White)
 }

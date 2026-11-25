@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.graphics.Color
 import android.graphics.drawable.Icon
 import android.os.Build
@@ -34,6 +35,7 @@ import androidx.core.content.ContextCompat
 import com.nan.nantube.data.AccountStore
 import com.nan.nantube.data.ChannelAvatars
 import com.nan.nantube.data.NanStorage
+import com.nan.nantube.data.PipPrefs
 import com.nan.nantube.data.SavedComments
 import com.nan.nantube.data.MusicDetector
 import com.nan.nantube.data.ShortDetector
@@ -41,7 +43,9 @@ import com.nan.nantube.data.ShortsSeen
 import com.nan.nantube.data.TvStore
 import com.nan.nantube.ui.AppRoot
 import com.nan.nantube.ui.NaNTubeTheme
+import com.nan.nantube.ui.PipOverlay
 import com.nan.nantube.ui.PipState
+import com.nan.nantube.ui.ShortsMini
 import com.nan.nantube.ui.SplashIntro
 import com.nan.nantube.ui.StorageAccessPrompt
 import kotlinx.coroutines.CoroutineScope
@@ -53,6 +57,8 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
     private val storagePermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    // Cấp quyền "Hiển thị trên các ứng dụng khác" cho cửa sổ Short nổi: quay lại thì có quyền mới bật, không thì tắt.
+    private val overlayPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { PipPrefs.onPermissionResult() }
     private var accessTick by mutableIntStateOf(0)
     private var hadAccess = false
 
@@ -79,6 +85,14 @@ class MainActivity : ComponentActivity() {
         ShortDetector.init(this)
         MusicDetector.init(this)
         TvStore.init(this)
+        PipPrefs.init(this)
+        PipPrefs.openOverlaySettings = {
+            try {
+                overlayPermission.launch(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+            } catch (_: Exception) {
+                PipPrefs.onPermissionResult()
+            }
+        }
         NewUploadsWorker.schedule(this)
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -121,7 +135,7 @@ class MainActivity : ComponentActivity() {
         addOnPictureInPictureModeChangedListener { info -> PipState.inPip = info.isInPictureInPictureMode }
         // Nút Phát/Tạm dừng và tỉ lệ cửa sổ luôn khớp Short đang hiện; Android 12+ còn tự vào PiP khi vuốt về Home (auto-enter).
         pipScope.launch {
-            snapshotFlow { Triple(PipState.armed, PipState.playing, PipState.vertical) }.collect { updatePipParams() }
+            snapshotFlow { listOf(PipState.armed, PipState.playing, PipState.vertical, PipPrefs.enhanced) }.collect { updatePipParams() }
         }
     }
 
@@ -147,7 +161,8 @@ class MainActivity : ComponentActivity() {
                 )
             )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            builder.setAutoEnterEnabled(PipState.armed)
+            // Cửa sổ nổi riêng thay PiP hệ thống thì không để hệ thống tự vào PiP nữa.
+            builder.setAutoEnterEnabled(PipState.armed && !(PipPrefs.enhanced && PipPrefs.canDraw(this)))
         }
         return builder.build()
     }
@@ -173,6 +188,13 @@ class MainActivity : ComponentActivity() {
     /** Rời app (Home / cử chỉ vuốt) khi Short đang phát thì thu nhỏ thành cửa sổ PiP, như YouTube. */
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
+        if (PipPrefs.enhanced && PipPrefs.canDraw(this)) {
+            // Short toàn màn hình đang phát: thu về thẻ mini để cửa sổ nổi tiếp tục đúng video.
+            if (!ShortsMini.open && PipState.armed) {
+                PipState.snapshot?.invoke()?.let { (list, at) -> ShortsMini.start(list, at) }
+            }
+            if (PipOverlay.start(this)) return
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && PipState.armed) enterPip()
     }
 
@@ -186,6 +208,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        PipOverlay.stop(this) // về lại app: thẻ mini trong app thay cửa sổ nổi
+        PipPrefs.ensurePermission()
         val now = NanStorage.hasAccess()
         if (now && !hadAccess) NanStorage.onAccessChanged()
         hadAccess = now

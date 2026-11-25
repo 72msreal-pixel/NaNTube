@@ -492,10 +492,14 @@ private fun ShortsPager(
             next = { scope.launch { pagerState.animateScrollToPage((pagerState.currentPage + 1).coerceAtMost((latest.size - 1).coerceAtLeast(0))) } },
             toggle = { userPaused = !userPaused }
         ) else null
-        if (controls != null) PipState.controls = controls
+        if (controls != null) {
+            PipState.controls = controls
+            PipState.snapshot = { latest to pagerState.currentPage }
+        }
         onDispose {
             if (controls != null && PipState.controls === controls) {
                 PipState.controls = null
+                PipState.snapshot = null
                 PipState.shortId = null
                 PipState.playing = false
             }
@@ -536,7 +540,7 @@ private fun ShortsPager(
         val observer = LifecycleEventObserver { _, event ->
             // Đang phát mà rời app thì sắp vào cửa sổ PiP: không dừng video ở ON_PAUSE. Hết PiP (bấm X) hoặc app tắt hẳn thì dừng ở ON_STOP.
             if (event == Lifecycle.Event.ON_PAUSE && !PipState.armed && !PipState.inPip) ShortsPool.pauseAll()
-            else if (event == Lifecycle.Event.ON_STOP && !PipState.inPip) ShortsPool.pauseAll()
+            else if (event == Lifecycle.Event.ON_STOP && !PipState.inPip && !PipOverlay.active) ShortsPool.pauseAll()
             else if (event == Lifecycle.Event.ON_RESUME) tick++
         }
         lifecycle.addObserver(observer)
