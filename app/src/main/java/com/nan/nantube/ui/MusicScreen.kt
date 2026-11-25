@@ -114,17 +114,20 @@ private fun ShelfList(
     onOpen: (MusicItem) -> Unit
 ) {
     val context = LocalContext.current
-    val tap: (MusicItem) -> Unit = { item -> item.watchUrl?.let { openLink(context, it) } ?: onOpen(item) }
+    // Bài hát: phát ngay trong app (trình phát nhạc), cả hàng nhạc cùng danh sách làm hàng đợi. Album / danh sách / nghệ sĩ: mở trang con.
+    val tap: (MusicItem, List<MusicItem>, String?) -> Unit = { item, list, title ->
+        if (item.videoId != null) MusicPlayer.playItems(context, account, list, item, title ?: "Nhạc") else onOpen(item)
+    }
     LazyColumn(Modifier.fillMaxSize(), state = feed.listState, contentPadding = PaddingValues(bottom = 16.dp)) {
         items(feed.items) { shelf ->
             shelf.title?.let {
                 Text(it, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 20.dp, bottom = 8.dp))
             }
             if (shelf.isList) {
-                shelf.items.forEach { SongRow(it, account, onSaveToPlaylist) { item -> tap(item) } }
+                shelf.items.forEach { SongRow(it, account, onSaveToPlaylist) { item -> tap(item, shelf.items, shelf.title) } }
             } else {
                 LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    items(shelf.items) { MusicCard(it) { item -> tap(item) } }
+                    items(shelf.items) { MusicCard(it) { item -> tap(item, shelf.items, shelf.title) } }
                 }
             }
         }

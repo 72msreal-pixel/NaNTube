@@ -1,156 +1,57 @@
 package com.nan.nantube.data
 
-import kotlinx.coroutines.CancellationException
 import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * "Không quan tâm" và "Không đề xuất kênh này" của menu Short, làm đúng như meetube/MediaServiceCore:
- * - Token lấy từ `reel/reel_item_watch` (ngữ cảnh WEB) với body `{disablePlayerResponse, params = params của reelWatchEndpoint,
- *   playerRequest:{videoId}}` (BrowseApiHelper.getReelDetailsQuery): playerRequest CHỈ có videoId, không có params riêng.
- *   meetube gọi bước này KHÔNG kèm tài khoản (getShortsWeb(auth=false)); bản cũ chỉ gọi kèm tài khoản nên menu không có mục phản hồi.
- * - Token nằm ở `overlay.reelPlayerOverlayRenderer.menu.menuRenderer.items`: mục thứ nhất là Không quan tâm, mục thứ hai là
- *   Không đề xuất kênh (ReelResult.getFeedbackTokens).
- * - `feedback` gửi bằng ngữ cảnh TV của tài khoản (FeedbackApiHelper.getNotInterestedQuery → createQueryTV).
- * Ngoài ra kiểm tra `isProcessed` để không báo thành công giả.
+ * "Không quan tâm" và "Không đề xuất kênh này" của menu Short, thay hoàn toàn bằng logic MeTube/MediaServiceCore:
+ * 1. Token: chi tiết reel mẫu WEB ẩn danh (`InnerTube.mtReelDetails`, như BrowseService2.continueShortsWeb) rồi lấy
+ *    `overlay.reelPlayerOverlayRenderer.menu.menuRenderer.items` (ReelResult.getFeedbackTokens). Mục có token thứ nhất
+ *    là Không quan tâm, thứ hai là Không đề xuất kênh (ShortsMediaItem.feedbackTokenItem / feedbackTokenItem2).
+ * 2. Gửi: `feedback` bằng ngữ cảnh TV của tài khoản (`InnerTube.mtFeedback`, như FeedbackApiHelper). HTTP 2xx là thành công
+ *    (VideoMenuPresenter.sendFeedbackPhone).
  */
 object ShortsFeedback {
     enum class Kind { NOT_INTERESTED, DONT_RECOMMEND_CHANNEL }
 
     suspend fun send(account: Account?, video: VideoItem, kind: Kind) {
         checkNotNull(account) { "Cần đăng nhập" }
-        val notes = ArrayList<String>()
-        val token = findToken(account, video, kind, notes)
-            ?: error("YouTube không cung cấp thao tác này cho video này (${notes.joinToString(" | ").ifEmpty { "không có dữ liệu" }})")
-        val body = JSONObject().put("feedbackTokens", JSONArray().put(token))
-        // Như meetube: ngữ cảnh TV của tài khoản trước; tài khoản mã thử thêm WEB + Bearer nếu TV không được.
-        val order = if (account.kind == LoginKind.CODE) listOf(false, true) else listOf(false)
-        var rejected = false
-        var last: Exception? = null
-        for (web in order) {
-            try {
-                val res = InnerTube.call("feedback", body, account, asWeb = web)
-                val first = res.optJSONArray("feedbackResponses")?.optJSONObject(0)
-                // Không có feedbackResponses (dạng trả khác) thì tin mã HTTP; có mà isProcessed=false là YouTube từ chối.
-                if (first == null || first.optBoolean("isProcessed", true)) return
-                rejected = true
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                last = e
-            }
-        }
-        if (rejected) error("YouTube chưa xác nhận thao tác này")
-        throw last ?: IllegalStateException("YouTube không nhận thao tác này")
+        val root = InnerTube.mtReelDetails(video.id, video.reelParams)
+        val tokens = menuTokens(root)
+        val token = tokens.getOrNull(kind.ordinal)
+            ?: error("YouTube không cung cấp thao tác này cho video này")
+        val code = InnerTube.mtFeedback(account, token)
+        if (code !in 200..299) error("YouTube từ chối thao tác này (HTTP $code)")
     }
 
-    private suspend fun findToken(account: Account, video: VideoItem, kind: Kind, notes: MutableList<String>): String? {
-        // Ẩn danh (như meetube) trước, rồi tới ngữ cảnh WEB của tài khoản, cuối cùng ngữ cảnh mặc định của tài khoản.
-        // Cách đầu: mẫu WEB của meetube (phiên bản mới + visitorData) KÈM tài khoản. Menu ẩn danh có 16 mục nhưng không có mục
-        // Không quan tâm (mục này chỉ có khi đã đăng nhập), nên phải gửi token/cookie của tài khoản.
-        val modes = if (account.kind == LoginKind.CODE) listOf(false, true) else listOf(false)
-        for (tv in modes) {
-            for ((i, request) in requests(video).withIndex()) {
-                val root = try {
-                    InnerTube.commentRequest("reel/reel_item_watch", request, account, tv)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    notes += "C${if (tv) "tv" else "w"}$i lỗi ${e.message?.take(25)}"
-                    continue
-                }
-                tokenIn(root, kind)?.let { return it }
-                notes += "C${if (tv) "tv" else "w"}$i ${summary(root)}"
-            }
+    /** MenuWrapper.getFeedbackTokens: mỗi mục menu có token thì lấy token đó, giữ nguyên thứ tự. */
+    private fun menuTokens(root: JSONObject): List<String> {
+        val items = root.optJSONObject("overlay")?.optJSONObject("reelPlayerOverlayRenderer")
+            ?.optJSONObject("menu")?.optJSONObject("menuRenderer")?.optJSONArray("items") ?: return emptyList()
+        val out = ArrayList<String>()
+        for (i in 0 until items.length()) {
+            tokenOf(items.optJSONObject(i)?.optJSONObject("menuServiceItemRenderer"))?.let { out.add(it) }
         }
-        // Dự phòng: mẫu WEB của meetube, ẩn danh.
-        for ((i, request) in requests(video).withIndex()) {
-            val root = try {
-                InnerTube.callMtWebAnonymous("reel/reel_item_watch", request)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                notes += "A$i lỗi ${e.message?.take(30)}"
-                continue
-            }
-            tokenIn(root, kind)?.let { return it }
-            notes += "A$i ${summary(root)}"
-        }
-        val accounts = ArrayList<Pair<Account?, Boolean>>()
-        accounts += null to true
-        accounts += account to true
-        if (account.kind == LoginKind.CODE) accounts += account to false
-        for ((acc, web) in accounts) {
-            for ((i, request) in requests(video).withIndex()) {
-                val tag = "${if (acc == null) "N" else "T"}${if (web) "w" else "t"}$i"
-                val root = try {
-                    InnerTube.call("reel/reel_item_watch", request, acc, asWeb = web)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    notes += "$tag lỗi ${e.message?.take(30)}"
-                    continue
-                }
-                tokenIn(root, kind)?.let { return it }
-                notes += "$tag ${summary(root)}"
-            }
-        }
-        return null
+        return out
     }
 
-    /** Body y hệt meetube (có `params` của reel, playerRequest chỉ có videoId); dự phòng: không `params`, rồi kiểu cũ "8AEB". */
-    private fun requests(video: VideoItem): List<JSONObject> {
-        fun base() = JSONObject().put("disablePlayerResponse", true)
-        fun player(params: String? = null) = JSONObject().put("videoId", video.id).apply { params?.let { put("params", it) } }
-        val list = ArrayList<JSONObject>()
-        if (!video.reelParams.isNullOrBlank()) {
-            list += base().put("params", video.reelParams).put("playerRequest", player())
-        }
-        list += base().put("playerRequest", player())
-        list += base().put("playerRequest", player("8AEB"))
-        return list
+    /** MenuItem.getFeedbackToken: serviceEndpoint.feedbackEndpoint, không có thì command (kể cả popup/commandExecutor). */
+    private fun tokenOf(item: JSONObject?): String? {
+        item ?: return null
+        item.optJSONObject("serviceEndpoint")?.optJSONObject("feedbackEndpoint")?.optString("feedbackToken")
+            ?.takeIf { it.isNotBlank() }?.let { return it }
+        return first(item.optJSONObject("command"))
     }
 
-    /** Tóm tắt ngắn để báo lỗi: số mục menu và có overlay hay không (không chứa token). */
-    private fun summary(root: JSONObject): String {
-        val menu = findAllKeys(root, "menuServiceItemRenderer").size + findAllKeys(root, "listItemViewModel").size
-        val tokens = ArrayList<String>().also { collectTokens(root, it) }.size
-        return "menu=$menu tk=$tokens${if (root.has("overlay")) "" else " noOverlay"}"
-    }
-
-    private fun collectTokens(node: Any?, out: MutableList<String>) {
+    private fun first(node: Any?): String? {
         when (node) {
             is JSONObject -> {
+                node.optJSONObject("feedbackEndpoint")?.optString("feedbackToken")?.takeIf { it.isNotBlank() }?.let { return it }
                 val keys = node.keys()
-                while (keys.hasNext()) {
-                    val k = keys.next()
-                    val v = node.opt(k)
-                    if (k == "feedbackToken" && v is String && v.isNotBlank()) out.add(v) else collectTokens(v, out)
-                }
+                while (keys.hasNext()) first(node.opt(keys.next()))?.let { return it }
             }
-            is JSONArray -> for (i in 0 until node.length()) collectTokens(node.opt(i), out)
+            is JSONArray -> for (i in 0 until node.length()) first(node.opt(i))?.let { return it }
         }
-    }
-
-    private class MenuItem(val icon: String, val token: String)
-
-    private fun tokenIn(root: JSONObject, kind: Kind): String? {
-        val entries = findAllKeys(root, "menuServiceItemRenderer") + findAllKeys(root, "listItemViewModel") +
-            findAllKeys(root, "menuNavigationItemRenderer")
-        val items = entries.mapNotNull { entry ->
-            val token = findKey(entry, "feedbackEndpoint")?.optString("feedbackToken")?.takeIf { it.isNotBlank() }
-                ?: return@mapNotNull null
-            MenuItem(findKey(entry, "icon")?.optString("iconType").orEmpty(), token)
-        }
-        val byIcon = items.firstOrNull { it.icon == if (kind == Kind.NOT_INTERESTED) "NOT_INTERESTED" else "REMOVE" }
-        // Như meetube: mục có token thứ nhất = Không quan tâm, thứ hai = Không đề xuất kênh.
-        val byOrder = items.getOrNull(kind.ordinal)
-        // Không phụ thuộc ngôn ngữ: icon (như MenuWrapper.getVideoToken/getChannelToken của meetube) → thứ tự (như ReelResult.getFeedbackTokens). Không so chữ.
-        val picked = (byIcon ?: byOrder)?.token
-        if (picked != null) return picked
-        // Cuối cùng: đúng hai feedbackToken trong cả phản hồi thì thứ tự là Không quan tâm, Không đề xuất kênh.
-        val all = ArrayList<String>()
-        collectTokens(root, all)
-        return all.distinct().takeIf { it.size == 2 }?.get(kind.ordinal)
+        return null
     }
 }
