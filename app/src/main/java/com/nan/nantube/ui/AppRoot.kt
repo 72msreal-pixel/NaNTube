@@ -25,6 +25,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -67,7 +68,7 @@ private const val HISTORY_POLL_MS = 1_000L
 
 @Composable
 fun AppRoot() {
-    var tab by remember { mutableStateOf(Tab.Main) }
+    var tab by rememberSaveable { mutableStateOf(Tab.Main) }
     var showSettings by remember { mutableStateOf(false) }
     var showHistory by remember { mutableStateOf(false) }
     var openList by remember { mutableStateOf<OpenList?>(null) }

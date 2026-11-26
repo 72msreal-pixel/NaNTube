@@ -246,7 +246,13 @@ private fun MiniContent(video: VideoItem, account: Account?) {
     }
     // Bật tự vuốt ở menu Short thì hết video là sang video kế như trong Short.
     val ended = slot?.ended == true
-    LaunchedEffect(ended, video.id) { if (ended && ShortsPool.autoScroll && !PipOverlay.active) ShortsMini.next() }
+    LaunchedEffect(ended, video.id) {
+        if (ended && ShortsPool.autoScroll && !PipOverlay.active) {
+            delay(ShortsPool.AUTO_SCROLL_TAIL_MS)
+            ShortsMini.next()
+        }
+    }
+    FollowSystemPause(slot) { ShortsMini.paused = it }
 
     // Báo cho MainActivity: rời app lúc đang phát thì vào PiP; nút Trước / Phát-Tạm dừng / Tiếp của cửa sổ PiP điều khiển cửa sổ này.
     LaunchedEffect(video.id, ShortsMini.paused, slot?.vertical) {

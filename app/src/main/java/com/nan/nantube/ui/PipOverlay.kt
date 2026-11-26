@@ -814,7 +814,13 @@ private fun OverlayContent(onClose: () -> Unit, onExpand: () -> Unit, onSettings
     val slot = ShortsPool.slot(video.id)
     LaunchedEffect(video.id, slot, ShortsMini.paused) { ShortsPool.setActive(video.id, !ShortsMini.paused) }
     val ended = slot?.ended == true
-    LaunchedEffect(ended, video.id) { if (ended && ShortsPool.autoScroll) ShortsMini.next() }
+    LaunchedEffect(ended, video.id) {
+        if (ended && ShortsPool.autoScroll) {
+            kotlinx.coroutines.delay(ShortsPool.AUTO_SCROLL_TAIL_MS)
+            ShortsMini.next()
+        }
+    }
+    FollowSystemPause(slot) { ShortsMini.paused = it }
     // Vào từ màn Short toàn màn hình thì ô phát vừa bị bộ phát cũ dừng: giành lại vài lần cho chắc.
     LaunchedEffect(video.id) {
         repeat(6) {

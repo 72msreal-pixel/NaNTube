@@ -1,10 +1,13 @@
 package com.nan.nantube.ui
 
 import android.content.Context
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.media3.common.AudioAttributes
@@ -59,6 +62,10 @@ class ShortSlot internal constructor(val video: VideoItem, val player: ExoPlayer
     var error by mutableStateOf<String?>(null)
         internal set
 
+    /** Hệ thống tự dừng ô đang xem (app khác giành tiếng, rút tai nghe...) mà người dùng không bấm: giao diện đọc để nút Phát / Tạm dừng khớp thực tế. */
+    var systemPaused by mutableStateOf(false)
+        internal set
+
     internal var source: String? = null
     internal var autoTries = 0
     internal var resumeMs = 0L
@@ -85,6 +92,9 @@ object ShortsPool {
     private const val HEAD_WAIT_MS = 4_000L
     private const val TRIM_DELAY_MS = 3_000L
     private const val RETRY_DELAY_MS = 4_000L
+
+    /** Hết video rồi chờ thêm chút cho đuôi âm thanh (nhất là tai nghe Bluetooth) phát nốt mới tự vuốt. */
+    const val AUTO_SCROLL_TAIL_MS = 350L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val slots = LinkedHashMap<String, ShortSlot>()
@@ -320,6 +330,7 @@ object ShortsPool {
     fun setActive(id: String?, playing: Boolean) {
         for ((videoId, slot) in slots) {
             val want = videoId == id && playing
+            if (videoId != id) slot.systemPaused = false
             slot.wantPlay = want
             if (want && slot.ended) slot.player.seekTo(0L)
             if (slot.player.playWhenReady != want) slot.player.playWhenReady = want
@@ -425,6 +436,20 @@ object ShortsPool {
                 recover(slot)
             }
 
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                if (slot.released) return
+                val stolen = reason == Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_FOCUS_LOSS ||
+                    reason == Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_BECOMING_NOISY
+                if (!playWhenReady && slot.wantPlay && stolen) {
+                    slot.wantPlay = false
+                    slot.systemPaused = true
+                } else if (playWhenReady && slot.systemPaused) {
+                    // Lấy lại được tiếng thì ExoPlayer tự phát tiếp.
+                    slot.systemPaused = false
+                    slot.wantPlay = true
+                }
+            }
+
             override fun onRenderedFirstFrame() {
                 slot.frame = true
             }
@@ -493,5 +518,18 @@ object ShortsPool {
         slot.source?.let { slot.failed.add(it) }
         ShortsPlayback.forget(slot.video.id)
         start(slot)
+    }
+}
+
+/** Theo dõi ô [slot] bị hệ thống dừng / phát lại: đổi thì gọi [onChange] (không gọi lúc mới vào), để cờ tạm dừng của giao diện luôn khớp video. */
+@Composable
+fun FollowSystemPause(slot: ShortSlot?, onChange: (Boolean) -> Unit) {
+    val now = slot?.systemPaused ?: false
+    var last by remember(slot) { mutableStateOf(now) }
+    LaunchedEffect(now) {
+        if (now != last) {
+            last = now
+            onChange(now)
+        }
     }
 }

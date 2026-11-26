@@ -490,19 +490,42 @@ object InnerTube {
      * body mẫu TV hiện tại + visitorData, URL chỉ có prettyPrint (không `key`, không `t`), UA/Referer của app, Bearer.
      * Tài khoản web (cookie) dùng mẫu WEB + SAPISIDHASH như WebSession. Trả mã HTTP, MeTube coi 2xx là thành công.
      */
+    /** Body client TV đầy đủ như meetube (AppClient.TV.browseTemplate): clientScreen, userAgent, vùng, visitorData, tvAppInfo. */
+    private fun mtTvClient(visitor: String?): JSONObject = JSONObject()
+        .put("clientName", "TVHTML5").put("clientVersion", MT_TV_VERSION)
+        .put("clientScreen", "WATCH").put("userAgent", MT_TV_UA)
+        .put("acceptLanguage", "vi").put("acceptRegion", "VN")
+        .put("utcOffsetMinutes", utcOffsetMinutes().toString())
+        .put("visitorData", visitor ?: "")
+        .put("tvAppInfo", JSONObject().put("appQuality", "TV_APP_QUALITY_FULL_ANIMATION").put("zylonLeftNav", true))
+        .put("webpSupport", false).put("animatedWebpSupport", true)
+
+    /**
+     * `browse` của tài khoản mã đúng như meetube (BrowseApiHelper + AppClient.TV.browseTemplate): body TV đầy đủ + user + racyCheckOk /
+     * contentCheckOk, URL chỉ có prettyPrint, UA/Referer của app, Bearer. Body TV trần (như [call]) khiến YouTube trả thẻ nhạc thiếu
+     * thời lượng ở trang chủ. [extra] là phần riêng của lệnh (browseId hoặc continuation).
+     */
+    internal suspend fun mtTvBrowse(account: Account, extra: JSONObject): JSONObject {
+        val visitor = visitorData()
+        val headers = mutableMapOf(
+            "Authorization" to "Bearer " + freshToken(account),
+            "User-Agent" to MT_APP_UA,
+            "Referer" to MT_APP_REFERER
+        )
+        val body = JSONObject(extra.toString())
+            .put("context", JSONObject().put("client", mtTvClient(visitor)).put("user", safetyUser()))
+            .put("racyCheckOk", true).put("contentCheckOk", true)
+        val res = Http.postJson(BASE + "browse?prettyPrint=false", body, headers)
+        if (res.code == 401 || res.code == 403) throw AuthRejected()
+        return res.requireJson()
+    }
+
     internal suspend fun mtFeedback(account: Account, token: String): Int {
         val visitor = visitorData()
         val headers = mutableMapOf<String, String>()
         val client: JSONObject
         if (account.kind == LoginKind.CODE) {
-            client = JSONObject()
-                .put("clientName", "TVHTML5").put("clientVersion", MT_TV_VERSION)
-                .put("clientScreen", "WATCH").put("userAgent", MT_TV_UA)
-                .put("acceptLanguage", "vi").put("acceptRegion", "VN")
-                .put("utcOffsetMinutes", utcOffsetMinutes().toString())
-                .put("visitorData", visitor ?: "")
-                .put("tvAppInfo", JSONObject().put("appQuality", "TV_APP_QUALITY_FULL_ANIMATION").put("zylonLeftNav", true))
-                .put("webpSupport", false).put("animatedWebpSupport", true)
+            client = mtTvClient(visitor)
             headers["Authorization"] = "Bearer " + freshToken(account)
             headers["User-Agent"] = MT_APP_UA
             headers["Referer"] = MT_APP_REFERER

@@ -561,6 +561,8 @@ private fun ShortsPager(
         list.getOrNull(page + 2)?.let { ShortsPlayback.warm(context, account, it, bytes = false) }
     }
     LaunchedEffect(page) { userPaused = false }
+    // App khác giành tiếng làm video dừng (hoặc trả tiếng lại làm video phát tiếp): cờ tạm dừng đổi theo để nút Phát / Tạm dừng của PiP đúng.
+    FollowSystemPause(curSlot) { if (active) userPaused = it }
 
     // Thả tay mà pager bắt đầu trượt nốt sang video khác (targetPage != settledPage) là dừng tiếng video cũ NGAY,
     // không đợi trượt xong (settledPage chỉ đổi sau hoạt ảnh trượt nên trước đây video cũ còn kêu thêm một đoạn).
@@ -795,7 +797,10 @@ private fun ShortsPager(
     DisposableEffect(Unit) { onDispose { ShortsPool.hold(false) } }
     val finished = ShortsPool.autoScroll && !reading && curSlot?.ended == true
     LaunchedEffect(finished, page) {
-        if (finished && page + 1 < latest.size) pagerState.animateScrollToPage(page + 1)
+        if (finished && page + 1 < latest.size) {
+            delay(ShortsPool.AUTO_SCROLL_TAIL_MS)
+            pagerState.animateScrollToPage(page + 1)
+        }
     }
     // Đổi cỡ cửa sổ (chia đôi màn hình, xoay, gập mở): pager không được kẹt lưng chừng giữa hai Short.
     LaunchedEffect(boxHeight) {

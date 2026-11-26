@@ -334,9 +334,13 @@ object ShortsPlayback {
 
         val dash = videos.isNotEmpty() && audio != null
         if (!dash && muxed == null) return null
-        val duration = details?.optString("lengthSeconds")?.toIntOrNull()
-            ?: (adaptive.firstOrNull()?.let { approxSeconds(data, it.itag) })
-            ?: 60
+        // lengthSeconds là số nguyên đã làm tròn (có khi làm tròn xuống) nên lấy số lớn nhất trong các nguồn,
+        // nếu không bản kê DASH ngắn hơn video thật và ExoPlayer báo hết video khi chưa dứt lời.
+        val duration = listOfNotNull(
+            details?.optString("lengthSeconds")?.toIntOrNull(),
+            adaptive.firstOrNull { it.isVideo }?.let { approxSeconds(data, it.itag) },
+            audio?.let { approxSeconds(data, it.itag) }
+        ).maxOrNull() ?: 60
         return PlayPlan(videoId, source, if (dash) videos else emptyList(), if (dash) audio else null, muxed, duration, if (dash) audios else emptyList())
     }
 
@@ -344,7 +348,7 @@ object ShortsPlayback {
         val formats = data.optJSONArray("adaptiveFormats") ?: return null
         for (i in 0 until formats.length()) {
             val f = formats.optJSONObject(i) ?: continue
-            if (f.optInt("itag") == itag) return f.optString("approxDurationMs").toLongOrNull()?.let { (it / 1000).toInt() + 1 }
+            if (f.optInt("itag") == itag) return f.optString("approxDurationMs").toLongOrNull()?.let { ((it + 999) / 1000).toInt() }
         }
         return null
     }

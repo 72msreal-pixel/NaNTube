@@ -14,6 +14,7 @@ import android.graphics.Color
 import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
 import android.util.Rational
 import androidx.activity.ComponentActivity
@@ -188,6 +189,8 @@ class MainActivity : ComponentActivity() {
     /** Rời app (Home / cử chỉ vuốt) khi Short đang phát thì thu nhỏ thành cửa sổ PiP, như YouTube. */
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
+        // Một số máy cũng gọi vào đây khi bấm nút nguồn tắt màn hình: đó không phải rời app, nên không thu thẻ mini / vào PiP (bật lại vẫn ở đúng Short).
+        if (getSystemService(PowerManager::class.java)?.isInteractive == false) return
         if (PipPrefs.enhanced && PipPrefs.canDraw(this)) {
             // Short toàn màn hình đang phát: thu về thẻ mini để cửa sổ nổi tiếp tục đúng video.
             if (!ShortsMini.open && PipState.armed) {

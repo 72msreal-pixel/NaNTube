@@ -5,7 +5,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /** Icon nhạc (♪) mà YouTube gắn trong lớp phủ ảnh bìa của một số video: imageName/iconType bắt đầu bằng MUSIC. */
-private val MUSIC_ICON = Regex("\"(imageName|iconType)\":\"MUSIC")
+private val MUSIC_ICON = Regex("\"(imageName|iconType)\":\"(MUSIC|AUDIO\")")
 
 data class VideoItem(
     val id: String,
@@ -41,7 +41,10 @@ data class VideoItem(
     /** Ảnh bìa vuông (đĩa nhạc / bài hát) khi YouTube trả ảnh 1:1; có thì thẻ vẽ vuông như YouTube. */
     val artUrl: String? = null,
     /** Thẻ này là một danh sách phát / tuyển tập / đĩa nhạc (trang chủ trộn lẫn với video): thẻ vẽ kiểu danh sách thay vì kiểu video. */
-    val playlist: SearchResult.Playlist? = null
+    val playlist: SearchResult.Playlist? = null,
+    /** Token feedback "Không quan tâm" / "Không đề xuất kênh này" lấy sẵn từ menu của thẻ (null = thẻ không kèm, sẽ hỏi get_panel khi cần). */
+    val notInterestedToken: String? = null,
+    val dontRecommendToken: String? = null
 ) {
     /** Ảnh bìa lấy thẳng từ CDN theo id: luôn dùng được, khỏi phụ thuộc cấu trúc JSON từng loại. */
     val thumbnail: String
@@ -420,7 +423,9 @@ object VideoRepository {
      */
     suspend fun homePage(account: Account?): Paged<VideoItem> {
         val json = try {
-            InnerTube.call("browse", JSONObject().put("browseId", "FEwhat_to_watch"), account)
+            // Tài khoản mã: đúng như meetube (body TV đầy đủ + browseId "default"), để thẻ nhạc có thời lượng. Lỗi thì quay về cách cũ.
+            val tv: JSONObject? = if (account?.kind == LoginKind.CODE) tvHome(account) else null
+            tv ?: InnerTube.call("browse", JSONObject().put("browseId", "FEwhat_to_watch"), account)
         } catch (e: CancellationException) {
             throw e
         } catch (e: AuthRejected) {
@@ -436,6 +441,16 @@ object VideoRepository {
         return chipPage(account, "thịnh hành", null, false)
     }
 
+    private suspend fun tvHome(account: Account): JSONObject? = try {
+        InnerTube.mtTvBrowse(account, JSONObject().put("browseId", "default")).takeIf { parse(it).isNotEmpty() }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: AuthRejected) {
+        throw e
+    } catch (_: Exception) {
+        null
+    }
+
     /** Một chip chủ đề ở trang chủ = một lượt tìm kiếm, chỉ lấy video thường (Short đã có tab riêng). */
     suspend fun chipPage(account: Account?, query: String, params: String?, music: Boolean): Paged<VideoItem> {
         val page = searchPage(query, params, account)
@@ -446,7 +461,18 @@ object VideoRepository {
     suspend fun homeMore(account: Account?, token: String): Paged<VideoItem> {
         val raw = token.substringAfter(':')
         if (token.startsWith("b:")) {
-            val json = InnerTube.call("browse", JSONObject().put("continuation", raw), account)
+            val body = JSONObject().put("continuation", raw)
+            val json = if (account?.kind == LoginKind.CODE) {
+                try {
+                    InnerTube.mtTvBrowse(account, body)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: AuthRejected) {
+                    throw e
+                } catch (_: Exception) {
+                    InnerTube.call("browse", body, account)
+                }
+            } else InnerTube.call("browse", body, account)
             return Paged(parse(json).filter { !it.isShort }, findContinuation(json)?.let { "b:$it" })
         }
         val music = token.startsWith("sm:")
@@ -532,6 +558,16 @@ object VideoRepository {
         }
     }
 
+    /**
+     * Thời lượng của một video theo đúng đường mà màn Tìm kiếm dùng (đã hiện đủ "♪ giờ" cho tài khoản mã: WEB + Bearer):
+     * tìm theo chính id video rồi lấy thẻ trùng id. Dùng cho thẻ nhạc ở Main mà feed TV không ghi thời lượng.
+     */
+    suspend fun durationViaSearch(account: Account?, videoId: String): String? {
+        val json = searchCall(JSONObject().put("query", videoId), account)
+        return parseResults(json).filterIsInstance<SearchResult.Video>()
+            .firstOrNull { it.video.id == videoId }?.video?.duration?.takeIf { it.isNotBlank() && it != "SHORTS" }
+    }
+
     /** Phản hồi có ít nhất một video (thẻ video thật) hoặc là trang kế hợp lệ. */
     private fun hasVideos(json: JSONObject): Boolean = parseResults(json).any { it is SearchResult.Video }
 
@@ -551,8 +587,66 @@ object VideoRepository {
         }
     }
 
+    enum class FeedbackKind { NOT_INTERESTED, DONT_RECOMMEND_CHANNEL }
+
+    private val NOT_INTERESTED_ICON = Regex("\"(?:iconType|imageName)\"\\s*:\\s*\"NOT_INTERESTED\"")
+    private val DONT_RECOMMEND_ICON = Regex("\"(?:iconType|imageName)\"\\s*:\\s*\"(?:REMOVE_CIRCLE|DISABLE)\"")
+
+    /** Mục menu này là "Không quan tâm" hay "Không đề xuất kênh này" (theo chữ, rồi theo icon); null nếu là mục khác. */
+    private fun feedbackKindOf(entry: JSONObject): FeedbackKind? {
+        val title = (ytText(entry.opt("text")) ?: ytText(entry.opt("title"))).orEmpty().lowercase()
+        if (title.contains("không đề xuất kênh") || title.contains("không đề xuất video nào từ kênh") ||
+            title.contains("don't recommend channel") || title.contains("do not recommend channel")) return FeedbackKind.DONT_RECOMMEND_CHANNEL
+        if (title.contains("không quan tâm") || title.contains("not interested")) return FeedbackKind.NOT_INTERESTED
+        val json = entry.toString()
+        if (NOT_INTERESTED_ICON.containsMatchIn(json)) return FeedbackKind.NOT_INTERESTED
+        if (DONT_RECOMMEND_ICON.containsMatchIn(json)) return FeedbackKind.DONT_RECOMMEND_CHANNEL
+        return null
+    }
+
+    /** Token feedback của hai thao tác trên trong một menu (thẻ hoặc phản hồi get_panel). */
+    internal fun feedbackTokens(root: Any?): Map<FeedbackKind, String> {
+        val out = LinkedHashMap<FeedbackKind, String>()
+        val entries = findAllKeys(root, "menuServiceItemRenderer") + findAllKeys(root, "listItemViewModel")
+        for (entry in entries) {
+            val kind = feedbackKindOf(entry) ?: continue
+            val token = findKey(entry, "feedbackEndpoint")?.optString("feedbackToken")?.takeIf { it.isNotBlank() } ?: continue
+            out.putIfAbsent(kind, token)
+        }
+        return out
+    }
+
+    private fun withFeedbackTokens(item: VideoItem, renderer: JSONObject): VideoItem {
+        if (item.isShort || item.playlist != null) return item
+        val tokens = feedbackTokens(renderer)
+        if (tokens.isEmpty()) return item
+        return item.copy(
+            notInterestedToken = tokens[FeedbackKind.NOT_INTERESTED],
+            dontRecommendToken = tokens[FeedbackKind.DONT_RECOMMEND_CHANNEL]
+        )
+    }
+
+    /**
+     * "Không quan tâm" / "Không đề xuất kênh này" của video ở Main. Token lấy sẵn từ thẻ, thiếu thì hỏi menu của thẻ (get_panel),
+     * rồi gửi `feedback` bằng tài khoản (như xóa khỏi lịch sử). Ném lỗi có chữ tiếng Việt để hiện thông báo.
+     */
+    suspend fun sendFeedback(account: Account?, video: VideoItem, kind: FeedbackKind) {
+        requireNotNull(account) { "Hãy đăng nhập để dùng chức năng này" }
+        fun stored() = if (kind == FeedbackKind.NOT_INTERESTED) video.notInterestedToken else video.dontRecommendToken
+        var token = stored()
+        if (token == null && video.panelId != null && video.panelParams != null) {
+            val body = JSONObject().put("panelId", video.panelId).put("params", video.panelParams)
+            token = feedbackTokens(InnerTube.call("get_panel", body, account))[kind]
+        }
+        token ?: error("YouTube không cung cấp thao tác này cho video này")
+        val result = InnerTube.call("feedback", JSONObject().put("feedbackTokens", JSONArray().put(token)), account)
+        val processed = result.dig("feedbackResponses", 0, "isProcessed")
+        check(processed != false) { "YouTube chưa xác nhận thao tác này" }
+    }
+
     private fun historyAction(item: VideoItem?, renderer: JSONObject, history: Boolean): VideoItem? {
-        if (item == null || !history) return item
+        if (item != null && !history) return withFeedbackTokens(item, renderer)
+        if (item == null) return null
         val panel = findKey(renderer, "getPanelEndpoint")
         val id = panel?.optString("panelId").orEmpty()
         val params = panel?.optString("params").orEmpty()
@@ -748,6 +842,7 @@ object VideoRepository {
                     if (v is JSONObject) {
                         when {
                             k in VIDEO_KEYS -> add(out, historyAction(classic(v), v, history), section)
+                            k == "tvMusicVideoRenderer" -> add(out, historyAction(musicTv(v), v, history), section)
                             k == "reelItemRenderer" -> add(out, historyAction(reel(v), v, history), section)
                             k == "shortsLockupViewModel" -> add(out, historyAction(shortsLockup(v), v, history), section)
                             k == "lockupViewModel" -> add(out, historyAction(
@@ -769,6 +864,21 @@ object VideoRepository {
             }
             is JSONArray -> for (i in 0 until node.length()) walk(node.opt(i), out, section, history)
         }
+    }
+
+    /**
+     * Bài nhạc của TV (tvMusicVideoRenderer), như MediaServiceCore MusicItem: tiêu đề primaryText, kênh secondaryText,
+     * lượt xem tertiaryText, thời lượng lengthText. Luôn là nhạc.
+     */
+    private fun musicTv(v: JSONObject): VideoItem? {
+        val id = (v.dig("navigationEndpoint", "watchEndpoint", "videoId") as? String)?.takeIf { it.isNotBlank() } ?: return null
+        val title = ytText(v.opt("primaryText")) ?: return null
+        return VideoItem(
+            id, title, ytText(v.opt("secondaryText")), ytText(v.opt("lengthText")), ytText(v.opt("tertiaryText")), false,
+            music = true,
+            artUrl = squareArt(v.dig("thumbnail", "thumbnails") as? JSONArray),
+            channelId = channelIdOf(v)
+        )
     }
 
     private fun classic(v: JSONObject): VideoItem? {
@@ -949,18 +1059,21 @@ object VideoRepository {
         val reelId = v.dig("onSelectCommand", "reelWatchEndpoint", "videoId") as? String
         val id = (v.dig("onSelectCommand", "watchEndpoint", "videoId") as? String) ?: reelId ?: return null
         val meta = v.optJSONObject("metadata")?.optJSONObject("tileMetadataRenderer") ?: return null
-        val title = ytText(meta.opt("title")) ?: return null
+        // Thẻ bài hát / đĩa nhạc của TV: tiêu đề và thời lượng nằm ở trackTileHeaderRenderer (MediaServiceCore TileItem.getTitle / getBadgeText).
+        val track = v.dig("header", "trackTileHeaderRenderer") as? JSONObject
+        val title = ytText(meta.opt("title")) ?: ytText(track?.opt("title")) ?: return null
         val lines = meta.optJSONArray("lines")
         fun line(i: Int) = tileLine(lines, i)
         val tileOverlays = v.dig("header", "tileHeaderRenderer", "thumbnailOverlays")
-        val duration = overlayTime(tileOverlays) ?: DURATION_IN_JSON.find(tileOverlays?.toString().orEmpty())?.groupValues?.get(1)
+        val duration = overlayTime(tileOverlays) ?: ytText(track?.opt("duration"))
+            ?: DURATION_IN_JSON.find(tileOverlays?.toString().orEmpty())?.groupValues?.get(1)
         // Đủ các dấu hiệu của TileItem.isShorts (MediaServiceCore): reelWatchEndpoint, kiểu thẻ TILE_STYLE_YTLR_SHORTS, huy hiệu
         // SHORTS trên ảnh bìa (+ contentType). Short dài không có dấu hiệu nào: do ShortDetector.resolve xử lý ở repository.
         val short = reelId != null || v.optString("contentType").contains("SHORT") ||
             v.optString("style") == "TILE_STYLE_YTLR_SHORTS" ||
             overlayStyle(tileOverlays) == "SHORTS" || duration == "SHORTS"
         val channelId = channelIdOf(v)
-        val panel = if (channelId == null && !short) menuPanel(v) else null
+        val panel = if (!short) menuPanel(v) else null
         val meta1 = line(1)
         val meta2 = line(2)
         return VideoItem(
