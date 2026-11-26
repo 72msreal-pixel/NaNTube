@@ -86,7 +86,8 @@ import kotlin.math.roundToInt
 
 /**
  * Cửa sổ Short nhỏ nổi trong app (như "mini card" của meetube): bấm nút Hình trong hình ở Short thì app tự về tab Main,
- * Short vẫn phát trong cửa sổ nhỏ kéo đi đâu cũng được. Rời app lúc này thì cửa sổ thành PiP của hệ thống (xem [PipState]).
+ * Short vẫn phát trong cửa sổ nhỏ kéo đi đâu cũng được. Rời app lúc này thì cửa sổ thành PiP của hệ thống, hoặc phát tiếp chỉ âm thanh (xem [ShortsBackground]).
+ * Cũng là "phiên nền" ([beginBackground]): Short toàn màn hình đang phát mà app bị ẩn thì chuyển vào đây để chạy không cần giao diện.
  * Chỉ tắt khi bấm X, hoặc mở rộng để quay lại xem Short toàn màn hình.
  */
 object ShortsMini {
@@ -103,21 +104,26 @@ object ShortsMini {
     val open: Boolean get() = list.isNotEmpty()
     val current: VideoItem? get() = list.getOrNull(index)
 
-    /** Cửa sổ app đang hiện (MainActivity onStart / onStop). Không hiện thì [ShortsAudioService] giữ việc phát nền thay Compose (không có khung hình). */
-    var appVisible by mutableStateOf(true)
+    /**
+     * Phiên nền: tạo lúc app bị ẩn trong khi Short toàn màn hình đang phát ([beginBackground]), không vẽ thẻ mini. App hiện lại thì
+     * [endBackground] trả video về bộ phát toàn màn hình.
+     */
+    var background by mutableStateOf(false)
+        private set
 
-    /** App vừa thôi hiện: popup còn mở mà không có PiP / cửa sổ nổi thì chuyển sang chỉ phát âm thanh. */
-    fun onAppVisible(visible: Boolean) {
-        appVisible = visible
-        if (visible) ShortsPool.enterAudioOnly(false)
-        else if (open && !PipState.inPip && !PipOverlay.active) ShortsPool.enterAudioOnly(true)
+    /** Mở phiên nền với danh sách + vị trí của bộ phát toàn màn hình. Không đổi tab, không đóng màn Short. */
+    fun beginBackground(videos: List<VideoItem>, at: Int) {
+        if (videos.isEmpty()) return
+        list = videos
+        index = at.coerceIn(0, videos.lastIndex)
+        paused = false
+        background = true
     }
 
-    /** Context của app (MainActivity gán): để bật dịch vụ nền [ShortsAudioService] lúc mở popup. */
-    private var appContext: android.content.Context? = null
-
-    fun attach(context: android.content.Context) {
-        appContext = context.applicationContext
+    /** Đóng phiên nền mà không dừng ô phát: bộ phát toàn màn hình nhận lại ngay. */
+    fun endBackground() {
+        background = false
+        if (list.isNotEmpty()) list = emptyList()
     }
 
     /**
@@ -133,12 +139,12 @@ object ShortsMini {
         index = at.coerceIn(0, videos.lastIndex)
         paused = false
         startSerial++
+        background = false
         ShortsViewer.close()
-        // Popup mở thì phát nền (chỉ âm thanh) khi sang app khác, cho tới khi đóng popup.
-        appContext?.let { ShortsAudioService.start(it) }
     }
 
     fun close() {
+        background = false
         if (list.isNotEmpty()) list = emptyList()
         ShortsPool.enterAudioOnly(false)
     }
@@ -154,6 +160,7 @@ object ShortsMini {
         if (index + 1 < list.size) {
             index++
             paused = false
+            ShortsBackground.onSessionChanged()
         }
     }
 
@@ -161,6 +168,7 @@ object ShortsMini {
         if (index > 0) {
             index--
             paused = false
+            ShortsBackground.onSessionChanged()
         }
     }
 
@@ -169,6 +177,7 @@ object ShortsMini {
         paused = !resume
         // Đang dừng do app khác giành âm thanh: cờ paused vốn đã false nên không có gì đổi để hiệu ứng phát lại, phải phát thẳng.
         if (resume) current?.let { ShortsPool.setActive(it.id, true) }
+        ShortsBackground.onSessionChanged()
     }
 
     /** Danh sách + vị trí lúc bấm mở rộng; AppRoot đọc khi [expandSerial] đổi. */
@@ -259,6 +268,7 @@ internal val MiniNext: ImageVector by lazy { miniIcon("MiniNext", true, "M6,18l8
 /** Đặt cuối cây giao diện của AppRoot: tự ẩn khi không có Short nào đang ở chế độ cửa sổ nhỏ. */
 @Composable
 fun ShortsMiniWindow(account: Account?) {
+    if (ShortsMini.background) return
     val video = ShortsMini.current ?: return
     MiniContent(video, account)
 }
@@ -272,7 +282,7 @@ private fun MiniContent(video: VideoItem, account: Account?) {
     val inPip = PipState.inPip
 
     remember(account?.id) { ShortsPool.bind(context, account) }
-    DisposableEffect(Unit) { onDispose { if (!PipOverlay.active) ShortsPool.pagerGone() } }
+    DisposableEffect(Unit) { onDispose { ShortsPool.pagerGone() } }
 
     // Giữ ô phát của video này + kế + trước (kể cả sau khi tab Short vừa nhả), rồi chỉ phát video đang hiện.
     LaunchedEffect(video.id, list) {
@@ -286,7 +296,7 @@ private fun MiniContent(video: VideoItem, account: Account?) {
     // Bật tự vuốt ở menu Short thì hết video là sang video kế như trong Short.
     val ended = slot?.ended == true
     LaunchedEffect(ended, video.id) {
-        if (ended && ShortsPool.autoScroll && !PipOverlay.active) {
+        if (ended && ShortsPool.autoScroll) {
             delay(AUTO_SWIPE_TAIL_MS)
             ShortsMini.next()
         }
@@ -296,6 +306,7 @@ private fun MiniContent(video: VideoItem, account: Account?) {
     val shownPaused = ShortsMini.shownPaused
     LaunchedEffect(video.id, shownPaused, slot?.vertical) {
         PipState.shortId = video.id
+        PipState.video = video
         PipState.playing = !shownPaused
         PipState.vertical = slot?.vertical ?: true
     }
@@ -310,35 +321,18 @@ private fun MiniContent(video: VideoItem, account: Account?) {
             if (PipState.controls === controls) {
                 PipState.controls = null
                 PipState.shortId = null
+                PipState.video = null
                 PipState.playing = false
             }
         }
     }
 
+    // Rời app / về lại app do ShortsBackground lo (MainActivity gọi đúng chỗ); ở đây chỉ nhắc hiệu ứng phát chạy lại khi app hiện lại.
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(lifecycle) {
-        val observer = LifecycleEventObserver { _, event ->
-            when (event) {
-                // Popup còn mở thì KHÔNG dừng khi rời app: nếu có PiP / cửa sổ nổi thì video vẫn hiện ở đó, không thì phát tiếp chỉ âm thanh
-                // (dịch vụ nền [ShortsAudioService] giữ tiến trình) cho tới khi đóng popup.
-                Lifecycle.Event.ON_STOP -> { if (!PipState.inPip && !PipOverlay.active) ShortsPool.enterAudioOnly(true) }
-                Lifecycle.Event.ON_START -> ShortsPool.enterAudioOnly(false)
-                Lifecycle.Event.ON_RESUME -> { ShortsPool.enterAudioOnly(false); tick++ }
-                else -> Unit
-            }
-        }
+        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME) tick++ }
         lifecycle.addObserver(observer)
         onDispose { lifecycle.removeObserver(observer) }
-    }
-    // Cửa sổ PiP bị đóng (X) là đóng popup: dừng hẳn như meetube (MiniPip.close), không để âm thanh chạy mồ côi.
-    var wasInPip by remember { mutableStateOf(false) }
-    LaunchedEffect(inPip) {
-        if (inPip) {
-            wasInPip = true
-        } else if (wasInPip) {
-            wasInPip = false
-            if (!PipOverlay.active && !lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) ShortsMini.closeAndStop()
-        }
     }
 
     var controlsVisible by remember { mutableStateOf(true) }
@@ -590,7 +584,7 @@ private fun MiniContent(video: VideoItem, account: Account?) {
             LaunchedEffect(tick, slot) {
                 for (wait in longArrayOf(0L, 150L, 500L)) {
                     delay(wait)
-                    if (!PipOverlay.active) holder[0]?.rebind(slot?.player)
+                    holder[0]?.rebind(slot?.player)
                 }
             }
             AndroidView(

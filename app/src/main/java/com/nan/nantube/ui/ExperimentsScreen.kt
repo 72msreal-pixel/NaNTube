@@ -19,6 +19,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.composables.icons.lucide.ArrowLeft
@@ -44,10 +48,26 @@ fun ExperimentsScreen(onBack: () -> Unit) {
             Text("Thử nghiệm các tính năng mới", fontSize = 22.sp)
         }
         NanSwitchRow(
-            title = "Thay đổi dạng popup nổi",
-            subtitle = "Khi dùng các popup nổi sẽ được vẽ ra thay vì dùng ui hệ thống.",
-            checked = PipPrefs.enhanced,
-            onCheckedChange = { PipPrefs.setEnabled(context, it) }
+            title = "Tự vào PiP khi rời app",
+            subtitle = "Short đang phát thì thu thành cửa sổ nhỏ khi bạn thoát ra màn hình chính. Tắt thì Short chỉ phát tiếng ở nền.",
+            checked = PipPrefs.autoPip,
+            onCheckedChange = { PipPrefs.setAutoPip(it) }
         )
+        // Hãng máy (realme / ColorOS, Xiaomi...) vẫn đóng băng app vài phút sau khi tắt màn hình nếu còn bị tối ưu pin.
+        var refresh by remember { mutableIntStateOf(0) }
+        val exempt = remember(refresh) { BackgroundPlay.isExempt(context) }
+        Column(
+            Modifier.fillMaxWidth().clickable {
+                (context as? android.app.Activity)?.let { BackgroundPlay.request(it) }
+                refresh++
+            }.padding(horizontal = 16.dp, vertical = 16.dp)
+        ) {
+            Text("Cho phép chạy nền không giới hạn", fontSize = 16.sp)
+            Text(
+                if (exempt) "Đã cho phép: Short phát nền không bị hệ thống ngắt." else "Chưa cho phép: máy có thể ngắt tiếng sau vài phút tắt màn hình. Bấm để mở cài đặt.",
+                fontSize = 13.sp,
+                color = NanColors.TextSecondary
+            )
+        }
     }
 }

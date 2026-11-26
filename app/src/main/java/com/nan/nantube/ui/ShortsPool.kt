@@ -360,6 +360,9 @@ object ShortsPool {
 
     fun pauseAll() = setActive(null, false)
 
+    /** Một ô phát hết video (chỉ khi bật tự vuốt): [ShortsBackground] dùng để tự sang Short kế lúc app ẩn, khi giao diện không chạy. */
+    var endedListener: ((String) -> Unit)? = null
+
     /** Bấm "Thử lại": làm lại từ đầu với client đầu tiên. */
     fun retry(slot: ShortSlot) {
         slot.autoTries = 0
@@ -480,6 +483,7 @@ object ShortsPool {
                 slot.buffering = playbackState == Player.STATE_BUFFERING
                 slot.ended = playbackState == Player.STATE_ENDED
                 if (playbackState == Player.STATE_READY) slot.ready = true
+                if (playbackState == Player.STATE_ENDED) endedListener?.invoke(slot.video.id)
             }
 
             override fun onVideoSizeChanged(size: VideoSize) {

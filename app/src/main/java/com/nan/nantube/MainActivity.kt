@@ -9,7 +9,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.graphics.Color
 import android.graphics.drawable.Icon
 import android.os.Build
@@ -43,8 +42,9 @@ import com.nan.nantube.data.ShortsSeen
 import com.nan.nantube.data.TvStore
 import com.nan.nantube.ui.AppRoot
 import com.nan.nantube.ui.NaNTubeTheme
-import com.nan.nantube.ui.PipOverlay
+import com.nan.nantube.ui.BackgroundPlay
 import com.nan.nantube.ui.PipState
+import com.nan.nantube.ui.ShortsBackground
 import com.nan.nantube.ui.ShortsMini
 import com.nan.nantube.ui.SplashIntro
 import com.nan.nantube.ui.StorageAccessPrompt
@@ -57,23 +57,28 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
     private val storagePermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
-    // Cấp quyền "Hiển thị trên các ứng dụng khác" cho cửa sổ Short nổi: quay lại thì có quyền mới bật, không thì tắt.
-    private val overlayPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { PipPrefs.onPermissionResult() }
     private var accessTick by mutableIntStateOf(0)
     private var hadAccess = false
 
-    // --- Picture-in-Picture cho Short (làm theo MobilePlaybackActivity của meetube) ---
+    // --- Picture-in-Picture + phát nền cho Short (làm theo MobilePlaybackActivity của meetube; logic ở ShortsBackground) ---
     private val pipScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val pipReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            val c = PipState.controls ?: return
             when (intent.action) {
-                ACTION_PIP_PREV -> c.prev()
-                ACTION_PIP_NEXT -> c.next()
-                ACTION_PIP_TOGGLE -> c.toggle()
+                ACTION_PIP_PREV -> ShortsBackground.prev()
+                ACTION_PIP_NEXT -> ShortsBackground.next()
+                ACTION_PIP_TOGGLE -> ShortsBackground.toggle()
             }
         }
     }
+
+    // Auto-enter PiP (Android 12+) chỉ được bật khi app đang ở trước mặt (như mIsResumed của meetube): không thì video bắt đầu phát lúc app ẩn
+    // sẽ làm hệ thống đẩy thẳng vào PiP.
+    private var resumedNow by mutableStateOf(false)
+    private var stopped = true
+
+    // Vừa ra khỏi chế độ PiP mà chưa có onResume: là cửa sổ PiP bị đóng (X), không phải bấm mở rộng (mPipDismissPending của meetube).
+    private var pipLeftPending = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -86,14 +91,7 @@ class MainActivity : ComponentActivity() {
         MusicDetector.init(this)
         TvStore.init(this)
         PipPrefs.init(this)
-        ShortsMini.attach(this)
-        PipPrefs.openOverlaySettings = {
-            try {
-                overlayPermission.launch(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
-            } catch (_: Exception) {
-                PipPrefs.onPermissionResult()
-            }
-        }
+        ShortsBackground.attach(this)
         NewUploadsWorker.schedule(this)
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -122,7 +120,6 @@ class MainActivity : ComponentActivity() {
 
     @RequiresApi(Build.VERSION_CODES.O)
     private fun setupPip() {
-        PipState.enter = { enterPip() }
         ContextCompat.registerReceiver(
             this,
             pipReceiver,
@@ -133,10 +130,22 @@ class MainActivity : ComponentActivity() {
             },
             ContextCompat.RECEIVER_NOT_EXPORTED
         )
-        addOnPictureInPictureModeChangedListener { info -> PipState.inPip = info.isInPictureInPictureMode }
+        addOnPictureInPictureModeChangedListener { info ->
+            val inPip = info.isInPictureInPictureMode
+            PipState.inPip = inPip
+            if (inPip) {
+                pipLeftPending = false
+            } else if (stopped) {
+                // Cửa sổ PiP bị đóng khi app đã onStop: dừng hẳn.
+                ShortsBackground.stopAll()
+            } else {
+                // Có thể là mở rộng (onResume tới ngay) hoặc đóng (onStop tới, không có onResume): onStop quyết định.
+                pipLeftPending = true
+            }
+        }
         // Nút Phát/Tạm dừng và tỉ lệ cửa sổ luôn khớp Short đang hiện; Android 12+ còn tự vào PiP khi vuốt về Home (auto-enter).
         pipScope.launch {
-            snapshotFlow { listOf(PipState.armed, PipState.playing, PipState.vertical, PipPrefs.enhanced) }.collect { updatePipParams() }
+            snapshotFlow { listOf(PipState.armed, PipState.playing, PipState.vertical, PipPrefs.autoPip, resumedNow) }.collect { updatePipParams() }
         }
     }
 
@@ -162,8 +171,8 @@ class MainActivity : ComponentActivity() {
                 )
             )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            // Cửa sổ nổi riêng thay PiP hệ thống thì không để hệ thống tự vào PiP nữa.
-            builder.setAutoEnterEnabled(PipState.armed && !(PipPrefs.enhanced && PipPrefs.canDraw(this)))
+            // Chỉ tự vào PiP khi đang phát + cài đặt bật + app đang ở trước mặt.
+            builder.setAutoEnterEnabled(PipState.armed && PipPrefs.autoPip && resumedNow)
         }
         return builder.build()
     }
@@ -178,49 +187,64 @@ class MainActivity : ComponentActivity() {
 
     @RequiresApi(Build.VERSION_CODES.O)
     private fun enterPip() {
-        if (!PipState.supported || PipState.shortId == null || isInPictureInPictureMode) return
+        if (!PipState.supported || isInPictureInPictureMode || isFinishing) return
         try {
             enterPictureInPictureMode(buildPipParams())
         } catch (_: Exception) {
-            // Máy báo hỗ trợ nhưng từ chối (hạn chế của hãng): ở nguyên toàn màn hình.
+            // Máy báo hỗ trợ nhưng từ chối (hạn chế của hãng): ở nguyên toàn màn hình, onStop sẽ chuyển sang phát nền chỉ âm thanh.
         }
     }
 
-    /** Rời app (Home / cử chỉ vuốt) khi Short đang phát thì thu nhỏ thành cửa sổ PiP, như YouTube. */
+    /** Rời app (Home / cử chỉ vuốt) khi Short đang phát: bật dịch vụ nền ngay lúc app còn hiện, rồi vào PiP như YouTube (nếu cài đặt bật). */
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        if (PipPrefs.enhanced && PipPrefs.canDraw(this)) {
-            // Short toàn màn hình đang phát: thu về thẻ mini để cửa sổ nổi tiếp tục đúng video.
-            if (!ShortsMini.open && PipState.armed) {
-                PipState.snapshot?.invoke()?.let { (list, at) -> ShortsMini.start(list, at) }
-            }
-            if (PipOverlay.start(this)) return
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && PipState.armed) enterPip()
+        ShortsBackground.keepAlive()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && PipPrefs.autoPip && PipState.armed) enterPip()
     }
 
     override fun onDestroy() {
-        PipState.enter = null
         PipState.inPip = false
         pipScope.cancel()
         if (PipState.supported) runCatching { unregisterReceiver(pipReceiver) }
+        // Thoát app bằng Back: Short không được phát mồ côi (như meetube đóng trình phát). Xoay màn hình / đổi cấu hình thì không dừng.
+        if (isFinishing) ShortsBackground.stopAll()
         super.onDestroy()
     }
 
     override fun onStart() {
         super.onStart()
-        ShortsMini.onAppVisible(true)
+        stopped = false
+        ShortsBackground.onAppShown()
     }
 
     override fun onStop() {
-        ShortsMini.onAppVisible(false)
+        stopped = true
+        when {
+            isFinishing || pipLeftPending -> {
+                // Thoát app, hoặc cửa sổ PiP vừa bị đóng: dừng hẳn.
+                pipLeftPending = false
+                ShortsBackground.stopAll()
+            }
+            // PiP còn hiện thì video đang phát ở đó, onStop không tới. Tới đây mà không PiP là app ẩn thật: tắt màn hình, sang app khác,
+            // PiP bị tắt / bị từ chối. Short đang phát chuyển thành phiên nền chỉ phát âm thanh (làm TRƯỚC super.onStop()).
+            !(Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode) -> ShortsBackground.onAppHidden()
+        }
         super.onStop()
+    }
+
+    override fun onPause() {
+        resumedNow = false
+        // App sắp mất tiêu điểm (cả khi tắt màn hình): bật dịch vụ nền khi app còn hiện, trước khi tới onStop.
+        if (!isFinishing) ShortsBackground.keepAlive()
+        super.onPause()
     }
 
     override fun onResume() {
         super.onResume()
-        PipOverlay.stop(this) // về lại app: thẻ mini trong app thay cửa sổ nổi
-        PipPrefs.ensurePermission()
+        resumedNow = true
+        pipLeftPending = false
+        ShortsBackground.onResumed()
+        BackgroundPlay.askOnce(this)
         val now = NanStorage.hasAccess()
         if (now && !hadAccess) NanStorage.onAccessChanged()
         hadAccess = now

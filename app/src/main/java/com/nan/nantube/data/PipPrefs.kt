@@ -1,110 +1,45 @@
 package com.nan.nantube.data
 
-import android.content.Context
-import android.os.Build
-import android.provider.Settings
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import android.content.Context
 import org.json.JSONObject
 
 /**
- * Cài đặt "Cải thiện trải nghiệm dùng PiP" (Thử nghiệm các tính năng mới). Bật thì khi rời app, Short đang phát ở cửa sổ mini
- * sẽ thành cửa sổ nổi do app tự vẽ (cần quyền "Hiển thị trên các ứng dụng khác") thay cho PiP của hệ thống.
+ * Cài đặt phát nền của Short (Thử nghiệm các tính năng mới), theo `MiniPip.isAutoEnabled` của meetube:
+ * - [autoPip] bật (mặc định): rời app lúc Short đang phát thì thu thành cửa sổ PiP của hệ thống;
+ * - tắt: rời app thì Short phát tiếp chỉ âm thanh (dịch vụ nền + thông báo media).
  *
- * Lưu qua [NanStorage] (thư mục NaNTube) nên gỡ app cài lại vẫn còn. Đang bật mà thiếu quyền thì app xin lại;
- * người dùng từ chối thì tự tắt.
+ * Lưu qua [NanStorage] (thư mục NaNTube) nên gỡ app cài lại vẫn còn.
  */
 object PipPrefs {
     private const val FEATURE = "app_settings"
-    private const val KEY = "enhancedPip"
+    private const val KEY = "autoPip"
 
-    var enhanced by mutableStateOf(false)
+    var autoPip by mutableStateOf(true)
         private set
 
-    /** Nút bánh răng ở cửa sổ nổi: tăng số này thì AppRoot mở thẳng trang "Thử nghiệm các tính năng mới". */
-    var settingsSerial by mutableIntStateOf(0)
-        private set
-    var openExperiments = false
-
-    fun requestSettings() {
-        openExperiments = true
-        settingsSerial++
-    }
-
-    /** MainActivity gán: mở màn cấp quyền "Hiển thị trên các ứng dụng khác" của app. */
-    var openOverlaySettings: (() -> Unit)? = null
-
-    private var asking = false
     private var hooked = false
-    private var appContext: Context? = null
 
     fun init(context: Context) {
-        appContext = context.applicationContext
         NanStorage.init(context)
         load()
         if (!hooked) {
             hooked = true
             // Cấp quyền tệp xong thì đọc lại: cài đặt của lần cài trước có thể đã nằm sẵn ở thư mục NaNTube.
-            NanStorage.addReloadListener {
-                load()
-                ensurePermission()
-            }
+            NanStorage.addReloadListener { load() }
         }
     }
 
     private fun load() {
         val json = NanStorage.readJson(FEATURE, null) as? JSONObject ?: return
-        enhanced = json.optBoolean(KEY, false)
+        autoPip = json.optBoolean(KEY, true)
     }
 
-    private fun save() {
-        val text = JSONObject().put(KEY, enhanced).toString()
+    fun setAutoPip(on: Boolean) {
+        autoPip = on
+        val text = JSONObject().put(KEY, on).toString()
         Thread { runCatching { NanStorage.write(FEATURE, null, text) } }.start()
-    }
-
-    fun canDraw(context: Context): Boolean =
-        Build.VERSION.SDK_INT < 23 || Settings.canDrawOverlays(context)
-
-    /** Công tắc trong cài đặt. Bật: có quyền thì bật luôn, chưa có thì mở màn cấp quyền và chỉ bật nếu được cấp. */
-    fun setEnabled(context: Context, on: Boolean) {
-        if (!on) {
-            enhanced = false
-            save()
-            return
-        }
-        if (canDraw(context)) {
-            enhanced = true
-            save()
-        } else {
-            request()
-        }
-    }
-
-    /** Gọi ở onResume / sau khi nạp lại cài đặt: đang bật mà mất quyền thì xin lại. */
-    fun ensurePermission() {
-        val context = appContext ?: return
-        if (enhanced && !canDraw(context)) request()
-    }
-
-    private fun request() {
-        if (asking) return
-        val open = openOverlaySettings ?: return
-        asking = true
-        open()
-    }
-
-    /** Người dùng quay lại từ màn cấp quyền: có quyền thì bật, không thì tắt. */
-    fun onPermissionResult() {
-        asking = false
-        val context = appContext ?: return
-        val granted = canDraw(context)
-        if (enhanced != granted) {
-            enhanced = granted
-            save()
-        } else if (granted) {
-            save()
-        }
     }
 }

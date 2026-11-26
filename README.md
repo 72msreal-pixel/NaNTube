@@ -23,6 +23,15 @@ Trình phát Short không còn tải cả tệp về rồi mới phát. Cách l�
 - **Tốc độ phát**: 0.25x đến 2x (`ShortsPool.selectSpeed`), áp cho mọi ô nên Short kế vẫn giữ tốc độ.
 - **Tự động vuốt** (theo "Auto-scroll" của meetube): bật ở menu thì Short hết là tự trượt sang Short kế, tắt thì lặp lại như YouTube. Đang mở bảng hay bình luận thì không tự vuốt.
 
+## Rời app khi đang xem Short (viết lại theo meetube)
+Toàn bộ logic nằm ở `ShortsBackground.kt` + `ShortsPlaybackService.kt`, `MainActivity` chỉ gọi đúng chỗ (theo `MobilePlaybackActivity`, `MobilePlaybackService`, `BackgroundPlay` của meetube). Đã xóa cửa sổ nổi tự vẽ (`PipOverlay`, quyền SYSTEM_ALERT_WINDOW) và `ShortsAudioService` cũ.
+- **onUserLeaveHint / onPause**: Short đang phát thì bật dịch vụ media nền ngay lúc app còn hiện (Android 12+ cấm bật từ lúc đã ẩn), rồi vào **PiP hệ thống** nếu cài đặt "Tự vào PiP khi rời app" bật (Android 12+ còn có auto-enter, chỉ bật khi app đang ở trước mặt và Short đang phát). Cửa sổ PiP là chính bộ phát Short, có nút Trước / Phát-Tạm dừng / Tiếp.
+- **onStop mà không ở PiP** (tắt màn hình, sang app khác, PiP tắt hoặc bị từ chối): Short đang phát thành *phiên nền* (`ShortsMini.beginBackground`), chỉ phát âm thanh (tắt luồng hình), thông báo media + màn khóa điều khiển được. Compose không chạy lúc app ẩn nên phiên nền tự nạp video kế, chuyển video, tự vuốt (`ShortsPool.endedListener`).
+- **Hiện lại app**: phiên nền trả về bộ phát toàn màn hình, tự cuộn tới đúng Short đang phát (`PipState.returnId`).
+- **Đóng PiP (X) / nút Đóng ở thông báo / thoát bằng Back**: dừng hẳn (`ShortsBackground.stopAll`), không để âm thanh chạy mồ côi.
+- **Pin**: sau lần phát nền đầu tiên, app xin miễn tối ưu pin một lần (`BackgroundPlay.askOnce`); bật lại ở Cài đặt → Thử nghiệm các tính năng mới.
+- Short tạm dừng thì rời app không phát nền.
+
 ## Main và Search (kiểu YouTube)
 - **Main**: thanh trên có logo NaNTube (ảnh `nantube_logo`, nền trong suốt) + nút kết nối TV + chuông thông báo (số đỏ = chưa xem) + nút tìm kiếm, hàng chip chủ đề (Tất cả, Âm nhạc, Trò chơi, Tin tức, Thể thao, Live), thẻ video lớn 16:9 có avatar kênh, tiêu đề 2 dòng, nút ba chấm. Cuộn gần cuối tự tải trang kế. "Tất cả" = trang chủ YouTube (chưa đăng nhập thì lấy tạm kết quả tìm "thịnh hành"); các chip còn lại là tìm kiếm theo chủ đề (`HOME_CHIPS` trong `Videos.kt`, muốn đổi chủ đề chỉ sửa danh sách này).
 - **Ký hiệu nhạc ♪**: `DurationBadge` vẽ ♪ trước thời lượng ở mọi nơi có ảnh bìa (Main, Search, Info, lịch sử). Video được coi là nhạc khi YouTube gắn icon MUSIC trên ảnh bìa, kênh "- Topic"/VEVO, hoặc đang ở chip Âm nhạc (`VideoItem.isMusic`).

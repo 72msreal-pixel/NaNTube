@@ -12,8 +12,8 @@
     <!-- Phát nhạc nền: dịch vụ mediaPlayback + giữ CPU / Wi-Fi khi tắt màn hình. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <!-- Cửa sổ Short nổi do app tự vẽ (Cài đặt → Thử nghiệm các tính năng mới → Cải thiện trải nghiệm dùng PiP). -->
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- Xin miễn tối ưu pin một lần sau khi đã phát nền (BackgroundPlay): trình quản lý pin của hãng máy thường đóng băng app vài phút sau khi tắt màn hình. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Tìm kiếm bằng giọng nói (màn nghe riêng trong app). -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
@@ -77,14 +77,9 @@
             </intent-filter>
         </service>
 
-        <!-- Popup Short mở thì phát âm thanh nền cho tới khi đóng popup. -->
+        <!-- Short phát nền (PiP / tắt màn hình / sang app khác): dịch vụ media nối ExoPlayer của ShortsPool với MediaSession + thông báo. -->
         <service
-            android:name=".ui.ShortsAudioService"
-            android:exported="false"
-            android:foregroundServiceType="mediaPlayback" />
-
-        <service
-            android:name=".ui.PipOverlayService"
+            android:name=".ui.ShortsPlaybackService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
 

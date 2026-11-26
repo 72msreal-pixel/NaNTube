@@ -485,6 +485,7 @@ private fun ShortsPager(
     LaunchedEffect(active, curVideo?.id, shownPaused, curSlot?.vertical) {
         if (!active) return@LaunchedEffect
         PipState.shortId = curVideo?.id
+        PipState.video = curVideo
         PipState.playing = !shownPaused
         PipState.vertical = curSlot?.vertical ?: true
     }
@@ -506,6 +507,7 @@ private fun ShortsPager(
                 PipState.controls = null
                 PipState.snapshot = null
                 PipState.shortId = null
+                PipState.video = null
                 PipState.playing = false
             }
         }
@@ -518,7 +520,6 @@ private fun ShortsPager(
         }
     }
     // Vào PiP: chỉ giữ video (làm sạch màn hình, đóng bảng đang mở); ra khỏi PiP trả lại như cũ.
-    val pipLifecycle = LocalLifecycleOwner.current.lifecycle
     var wasInPip by remember { mutableStateOf(false) }
     var cleanBeforePip by remember { mutableStateOf(false) }
     LaunchedEffect(PipState.inPip, active) {
@@ -534,24 +535,26 @@ private fun ShortsPager(
         } else if (wasInPip) {
             wasInPip = false
             ShortsChrome.clean = cleanBeforePip
-            // Cửa sổ PiP bị đóng (X): app không còn hiện nên dừng video.
-            if (!pipLifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) ShortsPool.pauseAll()
+            // PiP bị đóng (X) thì MainActivity gọi ShortsBackground.stopAll(); bấm mở rộng thì video cứ phát tiếp.
         }
     }
     val curMeta = curVideo?.let { ShortsPlayback.meta(it.id) }
     val curSettled = curVideo != null && settled[curVideo.id] == true
+    // Rời app / về lại app do ShortsBackground lo (MainActivity gọi đúng chỗ, theo meetube): bộ phát không tự dừng ở ON_STOP nữa,
+    // vì lúc đó video còn phải phát ở PiP hoặc phát nền. Ở đây chỉ nhắc hiệu ứng phát chạy lại khi app hiện lại.
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(lifecycle) {
-        val observer = LifecycleEventObserver { _, event ->
-            // Đang phát mà rời app thì sắp vào cửa sổ PiP: không dừng video ở ON_PAUSE. Hết PiP (bấm X) hoặc app tắt hẳn thì dừng ở ON_STOP.
-            // Popup Short (mini) đang mở thì nó giữ việc phát nền: bộ phát này không được dừng các ô dùng chung.
-            if (ShortsMini.open) Unit
-            else if (event == Lifecycle.Event.ON_PAUSE && !PipState.armed && !PipState.inPip) ShortsPool.pauseAll()
-            else if (event == Lifecycle.Event.ON_STOP && !PipState.inPip && !PipOverlay.active) ShortsPool.pauseAll()
-            else if (event == Lifecycle.Event.ON_RESUME) tick++
-        }
+        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME) tick++ }
         lifecycle.addObserver(observer)
         onDispose { lifecycle.removeObserver(observer) }
+    }
+    // App hiện lại sau khi phiên nền đã chuyển Short khác (Tiếp / Trước / tự vuốt lúc app ẩn): cuộn tới đúng video đang phát.
+    LaunchedEffect(PipState.returnId, active) {
+        val id = PipState.returnId ?: return@LaunchedEffect
+        if (!active) return@LaunchedEffect
+        val at = latest.indexOfFirst { it.id == id }
+        if (at >= 0 && at != pagerState.currentPage) pagerState.scrollToPage(at)
+        PipState.returnId = null
     }
 
     // Đổi trang (hoặc vào lại tab): nạp sẵn video đang xem + kế + trước. Ô kế / trước đã đứng ở khung đầu nên vuốt tới là phát luôn.
@@ -577,8 +580,9 @@ private fun ShortsPager(
     val leaving by remember(pagerState) { derivedStateOf { !dragged && pagerState.targetPage != pagerState.settledPage } }
 
     // Chỉ ô của video đang xem được phát, và chỉ khi đã có đủ số thích / bình luận (hoặc quá hạn chờ) để chữ không nhảy.
-    LaunchedEffect(page, active, userPaused, curSettled, curSlot, tick, leaving, ShortsMini.open) {
-        if (ShortsMini.open) return@LaunchedEffect // popup Short đang giữ các ô phát (kể cả khi chạy nền)
+    LaunchedEffect(page, active, userPaused, curSettled, curSlot, tick, leaving, ShortsMini.open, PipState.returnId) {
+        if (ShortsMini.open) return@LaunchedEffect // popup / phiên nền đang giữ các ô phát (kể cả khi chạy nền)
+        if (PipState.returnId != null) return@LaunchedEffect // vừa từ nền về: chờ cuộn tới đúng video rồi mới phát
         ShortsPool.setActive(if (active) curVideo?.id else null, active && !userPaused && curSettled && !leaving)
     }
 

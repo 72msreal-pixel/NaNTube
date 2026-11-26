@@ -17,7 +17,6 @@ import android.media.session.PlaybackState
 import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
-import androidx.compose.runtime.snapshotFlow
 import coil.Coil
 import coil.request.ImageRequest
 import com.nan.nantube.MainActivity
@@ -28,47 +27,46 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * Dịch vụ nền của popup Short (làm theo MobilePlaybackService + BackgroundPlay của meetube): popup còn mở thì Short phát tiếp (chỉ
- * âm thanh) khi sang app khác / tắt màn hình, cho tới khi đóng popup.
+ * Dịch vụ media nền của Short (theo MobilePlaybackService của meetube): giữ tiến trình sống và có MediaSession + thông báo media
+ * (ảnh bìa, tên, kênh, thanh tua, Trước / Phát-Tạm dừng / Tiếp / Đóng) khi Short phát lúc app ở PiP, tắt màn hình hoặc sang app khác.
  *
- * Có MediaSession + thông báo kiểu media (ảnh bìa, tên, kênh, thanh tua, Trước / Phát-Tạm dừng / Tiếp) nên hiện thành thẻ "Thông báo trực tiếp"
- * ở màn khóa / bảng điều khiển nhanh, có "Đầu ra media", điều khiển được từ tai nghe, như meetube và trình phát nhạc.
- *
- * Lúc app không hiện, cây Compose không có khung hình nên không tự chạy được các hiệu ứng (nạp video kế, chuyển video khi hết...):
- * dịch vụ làm thay phần đó ([driveBackground]); app hiện lại thì Compose làm tiếp.
+ * Dịch vụ KHÔNG sở hữu trình phát: các ExoPlayer nằm trong [ShortsPool] (sống ngoài Activity). Dịch vụ chỉ nối chúng với MediaSession
+ * và điều khiển qua [ShortsBackground]. [ShortsBackground.keepAlive] bật dịch vụ lúc app còn hiện, nên `startForeground` luôn được
+ * gọi từ trạng thái nền trước hợp lệ (Android 12+ cấm bật từ lúc app đã ẩn).
  */
-class ShortsAudioService : Service() {
+class ShortsPlaybackService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private var started = false
     private var session: MediaSession? = null
     private var art: Bitmap? = null
     private var artId: String? = null
     private var artJob: Job? = null
+    private var ticker: Job? = null
+    private var foregroundNow = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
         session = MediaSession(this, "NaNTubeShorts").apply {
             setCallback(object : MediaSession.Callback() {
                 override fun onPlay() {
-                    if (ShortsMini.shownPaused) ShortsMini.toggle()
+                    if (!ShortsBackground.isPlaying) ShortsBackground.toggle()
                 }
 
                 override fun onPause() {
-                    if (!ShortsMini.shownPaused) ShortsMini.toggle()
+                    if (ShortsBackground.isPlaying) ShortsBackground.toggle()
                 }
 
-                override fun onSkipToNext() = ShortsMini.next()
-                override fun onSkipToPrevious() = ShortsMini.prev()
-                override fun onStop() = ShortsMini.closeAndStop()
+                override fun onSkipToNext() = ShortsBackground.next()
+                override fun onSkipToPrevious() = ShortsBackground.prev()
+                override fun onStop() = ShortsBackground.stopAll()
                 override fun onSeekTo(pos: Long) {
-                    ShortsMini.current?.let { ShortsPool.slot(it.id)?.player?.seekTo(pos) }
+                    ShortsBackground.currentVideo?.let { ShortsPool.slot(it.id)?.player?.seekTo(pos) }
                     updateState()
                 }
             })
@@ -77,84 +75,53 @@ class ShortsAudioService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_PREV -> ShortsMini.prev()
-            ACTION_TOGGLE -> ShortsMini.toggle()
-            ACTION_NEXT -> ShortsMini.next()
-            ACTION_CLOSE -> ShortsMini.closeAndStop()
-        }
+        // startForegroundService() bắt buộc phải có startForeground() ngay, kể cả khi sắp tự tắt.
         updateMetadata()
         updateState()
         foreground(notification())
-        if (!ShortsMini.open) {
+        when (intent?.action) {
+            ACTION_PREV -> ShortsBackground.prev()
+            ACTION_TOGGLE -> ShortsBackground.toggle()
+            ACTION_NEXT -> ShortsBackground.next()
+            ACTION_CLOSE -> {
+                ShortsBackground.stopAll()
+                return START_NOT_STICKY
+            }
+        }
+        if (ShortsBackground.currentVideo == null) {
             shutdown()
             return START_NOT_STICKY
         }
-        if (!started) {
-            started = true
-            scope.launch {
-                snapshotFlow { ShortsMini.open }.distinctUntilChanged().collect { open -> if (!open) shutdown() }
-            }
-            scope.launch {
-                snapshotFlow { Triple(ShortsMini.current?.id, ShortsMini.shownPaused, ShortsMini.current?.let { ShortsPool.slot(it.id)?.ready }) }
-                    .distinctUntilChanged()
-                    .collect {
-                        if (!ShortsMini.open) return@collect
-                        updateMetadata()
-                        updateState()
-                        refresh()
-                    }
-            }
-            // Short lặp lại / vừa chuyển video: giữ vị trí trên thanh tua của thẻ media đúng.
-            scope.launch {
+        if (ticker == null) {
+            // Như media3 đẩy trạng thái mỗi khi player đổi: cập nhật định kỳ để thanh tua, biểu tượng và ảnh bìa luôn đúng
+            // (không phụ thuộc Compose, vốn không chạy lúc app ẩn).
+            ticker = scope.launch {
                 while (isActive) {
-                    delay(2_000)
-                    if (!ShortsMini.shownPaused) updateState()
+                    delay(1_000)
+                    if (ShortsBackground.currentVideo == null) {
+                        shutdown()
+                        return@launch
+                    }
+                    refresh()
                 }
             }
-            driveBackground()
         }
         return START_NOT_STICKY
-    }
-
-    /** Khi app không hiện: giữ ô phát video này + kế + trước, phát video đang chọn và tự sang Short kế khi hết (nếu bật tự vuốt). */
-    private fun driveBackground() {
-        var endJob: Job? = null
-        scope.launch {
-            snapshotFlow { Triple(ShortsMini.appVisible, ShortsMini.current?.id, ShortsMini.paused) }
-                .distinctUntilChanged()
-                .collect { (visible, id, paused) ->
-                    if (visible || id == null) return@collect
-                    val list = ShortsMini.list
-                    val idx = ShortsMini.index
-                    ShortsPool.window(listOfNotNull(list.getOrNull(idx), list.getOrNull(idx + 1), list.getOrNull(idx - 1)))
-                    ShortsPool.setActive(id, !paused)
-                }
-        }
-        scope.launch {
-            snapshotFlow {
-                val id = ShortsMini.current?.id
-                // Cửa sổ nổi (PipOverlay) tự chuyển video của nó; ở đây chỉ lo khi không có cửa sổ nào.
-                !ShortsMini.appVisible && !PipOverlay.active && ShortsPool.autoScroll && id != null && ShortsPool.slot(id)?.ended == true
-            }.distinctUntilChanged().collect { finished ->
-                endJob?.cancel()
-                if (!finished) return@collect
-                endJob = launch {
-                    // Chờ chút cho hết hẳn tiếng rồi mới sang video kế (cùng độ trễ với tự vuốt trong app).
-                    delay(AUTO_SWIPE_TAIL_MS)
-                    if (!ShortsMini.appVisible) ShortsMini.next()
-                }
-            }
-        }
     }
 
     // ---- MediaSession ----------------------------------------------------------------------------
 
     private fun updateState() {
         val s = session ?: return
-        val slot = ShortsMini.current?.let { ShortsPool.slot(it.id) }
-        val playing = !ShortsMini.shownPaused
+        val video = ShortsBackground.currentVideo
+        val slot = video?.let { ShortsPool.slot(it.id) }
+        val playing = ShortsBackground.isPlaying
         val pos = (slot?.player?.currentPosition ?: 0L).coerceAtLeast(0L)
+        val state = when {
+            slot?.buffering == true && playing -> PlaybackState.STATE_BUFFERING
+            playing -> PlaybackState.STATE_PLAYING
+            else -> PlaybackState.STATE_PAUSED
+        }
         s.setPlaybackState(
             PlaybackState.Builder()
                 .setActions(
@@ -162,14 +129,14 @@ class ShortsAudioService : Service() {
                         PlaybackState.ACTION_SKIP_TO_NEXT or PlaybackState.ACTION_SKIP_TO_PREVIOUS or
                         PlaybackState.ACTION_SEEK_TO or PlaybackState.ACTION_STOP
                 )
-                .setState(if (playing) PlaybackState.STATE_PLAYING else PlaybackState.STATE_PAUSED, pos, if (playing) 1f else 0f, SystemClock.elapsedRealtime())
+                .setState(state, pos, if (playing) 1f else 0f, SystemClock.elapsedRealtime())
                 .build()
         )
     }
 
     private fun updateMetadata() {
         val s = session ?: return
-        val video = ShortsMini.current ?: return
+        val video = ShortsBackground.currentVideo ?: return
         val duration = ShortsPool.slot(video.id)?.player?.duration?.takeIf { it > 0 } ?: -1L
         val builder = MediaMetadata.Builder()
             .putString(MediaMetadata.METADATA_KEY_TITLE, video.title)
@@ -185,33 +152,44 @@ class ShortsAudioService : Service() {
     private fun loadArt(id: String, url: String) {
         artJob?.cancel()
         artJob = scope.launch {
-            val result = Coil.imageLoader(this@ShortsAudioService).execute(
-                ImageRequest.Builder(this@ShortsAudioService).data(url).allowHardware(false).size(720).build()
+            val result = Coil.imageLoader(this@ShortsPlaybackService).execute(
+                ImageRequest.Builder(this@ShortsPlaybackService).data(url).allowHardware(false).size(720).build()
             )
             val bitmap = (result.drawable as? BitmapDrawable)?.bitmap ?: return@launch
-            if (ShortsMini.current?.id != id) return@launch
+            if (ShortsBackground.currentVideo?.id != id) return@launch
             art = bitmap
             artId = id
             updateMetadata()
-            refresh()
+            refreshNotification()
         }
     }
 
     // ---- Thông báo ---------------------------------------------------------------------------------
 
-    private fun refresh() {
+    /** Đẩy lại metadata + trạng thái + thông báo (video đổi, bấm Phát / Tạm dừng, thanh tua chạy). */
+    fun refresh() {
+        updateMetadata()
+        updateState()
+        refreshNotification()
+    }
+
+    private fun refreshNotification() {
         runCatching { getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification()) }
     }
 
     private fun shutdown() {
+        ticker?.cancel()
+        ticker = null
         artJob?.cancel()
-        scope.cancel()
-        started = false
-        stopForeground(true)
+        if (foregroundNow) {
+            stopForeground(Service.STOP_FOREGROUND_REMOVE)
+            foregroundNow = false
+        }
         stopSelf()
     }
 
     override fun onDestroy() {
+        if (instance === this) instance = null
         scope.cancel()
         session?.run {
             isActive = false
@@ -225,14 +203,16 @@ class ShortsAudioService : Service() {
         try {
             if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
             else startForeground(NOTIFICATION_ID, notification)
+            foregroundNow = true
         } catch (_: Exception) {
-            // Không lên được dịch vụ nền (hạn chế của hãng): vẫn phát, hệ thống có thể dừng sớm khi sang app khác.
+            // Không lên được dịch vụ nền (hạn chế của hãng / app đã ẩn): vẫn phát, hệ thống có thể dừng sớm khi sang app khác.
+            foregroundNow = false
         }
     }
 
     private fun action(name: String, request: Int, icon: Int, label: String): Notification.Action {
         val intent = PendingIntent.getService(
-            this, request, Intent(this, ShortsAudioService::class.java).setAction(name),
+            this, request, Intent(this, ShortsPlaybackService::class.java).setAction(name),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         return Notification.Action.Builder(Icon.createWithResource(this, icon), label, intent).build()
@@ -245,22 +225,22 @@ class ShortsAudioService : Service() {
         }
         val tap = Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         val open = PendingIntent.getActivity(this, 0, tap, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val video = ShortsMini.current
-        val paused = ShortsMini.shownPaused
+        val video = ShortsBackground.currentVideo
+        val playing = ShortsBackground.isPlaying
         val builder = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, CHANNEL_ID) else Notification.Builder(this)
         builder
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(video?.title ?: "NaNTube")
             .setContentText(video?.channel ?: "Short")
             .setContentIntent(open)
-            .setOngoing(true)
+            .setOngoing(playing)
             .setOnlyAlertOnce(true)
             .setCategory(Notification.CATEGORY_TRANSPORT)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
             .addAction(action(ACTION_PREV, 1, R.drawable.ic_pip_prev, "Short trước"))
             .addAction(
-                if (paused) action(ACTION_TOGGLE, 2, R.drawable.ic_pip_play, "Phát")
-                else action(ACTION_TOGGLE, 2, R.drawable.ic_pip_pause, "Tạm dừng")
+                if (playing) action(ACTION_TOGGLE, 2, R.drawable.ic_pip_pause, "Tạm dừng")
+                else action(ACTION_TOGGLE, 2, R.drawable.ic_pip_play, "Phát")
             )
             .addAction(action(ACTION_NEXT, 3, R.drawable.ic_pip_next, "Short tiếp"))
             .addAction(action(ACTION_CLOSE, 4, R.drawable.ic_pip_close, "Đóng"))
@@ -279,14 +259,25 @@ class ShortsAudioService : Service() {
         private const val ACTION_NEXT = "com.nan.nantube.action.SHORTS_AUDIO_NEXT"
         private const val ACTION_CLOSE = "com.nan.nantube.action.SHORTS_AUDIO_CLOSE"
 
-        /** Gọi lúc mở popup (app đang hiện nên được phép bật dịch vụ nền). Tự dừng khi popup đóng. */
-        fun start(context: Context) {
+        private var instance: ShortsPlaybackService? = null
+
+        /** Bật dịch vụ lúc app còn hiện (xem [ShortsBackground.keepAlive]). Gọi lại thì chỉ làm mới thông báo. */
+        fun ensure(context: Context) {
             try {
-                val intent = Intent(context, ShortsAudioService::class.java)
+                val intent = Intent(context, ShortsPlaybackService::class.java)
                 if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent) else context.startService(intent)
             } catch (_: Exception) {
-                // Không bật được: popup vẫn phát bình thường khi app hiện.
+                // Không bật được: Short vẫn phát bình thường khi app hiện.
             }
+        }
+
+        fun stop(context: Context) {
+            if (instance == null) return
+            runCatching { context.stopService(Intent(context, ShortsPlaybackService::class.java)) }
+        }
+
+        fun refresh() {
+            instance?.refresh()
         }
     }
 }
