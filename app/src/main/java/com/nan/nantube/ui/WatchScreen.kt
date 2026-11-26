@@ -510,18 +510,11 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
         }
     }
 
-    // Ghi vào "Video đã xem" của tài khoản như Short: sau vài giây, cập nhật định kỳ và khi rời màn.
     LaunchedEffect(pb, account?.id) {
-        if (account == null) return@LaunchedEffect
-        fun len(): Float? = pb.durationMs.takeIf { it > 0 }?.let { it / 1000f }
-        try {
-            delay(8_000)
-            while (true) {
-                WatchHistory.update(account, video.id, pb.positionMs / 1000f, len())
-                delay(30_000)
-            }
-        } finally {
-            if (pb.positionMs > 0) WatchHistory.update(account, video.id, pb.positionMs / 1000f, len())
+        WatchHistory.track(account, video) {
+            if (!pb.released && pb.firstFrame && (pb.player.isPlaying || pb.ended)) {
+                WatchHistory.Playback(pb.player.currentPosition / 1000f, pb.durationMs.takeIf { it > 0 }?.let { it / 1000f })
+            } else null
         }
     }
 

@@ -349,12 +349,6 @@ private const val DETAILS_POLL_MS = 1_000L
 /** Số Short phía sau được tải sẵn thông tin để vuốt tới là hiện đủ ngay. */
 private const val DETAILS_AHEAD = 3
 
-/** Xem Short chừng này giây thì ghi vào lịch sử xem. */
-private const val WATCH_MARK_DELAY_MS = 2_500L
-
-/** Cập nhật lại thời gian xem định kỳ khi vẫn ở Short này (Short lặp lại cũng được tính). */
-private const val WATCH_REFRESH_MS = 10_000L
-
 /** Khung trang (rộng / cao) từ mức này trở lên thì Short dọc hiện nguyên khung (có viền đen) thay vì phóng to cắt mất hình. */
 private const val MAX_ZOOM_ASPECT = 0.72f
 
@@ -666,29 +660,15 @@ private fun ShortsPager(
         }
     }
 
-    // Xem được vài giây là ghi vào "Video đã xem" của tài khoản (theo TrackingService của MediaServiceCore); trước đây không ghi gì cả.
-    // Như VideoStateController.updateHistory của meetube: ghi khi đang xem (vị trí tối thiểu 3 giây), cập nhật định kỳ,
-    // và ghi lại vị trí cuối khi rời Short (vuốt đi, về tab khác) nên chỉ xem một chút vẫn vào "Video đã xem".
-    LaunchedEffect(curVideo?.id, curSlot?.frame, account?.id, active) {
-        val id = curVideo?.id
-        val slot = curSlot
-        if (active && id != null && account != null && slot != null && slot.frame) {
-            fun position(): Float = try { slot.player.currentPosition / 1000f } catch (_: Exception) { 0f }
-            fun length(): Float? = try { slot.player.duration.takeIf { it > 0 }?.let { it / 1000f } } catch (_: Exception) { null }
-            var lastPosition = 0f
-            try {
-                delay(WATCH_MARK_DELAY_MS)
-                while (true) {
-                    lastPosition = position()
-                    WatchHistory.update(account, id, lastPosition, length())
-                    delay(WATCH_REFRESH_MS)
-                }
-            } finally {
-                // Rời Short (hoặc đóng trình xem) trước mốc đầu tiên cũng được ghi, giống meetube ghi khi dừng/chuyển video.
-                // Ô phát có thể đã được dùng lại cho video khác (frame=false) thì chỉ tin vị trí đã đọc trước đó.
-                val end = if (slot.frame) maxOf(lastPosition, position()) else lastPosition
-                WatchHistory.update(account, id, end, length())
-            }
+    LaunchedEffect(curVideo?.id, curSlot, account?.id, active) {
+        val video = curVideo ?: return@LaunchedEffect
+        val slot = curSlot ?: return@LaunchedEffect
+        if (!active) return@LaunchedEffect
+        WatchHistory.track(account, video.copy(isShort = true)) {
+            if (!slot.released && slot.frame && (slot.player.isPlaying || slot.ended)) {
+                WatchHistory.Playback(slot.player.currentPosition / 1000f,
+                    slot.player.duration.takeIf { it > 0 }?.let { it / 1000f })
+            } else null
         }
     }
 

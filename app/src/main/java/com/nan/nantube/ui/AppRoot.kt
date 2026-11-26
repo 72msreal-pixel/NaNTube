@@ -87,7 +87,9 @@ fun AppRoot() {
     val searchUi = remember(account?.id) { SearchUi() }
     val musicUi = remember { MusicUi() }
     // Lịch sử dùng chung: hàng "Video đã xem" ở Info và trang Video đã xem đầy đủ cùng một danh sách.
-    val historyFeed = remember { HistoryFeed(forHistory = true) { acc -> VideoRepository.historyPage(acc) } }
+    val historyFeed = remember(account?.id) {
+        HistoryFeed(forHistory = true, webAccount = account) { acc -> VideoRepository.historyPage(acc) }
+    }
     val libraryCovers = remember { LibraryCovers() }
 
     // Main, Short, Nhạc, Info cùng tải song song ngay từ lúc intro chạy (MainFeedScreen nằm dưới intro nên tự tải khi dựng,
@@ -99,18 +101,28 @@ fun AppRoot() {
     LaunchedEffect(account?.id) { musicUi.home.load(account, musicUi.submitted) }
     LaunchedEffect(account?.id) {
         if (account == null) return@LaunchedEffect
-        launch { historyFeed.refresh(account, silent = true) }
         launch { libraryCovers.load(account) }
     }
     val mainReady = mainFeed.items.isNotEmpty() || mainFeed.error != null || mainFeed.failures > 0
     LaunchedEffect(mainReady) { if (mainReady) SplashGate.ready = true }
 
-    // Lịch sử tự cập nhật mỗi 1 giây khi đang ở tab Short hoặc Info (và app đang mở), nên xem tới Short nào là hàng
-    // "Video đã xem" có ngay, không cần mở lại tab. Tải nền im lặng: chỉ đổi danh sách khi có video mới.
+    // WEB nhận bản ghi ngay từ kho trên máy; tải FEhistory một lần khi vào Info để gộp với lịch sử YouTube.
     var foreground by remember { mutableStateOf(true) }
     val watching = account != null && foreground && (tab == Tab.Shorts || tab == Tab.Info)
-    LaunchedEffect(account?.id, watching) {
-        if (!watching) return@LaunchedEffect
+    val infoVisible = foreground && tab == Tab.Info
+    LaunchedEffect(historyFeed, watching, infoVisible) {
+        if (account == null) return@LaunchedEffect
+        if (account.kind == com.nan.nantube.data.LoginKind.WEB) {
+            if (infoVisible || historyFeed.loadedKey == null) {
+                historyFeed.refresh(account, silent = !infoVisible || historyFeed.loadedKey != null)
+                historyFeed.classifyShorts()
+            }
+            return@LaunchedEffect
+        }
+        if (!watching) {
+            if (historyFeed.loadedKey == null) historyFeed.refresh(account, silent = true)
+            return@LaunchedEffect
+        }
         while (true) {
             historyFeed.refresh(account, silent = historyFeed.loadedKey != null)
             historyFeed.classifyShorts()

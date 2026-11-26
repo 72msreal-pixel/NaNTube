@@ -118,8 +118,6 @@ fun InfoScreen(
     onSaveToPlaylist: (VideoItem) -> Unit,
     onSignIn: () -> Unit
 ) {
-    // Mỗi lần vào Info lấy lịch sử mới (người dùng vừa xem video bên ngoài); cái cũ vẫn hiện trong lúc chờ.
-    LaunchedEffect(account?.id) { history.refresh(account) }
     LaunchedEffect(account?.id) { covers.load(account) }
 
     // Hàng đã xem: lấy tối đa 20 video đầu, hiện 4 trước, chạm cuối hàng thì hiện thêm 4.

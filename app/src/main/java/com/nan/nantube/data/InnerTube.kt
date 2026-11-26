@@ -131,8 +131,6 @@ object InnerTube {
 
     /** WEB hiện tại của meetube (CLIENTS.WEB) và UA desktop đi kèm (DefaultHeaders.USER_AGENT_WEB). */
     private const val MT_WEB_VERSION = "2.20260708.00.00"
-    private const val MT_MWEB_VERSION = "2.20260708.01.00"
-    private const val MT_MWEB_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
     private const val MT_WEB_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
 
     /** UA mà meetube gắn cho mọi request API có Bearer (DefaultHeaders.APP_USER_AGENT) và referer mặc định của nó. */
@@ -340,102 +338,37 @@ object InnerTube {
     private const val MT_TV_UA =
         "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/25.lts.30.1034943-gold (unlike Gecko), Unknown_TV_Unknown_0/Unknown (Unknown, Unknown)"
 
-    /**
-     * /player CỦA TÀI KHOẢN để lấy `playbackTracking` (ei / vm / of), đúng như `getAuthVideoInfo` của MediaServiceCore:
-     * - Tài khoản mã (TV): client TVHTML5 mới (CLIENTS.TV), dựng body như QueryBuilder (clientScreen, userAgent, vùng,
-     *   visitorData, playbackContext + signatureTimestamp dạng TV, racyCheckOk/contentCheckOk, cpn), header Origin +
-     *   X-Goog-Visitor-Id + UA/Client-Name/Version của TV + Bearer, URL không có `key`.
-     * - Tài khoản web: mẫu WEB như `WebSession.post` (cookie + SAPISIDHASH + X-Goog-AuthUser + visitorData).
-     * Trước đây NaNTube gửi body trần (chỉ videoId, client cũ, không visitorData / playbackContext) nên YouTube không
-     * trả `playbackTracking`, và lỗi bị nuốt im lặng nên Short không bao giờ vào "Video đã xem".
-     */
-    internal suspend fun trackingPlayer(account: Account, videoId: String, cpn: String): TrackingPlayer {
-        if (account.kind != LoginKind.WEB) return trackingPlayerOnce(account, videoId, null, cpn)
-        // Tài khoản web: /player của client WEB thường không kèm playbackTracking (đòi PO token) nên lịch sử không ghi được.
-        // Thử lần lượt WEB (có signatureTimestamp) rồi MWEB (client di động, vẫn trả playbackTracking cho phiên cookie).
-        var last: TrackingPlayer? = null
-        var usable: TrackingPlayer? = null
-        var failure: Exception? = null
-        for (variant in listOf("WEB", "MWEB")) {
-            try {
-                val r = trackingPlayerOnce(account, videoId, variant, cpn)
-                if (r.json.optJSONObject("playbackTracking") != null) {
-                    // Video thường: WEB hay trả playbackTracking kèm LOGIN_REQUIRED (đòi PO token), stats gửi theo đó bị bỏ qua. Chỉ nhận khi status OK, không thì thử MWEB.
-                    if (r.json.optJSONObject("playabilityStatus")?.optString("status") == "OK") return r
-                    if (usable == null) usable = r
-                }
-                last = r
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (e: AuthRejected) {
-                throw e
-            } catch (e: Exception) {
-                failure = e
-            }
-        }
-        return usable ?: last ?: throw (failure ?: Exception("Không lấy được playbackTracking"))
-    }
-
-    private suspend fun trackingPlayerOnce(account: Account, videoId: String, webVariant: String?, cpn: String): TrackingPlayer {
+    /** /player có xác thực TV để lấy dữ liệu theo dõi của đúng tài khoản mã. */
+    internal suspend fun tvTrackingPlayer(account: Account, videoId: String, cpn: String): TrackingPlayer {
+        require(account.kind == LoginKind.CODE)
         val visitor = visitorData()
-        val tv = account.kind == LoginKind.CODE
-        val client: JSONObject
         val headers = HashMap<String, String>()
-        val playbackContext: JSONObject?
-        if (tv) {
-            client = JSONObject()
-                .put("clientName", "TVHTML5").put("clientVersion", MT_TV_VERSION)
-                .put("clientScreen", "WATCH").put("userAgent", MT_TV_UA)
-                .put("acceptLanguage", "vi").put("acceptRegion", "VN")
-                .put("utcOffsetMinutes", utcOffsetMinutes().toString())
-            if (!visitor.isNullOrEmpty()) client.put("visitorData", visitor)
-            // signatureTimestamp: QueryBuilder đổi 5 chữ số thành dạng TV (+001); không lấy được thì bỏ playbackContext.
-            val sts = try {
-                PlayerJs.get().sts.toString().let { if (it.length == 5) it + "001" else it }.toLong()
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                null
-            }
-            playbackContext = sts?.let {
-                JSONObject()
-                    .put("contentPlaybackContext", JSONObject()
-                        .put("html5Preference", "HTML5_PREF_WANTS").put("lactMilliseconds", 60000)
-                        .put("isInlinePlaybackNoAd", true).put("signatureTimestamp", it))
-                    .put("devicePlaybackCapabilities", JSONObject().put("supportsVp9Encoding", true).put("supportXhr", false))
-            }
-            headers["Origin"] = ORIGIN
-            headers["User-Agent"] = MT_TV_UA
-            headers["X-Youtube-Client-Name"] = "7"
-            headers["X-Youtube-Client-Version"] = MT_TV_VERSION
-            headers["Authorization"] = "Bearer " + freshToken(account)
-        } else {
-            val mobile = webVariant == "MWEB"
-            client = mtWebClient(visitor)
-            if (mobile) {
-                client.put("clientName", "MWEB").put("clientVersion", MT_MWEB_VERSION).put("userAgent", MT_MWEB_UA)
-                client.remove("browserName")
-                client.remove("browserVersion")
-            }
-            val sts = try {
-                PlayerJs.get().sts.toLong()
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                null
-            }
-            playbackContext = sts?.let {
-                JSONObject().put("contentPlaybackContext", JSONObject()
-                    .put("html5Preference", "HTML5_PREF_WANTS").put("signatureTimestamp", it))
-            }
-            headers.putAll(webAuthHeaders(account.authUser))
-            headers["Origin"] = ORIGIN
-            headers["X-Origin"] = ORIGIN
-            headers["Referer"] = "$ORIGIN/"
-            headers["User-Agent"] = if (mobile) MT_MWEB_UA else MT_WEB_UA
-            headers["X-Youtube-Client-Name"] = if (mobile) "2" else "1"
-            headers["X-Youtube-Client-Version"] = if (mobile) MT_MWEB_VERSION else MT_WEB_VERSION
+        val client = JSONObject()
+            .put("clientName", "TVHTML5").put("clientVersion", MT_TV_VERSION)
+            .put("clientScreen", "WATCH").put("userAgent", MT_TV_UA)
+            .put("acceptLanguage", "vi").put("acceptRegion", "VN")
+            .put("utcOffsetMinutes", utcOffsetMinutes().toString())
+        if (!visitor.isNullOrEmpty()) client.put("visitorData", visitor)
+        // signatureTimestamp: QueryBuilder đổi 5 chữ số thành dạng TV (+001); không lấy được thì bỏ playbackContext.
+        val sts = try {
+            PlayerJs.get().sts.toString().let { if (it.length == 5) it + "001" else it }.toLong()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
         }
+        val playbackContext = sts?.let {
+            JSONObject()
+                .put("contentPlaybackContext", JSONObject()
+                    .put("html5Preference", "HTML5_PREF_WANTS").put("lactMilliseconds", 60000)
+                    .put("isInlinePlaybackNoAd", true).put("signatureTimestamp", it))
+                .put("devicePlaybackCapabilities", JSONObject().put("supportsVp9Encoding", true).put("supportXhr", false))
+        }
+        headers["Origin"] = ORIGIN
+        headers["User-Agent"] = MT_TV_UA
+        headers["X-Youtube-Client-Name"] = "7"
+        headers["X-Youtube-Client-Version"] = MT_TV_VERSION
+        headers["Authorization"] = "Bearer " + freshToken(account)
         if (!visitor.isNullOrEmpty()) headers["X-Goog-Visitor-Id"] = visitor
 
         val body = JSONObject().put("context", JSONObject().put("client", client).put("user", safetyUser()))
@@ -443,25 +376,17 @@ object InnerTube {
         body.put("racyCheckOk", true).put("contentCheckOk", true)
             .put("videoId", videoId).put("cpn", cpn)
         val res = Http.postJson(BASE + "player?prettyPrint=false", body, headers)
-        if (res.code == 401 || (tv && res.code == 403)) throw AuthRejected()
+        if (res.code == 401 || res.code == 403) throw AuthRejected()
         return TrackingPlayer(res.requireJson(), visitor)
     }
 
-    /** Header cho `api/stats` của tài khoản, như interceptor của MediaServiceCore (Bearer + UA/Referer của app TV, X-Goog-Visitor-Id). */
-    internal suspend fun statsHeaders(account: Account, visitor: String?, mobile: Boolean = false): Map<String, String> {
-        val headers = HashMap<String, String>()
-        if (account.kind == LoginKind.CODE) {
-            headers["Authorization"] = "Bearer " + freshToken(account)
-            headers["User-Agent"] = MT_APP_UA
-            headers["Referer"] = MT_APP_REFERER
-        } else {
-            headers.putAll(webAuthHeaders(account.authUser))
-            headers["Origin"] = ORIGIN
-            headers["Referer"] = "$ORIGIN/"
-            headers["User-Agent"] = if (mobile) MT_MWEB_UA else MT_WEB_UA
-        }
-        if (!visitor.isNullOrEmpty()) headers["X-Goog-Visitor-Id"] = visitor
-        return headers
+    internal suspend fun tvStatsHeaders(account: Account, visitor: String?): Map<String, String> {
+        require(account.kind == LoginKind.CODE)
+        return mutableMapOf(
+            "Authorization" to ("Bearer " + freshToken(account)),
+            "User-Agent" to MT_APP_UA,
+            "Referer" to MT_APP_REFERER
+        ).apply { if (!visitor.isNullOrEmpty()) put("X-Goog-Visitor-Id", visitor) }
     }
 
     private fun context(tv: Boolean): JSONObject {

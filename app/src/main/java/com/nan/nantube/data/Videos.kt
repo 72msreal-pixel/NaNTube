@@ -596,12 +596,17 @@ object VideoRepository {
         val token = video.historyFeedbackToken ?: video.historyPanel?.let { panel ->
             val body = JSONObject().put("panelId", panel.label).put("params", panel.token)
             historyToken(InnerTube.call("get_panel", body, account))
-        } ?: error("YouTube không trả thao tác xóa cho video này")
+        }
+        if (token == null) {
+            if (WebWatchHistory.remove(account, video.id)) return
+            error("YouTube không trả thao tác xóa cho video này")
+        }
         val body = JSONObject().put("feedbackTokens", JSONArray().put(token))
         val result = InnerTube.call("feedback", body, account)
         check(result.dig("feedbackResponses", 0, "isProcessed") == true) {
             "YouTube chưa xác nhận xóa video khỏi lịch sử"
         }
+        WebWatchHistory.remove(account, video.id)
     }
 
     enum class FeedbackKind { NOT_INTERESTED, DONT_RECOMMEND_CHANNEL }

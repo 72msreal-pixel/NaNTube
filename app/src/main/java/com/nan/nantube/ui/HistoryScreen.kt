@@ -112,7 +112,7 @@ fun HistoryScreen(base: HistoryFeed, account: Account?, onSaveToPlaylist: (Video
     // Nguồn dữ liệu: tìm kiếm > chip phía YouTube > danh sách gốc dùng chung với hàng ở Info.
     val chipToken = tab.token
     val feed: HistoryFeed = when {
-        applied.isNotBlank() -> remember(applied) { HistoryFeed { acc -> VideoRepository.historyPage(acc, applied) } }
+        applied.isNotBlank() -> remember(applied, account?.id) { HistoryFeed(forHistory = true, webAccount = account, localQuery = applied) { acc -> VideoRepository.historyPage(acc, applied) } }
         chipToken != null -> remember(chipToken) { HistoryFeed { acc -> VideoRepository.continuePage(acc, chipToken) } }
         else -> base
     }

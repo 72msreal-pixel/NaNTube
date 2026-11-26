@@ -7,25 +7,13 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import android.os.SystemClock
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
-/**
- * Ghi video (Short) đã xem vào lịch sử của tài khoản, port từ `TrackingService` + `YouTubeMediaItemService.updateHistoryPosition`
- * của MediaServiceCore (meetube):
- *
- * 1. Lấy `ei` / `vm` / `of` từ `playbackTracking` của /player CỦA TÀI KHOẢN ([InnerTube.trackingPlayer], tương ứng
- *    `getAuthVideoInfo`: client TV + Bearer; phản hồi ẩn danh của VISIONOS / ANDROID_VR không gắn với tài khoản nên
- *    YouTube không ghi gì). Kết quả được nhớ để các lần ping sau không gọi lại /player (như `mMobileTrackingCache`).
- * 2. Gửi `stats/playback` + `stats/watchtime` như `TrackingService.updateWatchTimeFull`:
- *    - còn dưới 5% độ dài nữa là hết  => "xem trọn" (`createWatchRecordShort` + `updateWatchTimeShort`, final=1);
- *    - ngược lại => bản ghi "xem dở" (`createWatchRecordLong` nếu chưa có bản ghi trong 30 phút, rồi `updateWatchTimeLong`).
- *    Vị trí tối thiểu 3 giây (meetube: `Math.max(positionMs, 3_000)`), nên chỉ xem một chút vẫn vào "Video đã xem".
- * 3. Header gửi stats giống interceptor của MediaServiceCore: Bearer + UA/Referer của app TV (tài khoản mã) hoặc cookie +
- *    SAPISIDHASH (tài khoản web), kèm `X-Goog-Visitor-Id`, và KIỂM TRA mã HTTP (trước đây bỏ qua kết quả nên ping bị
- *    YouTube từ chối vẫn tưởng là đã ghi, còn lỗi lấy /player thì bị nuốt im lặng).
- */
+/** TV dùng TrackingService của MeeTube; WEB lưu theo tài khoản ngay trên máy. */
 object WatchHistory {
     private const val TAG = "WatchHistory"
     private const val STATS = "https://www.youtube.com/api/stats/"
@@ -37,7 +25,7 @@ object WatchHistory {
 
     private class Tracking(
         val ei: String, val vm: String, val of: String?, val length: Float?, val visitor: String?, val at: Long,
-        val cpn: String, val mobile: Boolean, val extra: String = ""
+        val cpn: String
     )
 
     /** Bản ghi gần nhất (như `mPosition` của TrackingService): video, vị trí, thời điểm. */
@@ -45,35 +33,60 @@ object WatchHistory {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val lock = Mutex() // ping của cùng một video phải đi đúng thứ tự (create trước, update sau)
-    private val trackingCache = HashMap<String, Tracking>()
+    private val trackingCache = LinkedHashMap<String, Tracking>()
     private var last: Position? = null
     private val random = SecureRandom()
 
 
-    /**
-     * Ghi [videoId] vào lịch sử với vị trí đang xem [positionSec] (độ dài [lengthSec] nếu biết). Chạy nền, lỗi chỉ ghi log
-     * và lần ping sau tự thử lại. Gọi được nhiều lần cho cùng một video (đang xem, rồi khi rời đi).
-     */
-    fun update(account: Account?, videoId: String, positionSec: Float, lengthSec: Float? = null) {
-        if (account == null || videoId.length != 11) return
-        scope.launch {
-            try {
-                lock.withLock { send(account, videoId, positionSec, lengthSec) }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "Không ghi được lịch sử xem $videoId: ${e.message}")
+    internal data class Playback(val positionSec: Float, val lengthSec: Float?)
+
+    /** Chạy cùng vòng đời phiên phát thật, không ghi ô nạp sẵn hoặc video chưa bắt đầu. */
+    internal suspend fun track(account: Account?, video: VideoItem, sample: () -> Playback?) {
+        if (account == null || video.id.length != 11) return
+        var latest: Playback? = null
+        var sent: Playback? = null
+        var sentAt = 0L
+        fun save(reading: Playback) {
+            val previous = sent
+            if (reading == previous) return
+            if (account.kind == LoginKind.WEB) {
+                val progress = reading.lengthSec?.takeIf { it.isFinite() && it > 0f }
+                    ?.let { (reading.positionSec / it).coerceIn(0f, 1f) }
+                WebWatchHistory.record(account, video, progress ?: 0f, newPlayback = previous == null)
+            } else {
+                sendInBackground(account, video.id, reading)
             }
+            sent = reading
+            sentAt = SystemClock.elapsedRealtime()
+        }
+        fun capture() {
+            sample()?.takeIf { it.positionSec.isFinite() && it.positionSec > 0f }?.let { latest = it }
+        }
+        try {
+            while (true) {
+                capture()
+                latest?.let { reading ->
+                    if ((sent == null && reading.positionSec >= MIN_POSITION_SEC) ||
+                        (sent != null && SystemClock.elapsedRealtime() - sentAt >= 30_000L)) save(reading)
+                }
+                delay(if (sent == null) 200L else 1_000L)
+            }
+        } finally {
+            capture()
+            latest?.let(::save)
         }
     }
 
-    /** Đánh dấu [videoId] đã xem trọn (Short xem hết). */
-    fun markWatched(account: Account?, videoId: String, lengthSec: Float? = null) =
-        update(account, videoId, Float.MAX_VALUE, lengthSec)
-
-    /** Đổi tài khoản / đăng xuất: không dùng lại dữ liệu theo dõi của danh tính cũ (như `invalidateCache`). */
-    fun clear() {
-        scope.launch { lock.withLock { trackingCache.clear(); last = null } }
+    private fun sendInBackground(account: Account, videoId: String, reading: Playback) {
+        scope.launch {
+            try {
+                lock.withLock { send(account, videoId, reading.positionSec, reading.lengthSec) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Không ghi được lịch sử xem TV: ${e.javaClass.simpleName}")
+            }
+        }
     }
 
     private suspend fun send(account: Account, videoId: String, positionRaw: Float, lengthHint: Float?) {
@@ -82,11 +95,11 @@ object WatchHistory {
         val length = (tracking.length ?: lengthHint)?.takeIf { it > 0f } ?: 30f
         // Kẹp trong [3s, độ dài]; Short loop có thể báo vị trí vượt độ dài.
         val position = positionRaw.coerceAtLeast(MIN_POSITION_SEC).coerceAtMost(length)
-        val headers = InnerTube.statsHeaders(account, tracking.visitor, tracking.mobile)
+        val headers = InnerTube.tvStatsHeaders(account, tracking.visitor)
 
         fun e(s: String) = URLEncoder.encode(s, "UTF-8")
         val common = "&docid=${e(videoId)}&cpn=${tracking.cpn}&ei=${e(tracking.ei)}&vm=${e(tracking.vm)}" +
-            (tracking.of?.let { "&of=${e(it)}" } ?: "") + tracking.extra
+            (tracking.of?.let { "&of=${e(it)}" } ?: "")
 
         suspend fun call(path: String) {
             val res = Http.get("$STATS$path&prettyPrint=false$common", headers)
@@ -127,7 +140,7 @@ object WatchHistory {
         trackingCache[key]?.takeIf { now - it.at < TRACKING_TTL_MS }?.let { return it }
         // Như AppService.getClientPlaybackNonce: một cpn cho mỗi lần lấy /player, dùng chung cho body /player và mọi ping stats của video.
         val cpn = newCpn()
-        val player = InnerTube.trackingPlayer(account, videoId, cpn)
+        val player = InnerTube.tvTrackingPlayer(account, videoId, cpn)
         val json = player.json
         val info = json.optJSONObject("playbackTracking")
         val watchUrl = info.dig("videostatsWatchtimeUrl", "baseUrl") as? String
@@ -143,11 +156,10 @@ object WatchHistory {
         val of = query.getQueryParameter("of")?.takeIf { it.isNotBlank() }
         if (ei.isNullOrBlank() || vm.isNullOrBlank()) error("Thiếu ei/vm")
         val length = json.dig("videoDetails", "lengthSeconds")?.toString()?.toFloatOrNull()
-        // Phiên web: stats cần biết client nào đã xin link (c / cver) như URL YouTube trả.
-        val extra = if (account.kind == LoginKind.WEB) listOf("c", "cver", "cplayer").mapNotNull { k ->
-            query.getQueryParameter(k)?.takeIf { it.isNotBlank() }?.let { "&$k=${e(it)}" }
-        }.joinToString("") else ""
-        val mobile = query.getQueryParameter("c") == "MWEB"
-        return Tracking(ei, vm, of, length, player.visitor, now, cpn, mobile, extra).also { trackingCache[key] = it }
+        return Tracking(ei, vm, of, length, player.visitor, now, cpn).also {
+            trackingCache.remove(key)
+            if (trackingCache.size >= 64) trackingCache.remove(trackingCache.keys.first())
+            trackingCache[key] = it
+        }
     }
 }

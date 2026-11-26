@@ -12,6 +12,7 @@ import com.nan.nantube.data.HistoryChip
 import com.nan.nantube.data.VideoItem
 import com.nan.nantube.data.VideoPage
 import com.nan.nantube.data.VideoRepository
+import com.nan.nantube.data.WebWatchHistory
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
@@ -30,9 +31,14 @@ const val MORE_RETRY_MS = 3_000L
  * Dùng chung cho hàng "Video đã xem" ở Info (chỉ lấy tối đa 20 cái đầu) và cho trang Video đã xem đầy đủ,
  * nên mở trang đầy đủ là thấy ngay những gì hàng đã tải.
  */
-class HistoryFeed(private val forHistory: Boolean = false, private val firstPage: suspend (Account?) -> VideoPage) {
-    var items by mutableStateOf<List<VideoItem>>(emptyList())
-        private set
+class HistoryFeed(
+    private val forHistory: Boolean = false,
+    private val webAccount: Account? = null,
+    private val localQuery: String? = null,
+    private val firstPage: suspend (Account?) -> VideoPage
+) {
+    private var remoteItems by mutableStateOf<List<VideoItem>>(emptyList())
+    val items: List<VideoItem> get() = WebWatchHistory.merge(webAccount, remoteItems, localQuery)
     var chips by mutableStateOf<List<HistoryChip>>(emptyList())
         private set
     var total by mutableStateOf<String?>(null)
@@ -53,9 +59,9 @@ class HistoryFeed(private val forHistory: Boolean = false, private val firstPage
     private var removed = emptySet<String>()
 
     fun remove(account: Account?, id: String) {
-        if (loadedKey != account?.id) return
+        if (loadedKey != null && loadedKey != account?.id) return
         removed = removed + id
-        items = items.filterNot { it.id == id }
+        remoteItems = remoteItems.filterNot { it.id == id }
     }
 
     val hasMore: Boolean get() = continuation != null
@@ -69,17 +75,17 @@ class HistoryFeed(private val forHistory: Boolean = false, private val firstPage
      * từng đợt nhỏ và cập nhật ngay sau mỗi đợt nên Short hiện dần trong chip "Shorts". Gọi lại khi danh sách thêm video.
      */
     suspend fun classifyShorts() {
-        if (items.none { ShortDetector.needsCheck(it) }) return
+        if (remoteItems.none { ShortDetector.needsCheck(it) }) return
         classifying = true
         try {
             val tried = HashSet<String>() // id không xác định được (lỗi mạng) chỉ thử một lần mỗi lượt gọi, lần sau mới thử lại
             while (true) {
-                val todo = items.filter { it.id !in tried && ShortDetector.needsCheck(it) }.take(ROUND)
+                val todo = remoteItems.filter { it.id !in tried && ShortDetector.needsCheck(it) }.take(ROUND)
                 if (todo.isEmpty()) break
                 tried.addAll(todo.map { it.id })
                 val found = ShortDetector.check(todo.map { it.id })
                 if (found.values.any { it }) {
-                    items = items.map { v -> if (found[v.id] == true && !v.isShort) v.copy(isShort = true) else v }
+                    remoteItems = remoteItems.map { v -> if (found[v.id] == true && !v.isShort) v.copy(isShort = true) else v }
                 }
             }
         } finally {
@@ -92,15 +98,15 @@ class HistoryFeed(private val forHistory: Boolean = false, private val firstPage
      * hiện dần trong chip "Âm nhạc". Gọi lại khi danh sách thêm video.
      */
     suspend fun classifyMusic() {
-        if (items.none { MusicDetector.needsCheck(it) }) return
+        if (remoteItems.none { MusicDetector.needsCheck(it) }) return
         val tried = HashSet<String>()
         while (true) {
-            val todo = items.filter { it.id !in tried && MusicDetector.needsCheck(it) }.take(ROUND)
+            val todo = remoteItems.filter { it.id !in tried && MusicDetector.needsCheck(it) }.take(ROUND)
             if (todo.isEmpty()) break
             tried.addAll(todo.map { it.id })
             val found = MusicDetector.check(todo.map { it.id })
             if (found.values.any { it }) {
-                items = items.map { v -> if (found[v.id] == true && !v.music) v.copy(music = true) else v }
+                remoteItems = remoteItems.map { v -> if (found[v.id] == true && !v.music) v.copy(music = true) else v }
             }
         }
     }
@@ -111,7 +117,7 @@ class HistoryFeed(private val forHistory: Boolean = false, private val firstPage
     suspend fun refresh(account: Account?, silent: Boolean = false) {
         val key = account?.id ?: ""
         if (loadedKey != null && loadedKey != key) {
-            items = emptyList()
+            remoteItems = emptyList()
             removed = emptySet()
             chips = emptyList()
             continuation = null
@@ -128,20 +134,20 @@ class HistoryFeed(private val forHistory: Boolean = false, private val firstPage
                     val page = firstPage(account)
                     val fresh = page.items.filterNot { it.id in removed }.map(ShortDetector::applyCached).map(MusicDetector::applyCached)
                     val freshIds = fresh.map { it.id }
-                    val loadedMore = items.size > fresh.size // đã kéo xuống tải thêm các trang sau
+                    val loadedMore = remoteItems.size > fresh.size // đã kéo xuống tải thêm các trang sau
                     if (!silent || !loadedMore) {
-                        if (!silent || freshIds != items.map { it.id }) {
+                        if (!silent || freshIds != remoteItems.map { it.id }) {
                             ChannelAvatars.prefetchFor(page.items)
-                            items = fresh
+                            remoteItems = fresh
                             continuation = page.continuation
                             total = page.total
                         }
-                    } else if (freshIds != items.take(fresh.size).map { it.id }) {
+                    } else if (freshIds != remoteItems.take(fresh.size).map { it.id }) {
                         // Tải nền định kỳ: có video mới ở đầu thì đặt lên đầu, GIỮ các trang đã tải thêm và token trang kế
                         // (trước đây ghi đè bằng trang đầu nên danh sách cứ bị cắt về vài video).
                         ChannelAvatars.prefetchFor(page.items)
                         val head = freshIds.toHashSet()
-                        items = fresh + items.filter { it.id !in head }
+                        remoteItems = fresh + remoteItems.filter { it.id !in head }
                         total = page.total
                     }
                     if (page.chips.isNotEmpty() || loadedKey != key) chips = page.chips
@@ -151,7 +157,7 @@ class HistoryFeed(private val forHistory: Boolean = false, private val firstPage
                     throw e
                 } catch (e: Exception) {
                     // Không báo lỗi: tải nền (silent) bỏ qua, tải thường thì cứ thử lại liên tục như bên Short.
-                    if (silent) break
+                    if (silent || webAccount?.kind == com.nan.nantube.data.LoginKind.WEB) break
                     attempt++
                     kotlinx.coroutines.delay((800L * attempt).coerceAtMost(4_000L))
                 }
@@ -178,13 +184,13 @@ class HistoryFeed(private val forHistory: Boolean = false, private val firstPage
             while (true) {
                 val page = VideoRepository.continuePage(account, token, history = forHistory)
                 ChannelAvatars.prefetchFor(page.items, 2_000L)
-                val seen = items.mapTo(HashSet()) { it.id }
+                val seen = remoteItems.mapTo(HashSet()) { it.id }
                 val added = page.items.filter { it.id !in removed && seen.add(it.id) }.map(ShortDetector::applyCached).map(MusicDetector::applyCached)
                 // Token lặp lại đúng cái vừa dùng = YouTube không còn trang nào, tránh tải lặp mãi.
                 val next = page.continuation?.takeIf { it != token }
                 moreFailed = false
                 if (added.isNotEmpty()) {
-                    items = items + added
+                    remoteItems = remoteItems + added
                     continuation = next
                     return
                 }
