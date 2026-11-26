@@ -105,6 +105,7 @@ import com.composables.icons.lucide.Settings
 import com.nan.nantube.R
 import com.nan.nantube.data.Account
 import com.nan.nantube.data.ChannelAvatars
+import com.nan.nantube.data.ChannelNotify
 import com.nan.nantube.data.ChannelSubscriptions
 import com.nan.nantube.data.CommentPage
 import com.nan.nantube.data.CommentsRepository
@@ -457,6 +458,8 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
     var liked by remember { mutableStateOf(false) }
     var disliked by remember { mutableStateOf(false) }
     var subBusy by remember { mutableStateOf(false) }
+    val likeEffect = rememberTapEffect()
+    val subEffect = rememberTapEffect()
     var notifyFor by remember { mutableStateOf<com.nan.nantube.data.SearchResult.Channel?>(null) }
     var commentsOpen by remember { mutableStateOf(false) }
     var expanded by remember { mutableStateOf(false) }
@@ -545,6 +548,7 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
         LikeCounts.noteState(video.id, !now)
         liked = now
         if (now) disliked = false
+        likeEffect.play(burst = now)
         scope.launch {
             try {
                 ShortsPlayback.like(account, video.id, now)
@@ -592,6 +596,7 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
         scope.launch {
             try {
                 ChannelSubscriptions.set(account, channel, subscribe)
+                if (subscribe) subEffect.play()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -697,28 +702,20 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
                             36.dp
                         )
                         Spacer(Modifier.width(12.dp))
-                        Box(
-                            Modifier
-                                .height(36.dp)
-                                .clip(RoundedCornerShape(50))
-                                .background(if (subscribed) NanColors.Surface else Color(0xFFF1F1F1))
-                                .clickable(enabled = channel != null) {
-                                    if (channel != null) {
-                                        if (subscribed) notifyFor = channel else setSubscribed(channel, true)
-                                    }
-                                }
-                                .padding(horizontal = 16.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                if (subscribed) "Đã đăng ký" else "Đăng ký",
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = if (subscribed) Color.White else Color.Black
-                            )
+                        if (subscribed && channel != null) {
+                            PillButton(
+                                "Đã đăng ký", Color(0x33FFFFFF), Color.White,
+                                leading = if (ChannelNotify.isOn(account, channel.id, channel.title)) BellRingIcon else BellOffIcon,
+                                trailing = Lucide.ChevronDown,
+                                modifier = Modifier.tapEffect(subEffect)
+                            ) { notifyFor = channel }
+                        } else {
+                            PillButton("Đăng ký", Color(0xFFF1F1F1), Color.Black, modifier = Modifier.tapEffect(subEffect)) {
+                                channel?.let { setSubscribed(it, true) }
+                            }
                         }
                         Spacer(Modifier.weight(1f))
-                        WatchAction(if (liked) WatchThumbUp else WatchThumbUpOutline, "Thích") { toggleLike() }
+                        WatchAction(if (liked) WatchThumbUp else WatchThumbUpOutline, "Thích", likeEffect) { toggleLike() }
                         WatchAction(if (disliked) WatchThumbDown else WatchThumbDownOutline, "Không thích") { toggleDislike() }
                         WatchAction(WatchShare, "Chia sẻ") { share() }
                         WatchAction(WatchMore, "Thêm") { onSave(video) }
@@ -775,9 +772,11 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
 }
 
 @Composable
-private fun WatchAction(icon: ImageVector, description: String, onClick: () -> Unit) {
-    Box(Modifier.size(44.dp).clip(CircleShape).clickable(onClick = onClick), contentAlignment = Alignment.Center) {
-        Icon(icon, description, Modifier.size(24.dp), tint = Color.White)
+private fun WatchAction(icon: ImageVector, description: String, effect: TapEffectState? = null, onClick: () -> Unit) {
+    // Lớp bấm được cắt tròn nằm riêng bên dưới để chấm confetti của tapEffect bay ra ngoài khung không bị cắt.
+    Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
+        Box(Modifier.fillMaxSize().clip(CircleShape).clickable(onClick = onClick))
+        Icon(icon, description, Modifier.size(24.dp).tapEffect(effect, ring = false), tint = Color.White)
     }
 }
 
@@ -977,21 +976,21 @@ private fun WatchPlayerArea(
 /** Công tắc tự phát kiểu YouTube: núm trắng + biểu tượng phát ở bên phải khi bật, núm xám + biểu tượng tạm dừng ở bên trái khi tắt. */
 @Composable
 private fun AutoplaySwitch(on: Boolean, onToggle: () -> Unit) {
-    val x by animateDpAsState(if (on) 22.dp else 0.dp, tween(150), label = "autoplay")
+    val x by animateDpAsState(if (on) 16.dp else 0.dp, tween(150), label = "autoplay")
     Box(
         Modifier
-            .width(52.dp)
-            .height(30.dp)
+            .width(40.dp)
+            .height(24.dp)
             .clip(RoundedCornerShape(50))
             .background(if (on) Color(0x99555555) else Color(0x66AAAAAA))
             .clickable(onClick = onToggle),
         contentAlignment = Alignment.CenterStart
     ) {
         Box(
-            Modifier.offset(x = 2.dp + x).size(26.dp).clip(CircleShape).background(if (on) Color.White else Color(0xFF8E8E8E)),
+            Modifier.offset(x = 2.dp + x).size(20.dp).clip(CircleShape).background(if (on) Color.White else Color(0xFF8E8E8E)),
             contentAlignment = Alignment.Center
         ) {
-            Icon(if (on) WatchPlay else WatchPause, if (on) "Tự động phát đang bật" else "Tự động phát đang tắt", Modifier.size(16.dp), tint = if (on) Color.Black else Color.White)
+            Icon(if (on) WatchPlay else WatchPause, if (on) "Tự động phát đang bật" else "Tự động phát đang tắt", Modifier.size(12.dp), tint = if (on) Color.Black else Color.White)
         }
     }
 }

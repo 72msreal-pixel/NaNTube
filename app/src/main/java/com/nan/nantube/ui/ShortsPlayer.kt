@@ -1443,7 +1443,7 @@ private fun ShortAction(
 }
 
 @Composable
-private fun PillButton(
+internal fun PillButton(
     text: String,
     background: Color,
     textColor: Color,

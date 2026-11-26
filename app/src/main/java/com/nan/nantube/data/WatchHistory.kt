@@ -35,7 +35,10 @@ object WatchHistory {
     private const val MIN_POSITION_SEC = 3f
     private const val ID_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 
-    private class Tracking(val ei: String, val vm: String, val of: String?, val length: Float?, val visitor: String?, val at: Long, val extra: String = "")
+    private class Tracking(
+        val ei: String, val vm: String, val of: String?, val length: Float?, val visitor: String?, val at: Long,
+        val cpn: String, val mobile: Boolean, val extra: String = ""
+    )
 
     /** Bản ghi gần nhất (như `mPosition` của TrackingService): video, vị trí, thời điểm. */
     private class Position(val key: String, val sec: Float, val at: Long)
@@ -79,11 +82,10 @@ object WatchHistory {
         val length = (tracking.length ?: lengthHint)?.takeIf { it > 0f } ?: 30f
         // Kẹp trong [3s, độ dài]; Short loop có thể báo vị trí vượt độ dài.
         val position = positionRaw.coerceAtLeast(MIN_POSITION_SEC).coerceAtMost(length)
-        val cpn = buildString { repeat(16) { append(ID_ALPHABET[random.nextInt(ID_ALPHABET.length)]) } }
-        val headers = InnerTube.statsHeaders(account, tracking.visitor)
+        val headers = InnerTube.statsHeaders(account, tracking.visitor, tracking.mobile)
 
         fun e(s: String) = URLEncoder.encode(s, "UTF-8")
-        val common = "&docid=${e(videoId)}&cpn=$cpn&ei=${e(tracking.ei)}&vm=${e(tracking.vm)}" +
+        val common = "&docid=${e(videoId)}&cpn=${tracking.cpn}&ei=${e(tracking.ei)}&vm=${e(tracking.vm)}" +
             (tracking.of?.let { "&of=${e(it)}" } ?: "") + tracking.extra
 
         suspend fun call(path: String) {
@@ -117,11 +119,15 @@ object WatchHistory {
 
     private fun e(s: String) = URLEncoder.encode(s, "UTF-8")
 
+    private fun newCpn() = buildString { repeat(16) { append(ID_ALPHABET[random.nextInt(ID_ALPHABET.length)]) } }
+
     /** ei / vm / of từ /player của tài khoản (như `getTrackingFormatInfo` + `syncWithAuthFormatIfNeeded`), có nhớ tạm. */
     private suspend fun tracking(account: Account, videoId: String, key: String): Tracking {
         val now = System.currentTimeMillis()
         trackingCache[key]?.takeIf { now - it.at < TRACKING_TTL_MS }?.let { return it }
-        val player = InnerTube.trackingPlayer(account, videoId)
+        // Như AppService.getClientPlaybackNonce: một cpn cho mỗi lần lấy /player, dùng chung cho body /player và mọi ping stats của video.
+        val cpn = newCpn()
+        val player = InnerTube.trackingPlayer(account, videoId, cpn)
         val json = player.json
         val info = json.optJSONObject("playbackTracking")
         val watchUrl = info.dig("videostatsWatchtimeUrl", "baseUrl") as? String
@@ -141,6 +147,7 @@ object WatchHistory {
         val extra = if (account.kind == LoginKind.WEB) listOf("c", "cver", "cplayer").mapNotNull { k ->
             query.getQueryParameter(k)?.takeIf { it.isNotBlank() }?.let { "&$k=${e(it)}" }
         }.joinToString("") else ""
-        return Tracking(ei, vm, of, length, player.visitor, now, extra).also { trackingCache[key] = it }
+        val mobile = query.getQueryParameter("c") == "MWEB"
+        return Tracking(ei, vm, of, length, player.visitor, now, cpn, mobile, extra).also { trackingCache[key] = it }
     }
 }

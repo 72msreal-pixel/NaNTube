@@ -349,16 +349,21 @@ object InnerTube {
      * Trước đây NaNTube gửi body trần (chỉ videoId, client cũ, không visitorData / playbackContext) nên YouTube không
      * trả `playbackTracking`, và lỗi bị nuốt im lặng nên Short không bao giờ vào "Video đã xem".
      */
-    internal suspend fun trackingPlayer(account: Account, videoId: String): TrackingPlayer {
-        if (account.kind != LoginKind.WEB) return trackingPlayerOnce(account, videoId, null)
+    internal suspend fun trackingPlayer(account: Account, videoId: String, cpn: String): TrackingPlayer {
+        if (account.kind != LoginKind.WEB) return trackingPlayerOnce(account, videoId, null, cpn)
         // Tài khoản web: /player của client WEB thường không kèm playbackTracking (đòi PO token) nên lịch sử không ghi được.
         // Thử lần lượt WEB (có signatureTimestamp) rồi MWEB (client di động, vẫn trả playbackTracking cho phiên cookie).
         var last: TrackingPlayer? = null
+        var usable: TrackingPlayer? = null
         var failure: Exception? = null
         for (variant in listOf("WEB", "MWEB")) {
             try {
-                val r = trackingPlayerOnce(account, videoId, variant)
-                if (r.json.optJSONObject("playbackTracking") != null) return r
+                val r = trackingPlayerOnce(account, videoId, variant, cpn)
+                if (r.json.optJSONObject("playbackTracking") != null) {
+                    // Video thường: WEB hay trả playbackTracking kèm LOGIN_REQUIRED (đòi PO token), stats gửi theo đó bị bỏ qua. Chỉ nhận khi status OK, không thì thử MWEB.
+                    if (r.json.optJSONObject("playabilityStatus")?.optString("status") == "OK") return r
+                    if (usable == null) usable = r
+                }
                 last = r
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
@@ -368,10 +373,10 @@ object InnerTube {
                 failure = e
             }
         }
-        return last ?: throw (failure ?: Exception("Không lấy được playbackTracking"))
+        return usable ?: last ?: throw (failure ?: Exception("Không lấy được playbackTracking"))
     }
 
-    private suspend fun trackingPlayerOnce(account: Account, videoId: String, webVariant: String?): TrackingPlayer {
+    private suspend fun trackingPlayerOnce(account: Account, videoId: String, webVariant: String?, cpn: String): TrackingPlayer {
         val visitor = visitorData()
         val tv = account.kind == LoginKind.CODE
         val client: JSONObject
@@ -436,14 +441,14 @@ object InnerTube {
         val body = JSONObject().put("context", JSONObject().put("client", client).put("user", safetyUser()))
         playbackContext?.let { body.put("playbackContext", it) }
         body.put("racyCheckOk", true).put("contentCheckOk", true)
-            .put("videoId", videoId).put("cpn", randomId(16))
+            .put("videoId", videoId).put("cpn", cpn)
         val res = Http.postJson(BASE + "player?prettyPrint=false", body, headers)
         if (res.code == 401 || (tv && res.code == 403)) throw AuthRejected()
         return TrackingPlayer(res.requireJson(), visitor)
     }
 
     /** Header cho `api/stats` của tài khoản, như interceptor của MediaServiceCore (Bearer + UA/Referer của app TV, X-Goog-Visitor-Id). */
-    internal suspend fun statsHeaders(account: Account, visitor: String?): Map<String, String> {
+    internal suspend fun statsHeaders(account: Account, visitor: String?, mobile: Boolean = false): Map<String, String> {
         val headers = HashMap<String, String>()
         if (account.kind == LoginKind.CODE) {
             headers["Authorization"] = "Bearer " + freshToken(account)
@@ -453,7 +458,7 @@ object InnerTube {
             headers.putAll(webAuthHeaders(account.authUser))
             headers["Origin"] = ORIGIN
             headers["Referer"] = "$ORIGIN/"
-            headers["User-Agent"] = MT_WEB_UA
+            headers["User-Agent"] = if (mobile) MT_MWEB_UA else MT_WEB_UA
         }
         if (!visitor.isNullOrEmpty()) headers["X-Goog-Visitor-Id"] = visitor
         return headers

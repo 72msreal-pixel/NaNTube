@@ -5,6 +5,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.semantics.Role
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
@@ -140,7 +144,7 @@ private val StableVolumeIcon: ImageVector by lazy {
 private val SleepIcon: ImageVector by lazy { lucide("WatchSheetSleep", "M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z") }
 
 /** Lề hai bên của thẻ cài đặt (càng lớn thẻ càng hẹp). */
-private val SHEET_SIDE_MARGIN = 10.dp
+private val SHEET_SIDE_MARGIN = 12.dp
 
 private val SPEEDS = listOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
 
@@ -200,7 +204,7 @@ internal fun WatchSettingsSheet(
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
                 .padding(start = SHEET_SIDE_MARGIN, end = SHEET_SIDE_MARGIN, bottom = 4.dp)
-                .widthIn(max = 420.dp)
+                .widthIn(max = 640.dp)
                 .fillMaxWidth()
                 .offset { IntOffset(0, dy.toInt().coerceAtLeast(0)) }
                 .heightIn(max = 520.dp)
@@ -291,20 +295,32 @@ private fun SheetRow(entry: SheetEntry) {
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(entry.icon, null, Modifier.size(26.dp), tint = Color.White)
-        Spacer(Modifier.width(22.dp))
-        Text(entry.label, fontSize = 17.sp, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+        Spacer(Modifier.width(10.dp))
+        Text(entry.label, fontSize = 15.5.sp, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
         if (entry.value != null) {
             Spacer(Modifier.width(12.dp))
-            Text(entry.value, fontSize = 15.sp, color = NanColors.TextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 170.dp))
+            Text(entry.value, fontSize = 13.5.sp, color = NanColors.TextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 170.dp))
         }
         if (entry.toggle != null) {
             Spacer(Modifier.width(12.dp))
-            NanSwitch(entry.toggle, { entry.onClick() })
+            Box(Modifier.padding(end = 6.dp)) { SheetSwitch(entry.toggle, entry.onClick) }
         }
         if (entry.chevron) {
-            Spacer(Modifier.width(8.dp))
-            Icon(Lucide.ChevronRight, null, Modifier.size(20.dp), tint = NanColors.TextSecondary)
+            Icon(Lucide.ChevronRight, null, Modifier.size(17.dp), tint = NanColors.TextSecondary)
         }
+    }
+}
+
+/** Công tắc của bảng cài đặt trình phát, đo từ YouTube: ray 37x22dp (tắt xám, bật trắng), núm tối 18dp cách mép 2dp. */
+@Composable
+private fun SheetSwitch(checked: Boolean, onToggle: () -> Unit) {
+    val t by animateFloatAsState(if (checked) 1f else 0f, tween(150), label = "sheetSwitch")
+    Box(
+        Modifier.size(37.dp, 22.dp).clip(RoundedCornerShape(11.dp))
+            .background(lerp(Color(0xFF7A7A7A), Color(0xFFE6E6E6), t))
+            .toggleable(value = checked, role = Role.Switch, interactionSource = remember2(), indication = null) { onToggle() }
+    ) {
+        Box(Modifier.align(Alignment.CenterStart).offset(x = 2.dp + 15.dp * t).size(18.dp).clip(CircleShape).background(Color(0xFF272727)))
     }
 }
 
@@ -330,6 +346,6 @@ private fun SheetChoiceRow(choice: SheetChoice) {
             if (choice.selected) Icon(Lucide.Check, null, Modifier.size(22.dp), tint = Color.White)
         }
         Spacer(Modifier.width(20.dp))
-        Text(choice.label, fontSize = 17.sp, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(choice.label, fontSize = 15.5.sp, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
