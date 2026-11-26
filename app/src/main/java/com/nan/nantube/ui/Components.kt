@@ -280,7 +280,8 @@ fun BoxScope.DurationBadge(duration: String?, music: Boolean, live: Boolean = fa
         }
         return
     }
-    if (duration == null && !music) return
+    // Như meetube (VideoCardAdapter.badgeIcon): ♪ chỉ đứng trước chữ thời lượng; không có thời lượng thì không vẽ nhãn.
+    if (duration == null) return
     Row(
         Modifier
             .align(Alignment.BottomEnd)
@@ -291,12 +292,10 @@ fun BoxScope.DurationBadge(duration: String?, music: Boolean, live: Boolean = fa
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (music) {
-            Icon(Lucide.Music, null, Modifier.size(14.dp), tint = Color.White)
-            if (duration != null) Spacer(Modifier.width(4.dp))
+            Icon(MusicBadgeIcon, null, Modifier.size(13.dp), tint = Color.White)
+            Spacer(Modifier.width(3.dp))
         }
-        if (duration != null) {
-            Text(duration, fontSize = 12.sp, lineHeight = 14.sp, fontWeight = FontWeight.Medium, color = Color.White)
-        }
+        Text(duration, fontSize = 12.sp, lineHeight = 14.sp, fontWeight = FontWeight.Medium, color = Color.White)
     }
 }
 

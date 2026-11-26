@@ -814,7 +814,12 @@ private fun OverlayContent(onClose: () -> Unit, onExpand: () -> Unit, onSettings
     val slot = ShortsPool.slot(video.id)
     LaunchedEffect(video.id, slot, ShortsMini.paused) { ShortsPool.setActive(video.id, !ShortsMini.paused) }
     val ended = slot?.ended == true
-    LaunchedEffect(ended, video.id) { if (ended && ShortsPool.autoScroll) ShortsMini.next() }
+    LaunchedEffect(ended, video.id) {
+        if (ended && ShortsPool.autoScroll) {
+            kotlinx.coroutines.delay(AUTO_SWIPE_TAIL_MS)
+            ShortsMini.next()
+        }
+    }
     // Vào từ màn Short toàn màn hình thì ô phát vừa bị bộ phát cũ dừng: giành lại vài lần cho chắc.
     LaunchedEffect(video.id) {
         repeat(6) {
@@ -891,7 +896,7 @@ private fun OverlayContent(onClose: () -> Unit, onExpand: () -> Unit, onSettings
                 Row(Modifier.align(Alignment.BottomCenter).padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     MiniButton(Modifier, bottom, enabled, { ShortsMini.prev() }) { MiniIcon(MiniPrev, 18.dp * bottomK) }
                     MiniButton(Modifier, bottom, enabled, { ShortsMini.toggle() }) {
-                        Crossfade(targetState = ShortsMini.paused, animationSpec = tween(MINI_FADE_IN_MS), label = "overlayPlayPause") { paused ->
+                        Crossfade(targetState = ShortsMini.shownPaused, animationSpec = tween(MINI_FADE_IN_MS), label = "overlayPlayPause") { paused ->
                             Box(Modifier.size(bottom), contentAlignment = Alignment.Center) {
                                 MiniIcon(if (paused) MiniPlay else MiniPause, 18.dp * bottomK)
                             }

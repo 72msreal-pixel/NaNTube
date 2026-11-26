@@ -150,7 +150,7 @@ object ShortsMedia {
     private fun mpd(plan: PlayPlan, audio: MediaStream): String = buildString {
         append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
         append("<MPD xmlns=\"urn:mpeg:DASH:schema:MPD:2011\" profiles=\"urn:mpeg:dash:profile:isoff-on-demand:2011\" ")
-        append("type=\"static\" minBufferTime=\"PT1.500S\" mediaPresentationDuration=\"PT${plan.durationSec.coerceAtLeast(1)}S\">\n")
+        append("type=\"static\" minBufferTime=\"PT1.500S\" mediaPresentationDuration=\"PT${durationLabel(plan)}S\">\n")
         append("<Period>\n")
         val video = plan.videos.first()
         append("<AdaptationSet id=\"0\" mimeType=\"${esc(video.mime)}\" subsegmentAlignment=\"true\">\n")
@@ -185,6 +185,10 @@ object ShortsMedia {
         }
         append("</Period>\n</MPD>\n")
     }
+
+    /** Thời lượng chính xác đến mili giây ("14.912") cho bản kê DASH, không làm tròn xuống giây. */
+    private fun durationLabel(plan: PlayPlan): String =
+        String.format(java.util.Locale.US, "%.3f", maxOf(plan.durationMs, 1_000L) / 1000.0)
 
     private fun StringBuilder.representationBody(s: MediaStream) {
         append("<BaseURL>${esc(s.url)}</BaseURL>\n")

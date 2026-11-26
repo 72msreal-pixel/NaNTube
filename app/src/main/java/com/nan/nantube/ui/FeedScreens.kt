@@ -186,7 +186,12 @@ private fun subtitle(video: VideoItem): String =
 
 /** Thẻ video lớn kiểu trang chủ YouTube: ảnh 16:9, avatar kênh, tiêu đề 2 dòng, ♪ cho video nhạc. */
 @Composable
-fun VideoCard(item: VideoItem, account: Account?, onSaveToPlaylist: (VideoItem) -> Unit) {
+fun VideoCard(
+    item: VideoItem,
+    account: Account?,
+    onSaveToPlaylist: (VideoItem) -> Unit,
+    onHidden: ((VideoItem, Boolean) -> Unit)? = null
+) {
     // Tuyển tập / danh sách phát / đĩa nhạc lẫn trong trang chủ: vẽ thẻ danh sách như ở Tìm kiếm.
     item.playlist?.let { PlaylistCard(it, account); return }
     val context = LocalContext.current
@@ -246,7 +251,7 @@ fun VideoCard(item: VideoItem, account: Account?, onSaveToPlaylist: (VideoItem) 
                     )
                 }
             }
-            VideoMoreButton(video, account, onSaveToPlaylist)
+            VideoMoreButton(video, account, onSaveToPlaylist, onHidden = onHidden)
         }
     }
 }

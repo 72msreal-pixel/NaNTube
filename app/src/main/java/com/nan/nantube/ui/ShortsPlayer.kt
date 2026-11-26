@@ -480,17 +480,22 @@ private fun ShortsPager(
     val curSlot = curVideo?.let { ShortsPool.slot(it.id) }
 
     // Picture-in-Picture (như meetube): Short đang hiện báo cho MainActivity biết để tự vào PiP khi rời app, và nhận Trước / Phát-Tạm dừng / Tiếp từ cửa sổ PiP.
-    LaunchedEffect(active, curVideo?.id, userPaused, curSlot?.vertical) {
+    // Biểu tượng / cờ "đang phát" theo thực tế: ExoPlayer tự dừng khi app khác giành âm thanh thì cũng tính là đang dừng.
+    val shownPaused = userPaused || curSlot?.externalPaused == true
+    LaunchedEffect(active, curVideo?.id, shownPaused, curSlot?.vertical) {
         if (!active) return@LaunchedEffect
         PipState.shortId = curVideo?.id
-        PipState.playing = !userPaused
+        PipState.playing = !shownPaused
         PipState.vertical = curSlot?.vertical ?: true
     }
     DisposableEffect(active) {
         val controls = if (active) PipControls(
             prev = { scope.launch { pagerState.animateScrollToPage((pagerState.currentPage - 1).coerceAtLeast(0)) } },
             next = { scope.launch { pagerState.animateScrollToPage((pagerState.currentPage + 1).coerceAtMost((latest.size - 1).coerceAtLeast(0))) } },
-            toggle = { userPaused = !userPaused }
+            toggle = {
+                val id = latest.getOrNull(pagerState.currentPage)?.id
+                if (id != null && ShortsPool.slot(id)?.externalPaused == true) ShortsPool.setActive(id, true) else userPaused = !userPaused
+            }
         ) else null
         if (controls != null) {
             PipState.controls = controls
@@ -539,7 +544,9 @@ private fun ShortsPager(
     DisposableEffect(lifecycle) {
         val observer = LifecycleEventObserver { _, event ->
             // Đang phát mà rời app thì sắp vào cửa sổ PiP: không dừng video ở ON_PAUSE. Hết PiP (bấm X) hoặc app tắt hẳn thì dừng ở ON_STOP.
-            if (event == Lifecycle.Event.ON_PAUSE && !PipState.armed && !PipState.inPip) ShortsPool.pauseAll()
+            // Popup Short (mini) đang mở thì nó giữ việc phát nền: bộ phát này không được dừng các ô dùng chung.
+            if (ShortsMini.open) Unit
+            else if (event == Lifecycle.Event.ON_PAUSE && !PipState.armed && !PipState.inPip) ShortsPool.pauseAll()
             else if (event == Lifecycle.Event.ON_STOP && !PipState.inPip && !PipOverlay.active) ShortsPool.pauseAll()
             else if (event == Lifecycle.Event.ON_RESUME) tick++
         }
@@ -551,7 +558,7 @@ private fun ShortsPager(
     LaunchedEffect(page, active, items.size, account?.id) {
         val list = latest
         if (!active) {
-            ShortsPool.pauseAll()
+            if (!ShortsMini.open) ShortsPool.pauseAll()
             return@LaunchedEffect
         }
         onPage(page)
@@ -570,7 +577,8 @@ private fun ShortsPager(
     val leaving by remember(pagerState) { derivedStateOf { !dragged && pagerState.targetPage != pagerState.settledPage } }
 
     // Chỉ ô của video đang xem được phát, và chỉ khi đã có đủ số thích / bình luận (hoặc quá hạn chờ) để chữ không nhảy.
-    LaunchedEffect(page, active, userPaused, curSettled, curSlot, tick, leaving) {
+    LaunchedEffect(page, active, userPaused, curSettled, curSlot, tick, leaving, ShortsMini.open) {
+        if (ShortsMini.open) return@LaunchedEffect // popup Short đang giữ các ô phát (kể cả khi chạy nền)
         ShortsPool.setActive(if (active) curVideo?.id else null, active && !userPaused && curSettled && !leaving)
     }
 
@@ -795,7 +803,11 @@ private fun ShortsPager(
     DisposableEffect(Unit) { onDispose { ShortsPool.hold(false) } }
     val finished = ShortsPool.autoScroll && !reading && curSlot?.ended == true
     LaunchedEffect(finished, page) {
-        if (finished && page + 1 < latest.size) pagerState.animateScrollToPage(page + 1)
+        if (finished && page + 1 < latest.size) {
+            // Chờ đuôi âm thanh dứt hẳn rồi mới vuốt: vuốt là tắt tiếng video cũ ngay (xem `leaving`), nên vuốt sớm thì người nói bị cắt ngang.
+            delay(AUTO_SWIPE_TAIL_MS)
+            pagerState.animateScrollToPage(page + 1)
+        }
     }
     // Đổi cỡ cửa sổ (chia đôi màn hình, xoay, gập mở): pager không được kẹt lưng chừng giữa hai Short.
     LaunchedEffect(boxHeight) {
@@ -863,7 +875,7 @@ private fun ShortsPager(
                     sheetFraction = sheetFraction, // mọi trang cùng co lại theo bảng để vuốt sang Short kế không bị nhảy cỡ
                     clean = clean,
                     onTitle = { openSheet(ShortPanel.Description) },
-                    paused = userPaused,
+                    paused = userPaused || ShortsPool.slot(video.id)?.externalPaused == true,
                     progress = progress,
                     bottomInset = bottomInset,
                     liked = isLiked(video.id),
@@ -876,7 +888,9 @@ private fun ShortsPager(
                     subscribed = channel != null && ChannelSubscriptions.isSubscribed(account, channel),
                     flashTick = flashTick,
                     onTap = {
-                        userPaused = !userPaused
+                        // Đang dừng do app khác giành âm thanh (biểu tượng Phát): chạm là phát lại, không phải "tạm dừng".
+                        if (ShortsPool.slot(video.id)?.externalPaused == true) ShortsPool.setActive(video.id, true)
+                        else userPaused = !userPaused
                         flashTick++
                     },
                     onLike = { like(video) },

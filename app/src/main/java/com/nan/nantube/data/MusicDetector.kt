@@ -31,6 +31,9 @@ object MusicDetector {
 
     private val known = ConcurrentHashMap<String, Boolean>()
     private val failedAt = ConcurrentHashMap<String, Long>()
+    /** Thời lượng ("3:45") của bài nhạc mà feed không ghi (thẻ Main chỉ có ♪), chỉ giữ trong lúc app chạy, không lưu xuống máy. */
+    private val durations = ConcurrentHashMap<String, String>()
+    private val durationFailedAt = ConcurrentHashMap<String, Long>()
     @Volatile private var prefs: android.content.SharedPreferences? = null
 
     fun init(context: Context) {
@@ -41,6 +44,26 @@ object MusicDetector {
         }
     }
 
+    /** Thứ tự: tìm kiếm theo id (đường Tìm kiếm đã hiện đủ giờ cho tài khoản mã), rồi /player (videoDetails.lengthSeconds). */
+    private suspend fun resolveDuration(id: String): String? {
+        val viaSearch = try {
+            VideoRepository.durationViaSearch(ShortDetector.account, id)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+        if (viaSearch != null) return viaSearch
+        return ShortDetector.lengthSeconds(id)?.let(::clock)
+    }
+
+    private fun clock(sec: Int): String {
+        val h = sec / 3600
+        val m = sec % 3600 / 60
+        val s = sec % 60
+        return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
+    }
+
     private fun save() {
         val p = prefs ?: return
         val all = known.entries.toList().takeLast(MAX_SAVED)
@@ -48,7 +71,53 @@ object MusicDetector {
     }
 
     /** Áp kết quả đã biết lên một video (không gọi mạng). */
-    fun applyCached(v: VideoItem): VideoItem = if (!v.music && known[v.id] == true) v.copy(music = true) else v
+    fun applyCached(v: VideoItem): VideoItem {
+        var out = v
+        if (!out.music && known[out.id] == true) out = out.copy(music = true)
+        if (out.duration == null && !out.live && !out.isShort) durations[out.id]?.let { out = out.copy(duration = it) }
+        return out
+    }
+
+    /** Bài nhạc chưa có thời lượng (feed chỉ gắn ♪): cần hỏi /player để thẻ hiện "♪ 3:45". */
+    fun needsDuration(v: VideoItem): Boolean {
+        if (v.isShort || v.live || v.duration != null || !v.isMusic || v.id.length != 11 || durations.containsKey(v.id)) return false
+        durationFailedAt[v.id]?.let { if (System.currentTimeMillis() - it < RETRY_MS) return false }
+        return true
+    }
+
+    /** Lấy thời lượng cho các bài nhạc đang hiện mà thẻ không ghi, từng đợt nhỏ; mỗi đợt gọi [mark] với id -> thời lượng. */
+    suspend fun fillDurations(current: () -> List<VideoItem>, mark: (Map<String, String>) -> Unit) {
+        val tried = HashSet<String>()
+        while (true) {
+            val todo = current().filter { it.id !in tried && needsDuration(it) }.take(8)
+            if (todo.isEmpty()) break
+            tried.addAll(todo.map { it.id })
+            val found = HashMap<String, String>()
+            for (chunk in todo.map { it.id }.chunked(PARALLEL)) {
+                val results = coroutineScope {
+                    chunk.map { id ->
+                        async(Dispatchers.IO) {
+                            id to try {
+                                withTimeoutOrNull(PER_ID_BUDGET_MS) { resolveDuration(id) }
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (_: Exception) {
+                                null
+                            }
+                        }
+                    }.awaitAll()
+                }
+                for ((id, d) in results) {
+                    if (d != null) {
+                        durations[id] = d
+                        durationFailedAt.remove(id)
+                        found[id] = d
+                    } else durationFailedAt[id] = System.currentTimeMillis()
+                }
+            }
+            if (found.isNotEmpty()) mark(found)
+        }
+    }
 
     fun needsCheck(v: VideoItem): Boolean {
         if (v.isShort || v.live || v.music || v.id.length != 11 || known.containsKey(v.id)) return false

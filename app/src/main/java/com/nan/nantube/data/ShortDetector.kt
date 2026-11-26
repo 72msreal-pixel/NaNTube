@@ -151,6 +151,17 @@ object ShortDetector {
         return isShort
     }
 
+    /**
+     * Độ dài (giây) của video theo /player (`videoDetails.lengthSeconds`), cùng thứ tự nguồn như [probe] (PlaybackSource.walk).
+     * Dùng cho thẻ chỉ có ♪ mà feed không ghi thời lượng. Không đọc được thì null.
+     */
+    internal suspend fun lengthSeconds(id: String): Int? {
+        val context = appContext ?: return null
+        return PlaybackSource.walk(context, account, id, probeOnly = true) { answer ->
+            answer.json.dig("videoDetails", "lengthSeconds")?.toString()?.toIntOrNull()?.takeIf { it > 0 }
+        }
+    }
+
     /** Kết luận từ một phản hồi /player: true = Short, false = không, null = không đủ dữ liệu. */
     internal fun verdict(json: JSONObject): Boolean? {
         if ((json.dig("playabilityStatus", "status") as? String) != "OK") return null

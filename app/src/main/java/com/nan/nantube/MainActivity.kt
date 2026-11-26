@@ -86,6 +86,7 @@ class MainActivity : ComponentActivity() {
         MusicDetector.init(this)
         TvStore.init(this)
         PipPrefs.init(this)
+        ShortsMini.attach(this)
         PipPrefs.openOverlaySettings = {
             try {
                 overlayPermission.launch(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
@@ -204,6 +205,16 @@ class MainActivity : ComponentActivity() {
         pipScope.cancel()
         if (PipState.supported) runCatching { unregisterReceiver(pipReceiver) }
         super.onDestroy()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        ShortsMini.onAppVisible(true)
+    }
+
+    override fun onStop() {
+        ShortsMini.onAppVisible(false)
+        super.onStop()
     }
 
     override fun onResume() {

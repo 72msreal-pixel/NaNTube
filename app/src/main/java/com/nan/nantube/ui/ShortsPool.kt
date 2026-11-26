@@ -59,6 +59,13 @@ class ShortSlot internal constructor(val video: VideoItem, val player: ExoPlayer
     var error by mutableStateOf<String?>(null)
         internal set
 
+    /**
+     * Ô đang được muốn phát nhưng ExoPlayer tự dừng (app khác giành âm thanh, rút tai nghe, cuộc gọi...): giao diện phải hiện biểu tượng
+     * "Phát" đúng với thực tế thay vì cờ tạm dừng của người dùng. Tự hết khi ExoPlayer phát lại (nhả âm thanh) hoặc khi người dùng bấm Phát.
+     */
+    var externalPaused by mutableStateOf(false)
+        internal set
+
     internal var source: String? = null
     internal var autoTries = 0
     internal var resumeMs = 0L
@@ -236,7 +243,7 @@ object ShortsPool {
 
     /** Ép ExoPlayer của ô vào đúng mức [quality] (mức gần nhất nếu video không có đúng mức đó); Tự động thì bỏ ép. */
     private fun applyQuality(slot: ShortSlot) {
-        if (slot.released) return
+        if (slot.released || audioOnly) return
         val player = slot.player
         val params = player.trackSelectionParameters
         val want = quality
@@ -323,7 +330,32 @@ object ShortsPool {
             slot.wantPlay = want
             if (want && slot.ended) slot.player.seekTo(0L)
             if (slot.player.playWhenReady != want) slot.player.playWhenReady = want
+            // Đặt lại theo ý app: dừng do app khác (externalPaused) chỉ còn đúng khi ô vẫn muốn phát mà ExoPlayer không phát.
+            slot.externalPaused = false
         }
+    }
+
+    // ---- Chế độ nền (như sAudioOnly của meetube) -----------------------------------------------------
+
+    /** Đang ở chế độ nền chỉ phát âm thanh (xem [enterAudioOnly]). */
+    var audioOnly by mutableStateOf(false)
+        private set
+
+    /**
+     * Popup Short còn mở mà app không còn hiện (sang app khác / tắt màn hình): chỉ phát âm thanh, tắt giải mã + tải luồng hình để nhẹ
+     * mạng và pin (meetube cũng làm vậy khi thẻ mini chạy nền). Hiện lại thì bật hình trở lại.
+     */
+    fun enterAudioOnly(on: Boolean) {
+        if (audioOnly == on) return
+        audioOnly = on
+        for (slot in slots.values) applyAudioOnly(slot)
+    }
+
+    private fun applyAudioOnly(slot: ShortSlot) {
+        if (slot.released) return
+        val params = slot.player.trackSelectionParameters
+        if (params.disabledTrackTypes.contains(C.TRACK_TYPE_VIDEO) == audioOnly) return
+        slot.player.trackSelectionParameters = params.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, audioOnly).build()
     }
 
     fun pauseAll() = setActive(null, false)
@@ -339,6 +371,8 @@ object ShortsPool {
 
     /** Pager rời màn: dừng mọi ô, ít giây sau không ai nhận lại thì giải phóng hết (nhả bộ giải mã). */
     fun pagerGone() {
+        // Popup Short còn mở thì nó đang dùng các ô này (kể cả khi chạy nền): không dừng / giải phóng.
+        if (ShortsMini.open) return
         pauseAll()
         claimed = emptySet()
         scheduleTrim(TRIM_DELAY_MS)
@@ -414,6 +448,8 @@ object ShortsPool {
                 repeatMode = repeatModeFor()
                 playbackParameters = PlaybackParameters(ShortsPool.speed)
                 playWhenReady = false
+                // Giữ CPU + Wi-Fi khi đang phát lúc tắt màn hình / sang app khác (popup Short phát âm thanh nền).
+                setWakeMode(C.WAKE_MODE_NETWORK)
                 setAudioAttributes(
                     AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(),
                     true
@@ -434,6 +470,12 @@ object ShortsPool {
                 applyAudio(slot)
             }
 
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                // Đổi do chính app ([setActive]) là USER_REQUEST; còn lại (mất / lấy lại âm thanh, rút tai nghe...) là bên ngoài.
+                if (reason == Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST) return
+                slot.externalPaused = slot.wantPlay && !playWhenReady
+            }
+
             override fun onPlaybackStateChanged(playbackState: Int) {
                 slot.buffering = playbackState == Player.STATE_BUFFERING
                 slot.ended = playbackState == Player.STATE_ENDED
@@ -445,6 +487,7 @@ object ShortsPool {
             }
         })
         slots[video.id] = slot
+        applyAudioOnly(slot)
         version++
         start(slot)
         return slot

@@ -166,7 +166,9 @@ fun VideoMoreButton(
     onSaveToPlaylist: (VideoItem) -> Unit,
     modifier: Modifier = Modifier,
     onRemoved: ((VideoItem) -> Unit)? = null,
-    removeFromList: RemoveFromList? = null
+    removeFromList: RemoveFromList? = null,
+    /** Có thì menu thêm "Không quan tâm" / "Không đề xuất kênh này" (Main); gọi sau khi YouTube nhận, tham số thứ hai = loại cả kênh. */
+    onHidden: ((VideoItem, Boolean) -> Unit)? = null
 ) {
     val context = LocalContext.current
     var open by remember { mutableStateOf(false) }
@@ -214,6 +216,22 @@ fun VideoMoreButton(
                     open = false
                     runAction(context, removeFromList.done, "Không xóa được video khỏi danh sách") {
                         removeFromList.action(video)
+                    }
+                }
+            }
+            if (onHidden != null) {
+                MenuRow(HideVideoIcon, "Không quan tâm") {
+                    open = false
+                    runAction(context, "Đã xóa video khỏi mục đề xuất", "Không gửi được tới YouTube. Hãy thử lại.") {
+                        VideoRepository.sendFeedback(account, video, VideoRepository.FeedbackKind.NOT_INTERESTED)
+                        onHidden(video, false)
+                    }
+                }
+                MenuRow(HideChannelIcon, "Không đề xuất kênh này") {
+                    open = false
+                    runAction(context, "Chúng tôi sẽ không đề xuất kênh này cho bạn nữa", "Không gửi được tới YouTube. Hãy thử lại.") {
+                        VideoRepository.sendFeedback(account, video, VideoRepository.FeedbackKind.DONT_RECOMMEND_CHANNEL)
+                        onHidden(video, true)
                     }
                 }
             }

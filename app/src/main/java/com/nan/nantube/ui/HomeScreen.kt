@@ -87,6 +87,14 @@ fun MainFeedScreen(
         }
     }
 
+    // Bài nhạc mà feed chỉ gắn ♪ không ghi thời lượng (Tìm kiếm thì có): lấy độ dài từ /player để thẻ hiện "♪ 3:45".
+    LaunchedEffect(feed.items.size, account?.id) {
+        ShortDetector.account = account
+        MusicDetector.fillDurations({ feed.items }) { found ->
+            feed.update { list -> list.map { v -> found[v.id]?.let { v.copy(duration = it) } ?: v } }
+        }
+    }
+
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         HomeTopBar(account, onSearch, onNotifications)
         ChipRow(HOME_CHIPS.map { it.label }, chip, onChip)
@@ -94,7 +102,18 @@ fun MainFeedScreen(
             LoadMoreEffect(feed.listState, feed.items.size) { feed.loadMore(account) }
             YtPullRefresh(feed.loading, onRefresh = { feed.load(account, chip.toString(), force = true, keep = true) }) {
                 LazyColumn(Modifier.fillMaxSize(), state = feed.listState, contentPadding = PaddingValues(bottom = 16.dp)) {
-                    items(feed.items, key = { it.id }) { VideoCard(it, account, onSaveToPlaylist) }
+                    items(feed.items, key = { it.id }) {
+                        VideoCard(it, account, onSaveToPlaylist, onHidden = { v, wholeChannel ->
+                            // "Không đề xuất kênh này" ẩn luôn các video khác của kênh đó đang hiện.
+                            feed.update { list ->
+                                list.filterNot { x ->
+                                    x.id == v.id || (wholeChannel && (
+                                        (v.channelId != null && x.channelId == v.channelId) ||
+                                            (v.channelId == null && v.channel != null && x.channel == v.channel)))
+                                }
+                            }
+                        })
+                    }
                     if (feed.loadingMore) item { LoadingFooter() }
                 }
             }

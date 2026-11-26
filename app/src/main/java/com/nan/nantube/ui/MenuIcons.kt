@@ -55,6 +55,20 @@ val TrashIcon: ImageVector by lazy {
     )
 }
 
+/** "Không quan tâm" (vòng tròn gạch chéo) và "Không đề xuất kênh này" (vòng tròn dấu ×) ở menu ⋯ của thẻ video. */
+val HideVideoIcon: ImageVector by lazy { lucide("HideVideoIcon", "M2 12a10 10 0 1 0 20 0a10 10 0 1 0-20 0z", "M4.9 4.9l14.2 14.2") }
+val HideChannelIcon: ImageVector by lazy { lucide("HideChannelIcon", "M2 12a10 10 0 1 0 20 0a10 10 0 1 0-20 0z", "M15 9l-6 6", "M9 9l6 6") }
+
+/** Nốt nhạc đặc của meetube (res/drawable/ic_badge_music.xml): đứng trước thời lượng của video nhạc trên thẻ. */
+val MusicBadgeIcon: ImageVector by lazy {
+    ImageVector.Builder("MusicBadgeIcon", 13.dp, 13.dp, 24f, 24f).apply {
+        addPath(
+            pathData = PathParser().parsePathString("M12,3v10.55c-0.59,-0.34 -1.27,-0.55 -2,-0.55 -2.21,0 -4,1.79 -4,4s1.79,4 4,4 4,-1.79 4,-4V7h4V3h-6z").toNodes(),
+            fill = SolidColor(Color.White)
+        )
+    }.build()
+}
+
 val PlusIcon: ImageVector by lazy { lucide("PlusIcon", "M5 12h14", "M12 5v14") }
 
 val GlobeIcon: ImageVector by lazy {

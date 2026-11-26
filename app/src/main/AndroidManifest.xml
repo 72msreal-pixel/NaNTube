@@ -77,6 +77,12 @@
             </intent-filter>
         </service>
 
+        <!-- Popup Short mở thì phát âm thanh nền cho tới khi đóng popup. -->
+        <service
+            android:name=".ui.ShortsAudioService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
+
         <service
             android:name=".ui.PipOverlayService"
             android:exported="false"

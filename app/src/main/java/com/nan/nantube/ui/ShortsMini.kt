@@ -103,6 +103,30 @@ object ShortsMini {
     val open: Boolean get() = list.isNotEmpty()
     val current: VideoItem? get() = list.getOrNull(index)
 
+    /** Cửa sổ app đang hiện (MainActivity onStart / onStop). Không hiện thì [ShortsAudioService] giữ việc phát nền thay Compose (không có khung hình). */
+    var appVisible by mutableStateOf(true)
+
+    /** App vừa thôi hiện: popup còn mở mà không có PiP / cửa sổ nổi thì chuyển sang chỉ phát âm thanh. */
+    fun onAppVisible(visible: Boolean) {
+        appVisible = visible
+        if (visible) ShortsPool.enterAudioOnly(false)
+        else if (open && !PipState.inPip && !PipOverlay.active) ShortsPool.enterAudioOnly(true)
+    }
+
+    /** Context của app (MainActivity gán): để bật dịch vụ nền [ShortsAudioService] lúc mở popup. */
+    private var appContext: android.content.Context? = null
+
+    fun attach(context: android.content.Context) {
+        appContext = context.applicationContext
+    }
+
+    /**
+     * Biểu tượng Phát / Tạm dừng phải theo đúng thực tế: người dùng bấm tạm dừng, hoặc ExoPlayer tự dừng vì app khác giành âm thanh / rút tai nghe
+     * ([ShortSlot.externalPaused]). Trước đây chỉ theo [paused] nên video đã dừng mà biểu tượng vẫn là "Tạm dừng".
+     */
+    val shownPaused: Boolean
+        get() = paused || current?.let { ShortsPool.slot(it.id)?.externalPaused } == true
+
     fun start(videos: List<VideoItem>, at: Int) {
         if (videos.isEmpty()) return
         list = videos
@@ -110,10 +134,20 @@ object ShortsMini {
         paused = false
         startSerial++
         ShortsViewer.close()
+        // Popup mở thì phát nền (chỉ âm thanh) khi sang app khác, cho tới khi đóng popup.
+        appContext?.let { ShortsAudioService.start(it) }
     }
 
     fun close() {
         if (list.isNotEmpty()) list = emptyList()
+        ShortsPool.enterAudioOnly(false)
+    }
+
+    /** Đóng popup và tắt tiếng luôn (nút Đóng ở thông báo, X của PiP): không để ô phát chạy tiếp khi giao diện không còn. */
+    fun closeAndStop() {
+        paused = true
+        ShortsPool.pauseAll()
+        close()
     }
 
     fun next() {
@@ -131,7 +165,10 @@ object ShortsMini {
     }
 
     fun toggle() {
-        paused = !paused
+        val resume = shownPaused
+        paused = !resume
+        // Đang dừng do app khác giành âm thanh: cờ paused vốn đã false nên không có gì đổi để hiệu ứng phát lại, phải phát thẳng.
+        if (resume) current?.let { ShortsPool.setActive(it.id, true) }
     }
 
     /** Danh sách + vị trí lúc bấm mở rộng; AppRoot đọc khi [expandSerial] đổi. */
@@ -195,6 +232,8 @@ private const val FLY_MIN_MS = 110
 /** Chạm xảy ra trong khoảng này sau lần kéo cuối thì coi là đuôi của cú kéo, bỏ qua. */
 private const val TAP_AFTER_DRAG_MS = 250L
 private const val FLY_MAX_MS = 240
+/** Hết video rồi chờ chừng này mới tự vuốt: cho đuôi âm thanh / lời nói dứt hẳn, không vuốt đi khi người nói chưa dứt câu. */
+internal const val AUTO_SWIPE_TAIL_MS = 400L
 
 internal fun miniIcon(name: String, filled: Boolean, vararg paths: String): ImageVector =
     ImageVector.Builder(name, 24.dp, 24.dp, 24f, 24f).apply {
@@ -246,12 +285,18 @@ private fun MiniContent(video: VideoItem, account: Account?) {
     }
     // Bật tự vuốt ở menu Short thì hết video là sang video kế như trong Short.
     val ended = slot?.ended == true
-    LaunchedEffect(ended, video.id) { if (ended && ShortsPool.autoScroll && !PipOverlay.active) ShortsMini.next() }
+    LaunchedEffect(ended, video.id) {
+        if (ended && ShortsPool.autoScroll && !PipOverlay.active) {
+            delay(AUTO_SWIPE_TAIL_MS)
+            ShortsMini.next()
+        }
+    }
 
     // Báo cho MainActivity: rời app lúc đang phát thì vào PiP; nút Trước / Phát-Tạm dừng / Tiếp của cửa sổ PiP điều khiển cửa sổ này.
-    LaunchedEffect(video.id, ShortsMini.paused, slot?.vertical) {
+    val shownPaused = ShortsMini.shownPaused
+    LaunchedEffect(video.id, shownPaused, slot?.vertical) {
         PipState.shortId = video.id
-        PipState.playing = !ShortsMini.paused
+        PipState.playing = !shownPaused
         PipState.vertical = slot?.vertical ?: true
     }
     DisposableEffect(Unit) {
@@ -274,18 +319,26 @@ private fun MiniContent(video: VideoItem, account: Account?) {
     DisposableEffect(lifecycle) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                // Đang phát mà rời app thì sắp vào PiP: không dừng ở ON_PAUSE; PiP đóng (X) hoặc app tắt hẳn thì dừng ở ON_STOP.
-                Lifecycle.Event.ON_PAUSE -> { if (!PipState.armed && !PipState.inPip && !PipOverlay.active) ShortsPool.pauseAll() }
-                Lifecycle.Event.ON_STOP -> { if (!PipState.inPip && !PipOverlay.active) ShortsPool.pauseAll() }
-                Lifecycle.Event.ON_RESUME -> { tick++ }
+                // Popup còn mở thì KHÔNG dừng khi rời app: nếu có PiP / cửa sổ nổi thì video vẫn hiện ở đó, không thì phát tiếp chỉ âm thanh
+                // (dịch vụ nền [ShortsAudioService] giữ tiến trình) cho tới khi đóng popup.
+                Lifecycle.Event.ON_STOP -> { if (!PipState.inPip && !PipOverlay.active) ShortsPool.enterAudioOnly(true) }
+                Lifecycle.Event.ON_START -> ShortsPool.enterAudioOnly(false)
+                Lifecycle.Event.ON_RESUME -> { ShortsPool.enterAudioOnly(false); tick++ }
                 else -> Unit
             }
         }
         lifecycle.addObserver(observer)
         onDispose { lifecycle.removeObserver(observer) }
     }
+    // Cửa sổ PiP bị đóng (X) là đóng popup: dừng hẳn như meetube (MiniPip.close), không để âm thanh chạy mồ côi.
+    var wasInPip by remember { mutableStateOf(false) }
     LaunchedEffect(inPip) {
-        if (!inPip && !PipOverlay.active && !lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) ShortsPool.pauseAll()
+        if (inPip) {
+            wasInPip = true
+        } else if (wasInPip) {
+            wasInPip = false
+            if (!PipOverlay.active && !lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) ShortsMini.closeAndStop()
+        }
     }
 
     var controlsVisible by remember { mutableStateOf(true) }
@@ -582,7 +635,7 @@ private fun MiniContent(video: VideoItem, account: Account?) {
                             },
                             44.dp, controlsEnabled, { ShortsMini.toggle() }
                         ) {
-                            Crossfade(targetState = ShortsMini.paused, animationSpec = tween(MINI_FADE_IN_MS), label = "playPause") { paused ->
+                            Crossfade(targetState = ShortsMini.shownPaused, animationSpec = tween(MINI_FADE_IN_MS), label = "playPause") { paused ->
                                 Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
                                     MiniIcon(if (paused) MiniPlay else MiniPause, 32.dp)
                                 }

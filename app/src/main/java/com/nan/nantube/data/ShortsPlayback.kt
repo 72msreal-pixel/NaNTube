@@ -126,6 +126,8 @@ class PlayPlan(
     val durationSec: Int,
     /** Mỗi bản âm thanh (ngôn ngữ + loại) một luồng tốt nhất, bản gốc đứng đầu; [audio] chính là phần tử đầu. */
     val audios: List<MediaStream> = emptyList(),
+    /** Thời lượng thật tính bằng mili giây (lấy lớn nhất của lengthSeconds và approxDurationMs): bản kê DASH dùng số này để không cắt đuôi video. */
+    val durationMs: Long = durationSec * 1000L,
     val createdAt: Long = System.currentTimeMillis()
 )
 
@@ -334,17 +336,28 @@ object ShortsPlayback {
 
         val dash = videos.isNotEmpty() && audio != null
         if (!dash && muxed == null) return null
-        val duration = details?.optString("lengthSeconds")?.toIntOrNull()
-            ?: (adaptive.firstOrNull()?.let { approxSeconds(data, it.itag) })
-            ?: 60
-        return PlayPlan(videoId, source, if (dash) videos else emptyList(), if (dash) audio else null, muxed, duration, if (dash) audios else emptyList())
+        // lengthSeconds là số nguyên giây đã làm tròn (có thể thấp hơn thật gần 1 giây) nên nếu dùng nó làm thời lượng bản kê DASH thì ExoPlayer
+        // cắt mất đuôi video và báo "hết" sớm: tự vuốt vuốt đi khi lời nói chưa dứt. Lấy số lớn nhất giữa nó và approxDurationMs (mili giây)
+        // của đúng các luồng sẽ phát.
+        val streamIds = (if (dash) videos + listOfNotNull(audio) else listOfNotNull(muxed)).map { it.itag }
+        val approxMs = streamIds.mapNotNull { approxMillis(data, it) }.maxOrNull()
+        val lengthMs = details?.optString("lengthSeconds")?.toLongOrNull()?.times(1000L)
+        val durationMs = listOfNotNull(lengthMs, approxMs).maxOrNull() ?: 60_000L
+        val durationSec = ((durationMs + 999L) / 1000L).toInt()
+        return PlayPlan(
+            videoId, source, if (dash) videos else emptyList(), if (dash) audio else null, muxed, durationSec,
+            if (dash) audios else emptyList(), durationMs
+        )
     }
 
-    private fun approxSeconds(data: JSONObject, itag: Int): Int? {
-        val formats = data.optJSONArray("adaptiveFormats") ?: return null
-        for (i in 0 until formats.length()) {
-            val f = formats.optJSONObject(i) ?: continue
-            if (f.optInt("itag") == itag) return f.optString("approxDurationMs").toLongOrNull()?.let { (it / 1000).toInt() + 1 }
+    /** approxDurationMs của luồng [itag] (tìm trong cả adaptiveFormats và formats). */
+    private fun approxMillis(data: JSONObject, itag: Int): Long? {
+        for (key in arrayOf("adaptiveFormats", "formats")) {
+            val formats = data.optJSONArray(key) ?: continue
+            for (i in 0 until formats.length()) {
+                val f = formats.optJSONObject(i) ?: continue
+                if (f.optInt("itag") == itag) return f.optString("approxDurationMs").toLongOrNull()
+            }
         }
         return null
     }
