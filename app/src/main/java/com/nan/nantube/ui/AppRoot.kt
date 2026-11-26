@@ -296,7 +296,7 @@ fun AppRoot() {
                     onSave = { saveVideo = it }
                 )
             }
-            if (MusicPlayer.expanded) MusicPlayerScreen()
+            MusicPlayerHost()
             if (TvScreen.open) TvConnectScreen()
             if (searchUi.voiceOpen) {
                 VoiceSearchOverlay(

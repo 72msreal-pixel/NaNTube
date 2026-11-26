@@ -82,22 +82,23 @@ val LockIcon: ImageVector by lazy {
     )
 }
 
-/** Ba chấm dọc (nút "⋮" ở đầu màn Thông báo). */
-val MoreVerticalIcon: ImageVector by lazy {
-    lucide("MoreVerticalIcon", "M12 12h.01", "M12 5h.01", "M12 19h.01")
-}
-
-/** Ba chấm ngang, đặc và đậm như nút "..." của bình luận trên YouTube. */
-val MoreHorizontalIcon: ImageVector by lazy {
-    ImageVector.Builder("MoreHorizontalIcon", 24.dp, 24.dp, 24f, 24f).apply {
-        listOf(5f, 12f, 19f).forEach { cx ->
+/** Ba chấm đặc và đậm như nút "..." của bình luận trên YouTube; [vertical] cho nút "⋮". */
+private fun moreDots(name: String, vertical: Boolean): ImageVector =
+    ImageVector.Builder(name, 24.dp, 24.dp, 24f, 24f).apply {
+        listOf(5f, 12f, 19f).forEach { c ->
+            val (x, y) = if (vertical) 12f to c else c to 12f
             addPath(
-                pathData = PathParser().parsePathString("M${cx - 2.4f} 12a2.4 2.4 0 1 0 4.8 0a2.4 2.4 0 1 0 -4.8 0z").toNodes(),
+                pathData = PathParser().parsePathString("M${x - 2.4f} ${y}a2.4 2.4 0 1 0 4.8 0a2.4 2.4 0 1 0 -4.8 0z").toNodes(),
                 fill = SolidColor(Color.Black)
             )
         }
     }.build()
-}
+
+/** Ba chấm dọc (nút "⋮" ở màn Thông báo và màn phát nhạc). */
+val MoreVerticalIcon: ImageVector by lazy { moreDots("MoreVerticalIcon", vertical = true) }
+
+/** Ba chấm ngang. */
+val MoreHorizontalIcon: ImageVector by lazy { moreDots("MoreHorizontalIcon", vertical = false) }
 
 /** Mắt gạch chéo = ẩn. */
 val EyeOffIcon: ImageVector by lazy {

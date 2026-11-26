@@ -21,6 +21,7 @@ import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import com.nan.nantube.MusicPlaybackService
 import com.nan.nantube.data.Account
 import com.nan.nantube.data.MusicItem
+import com.nan.nantube.data.MusicLyrics
 import com.nan.nantube.data.ShortsMedia
 import com.nan.nantube.data.ShortsPlayback
 import com.nan.nantube.data.ShortsCaptions
@@ -146,16 +147,12 @@ object MusicPlayer {
         val signedIn = account
         if (track.local || !Regex("[A-Za-z0-9_-]{11}").matches(track.id)) return emptyList()
         return withContext(Dispatchers.IO) {
-            if (!refresh) {
-                val lyrics = MusicLyrics.find(track.id, track.title, track.artist)
-                if (lyrics.isNotEmpty()) return@withContext lyrics
+            // Lời từ các nguồn ngoài trước; không có bản thu khớp thì mới dùng phụ đề/transcript của chính YouTube.
+            MusicLyrics.find(track.id, track.title, track.artist, refresh).ifEmpty {
+                ShortsPlayback.transcriptTrack(context, signedIn, track.id, refresh)
+                    ?.let { ShortsCaptions.load(it) }
+                    .orEmpty()
             }
-            // External lyric providers are tried first; if they have no matching recording,
-            // retain YouTube's own caption/transcript path as the final fallback.
-            val caption = ShortsPlayback.transcriptTrack(context, signedIn, track.id, refresh)
-                ?: return@withContext MusicLyrics.find(track.id, track.title, track.artist)
-            val captions = ShortsCaptions.load(caption)
-            if (captions.isNotEmpty()) captions else MusicLyrics.find(track.id, track.title, track.artist)
         }
     }
 

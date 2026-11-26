@@ -3,6 +3,7 @@ package com.nan.nantube.ui
 import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.displayCutoutPadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -21,6 +22,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -37,6 +39,11 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.foundation.shape.CornerSize
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
@@ -74,6 +81,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -144,6 +152,30 @@ private fun rememberDiscAngle(spinning: Boolean): Animatable<Float, AnimationVec
 }
 
 /**
+ * Mức mở của màn phát nhạc: 0 = thu thành thanh nhỏ, 1 = mở hết. Mũi tên thu nhỏ, nút Back và việc kéo thanh nhỏ lên
+ * đều chỉ đổi giá trị này, nên cả ba cùng một chuyển động trượt.
+ */
+object MusicSheet {
+    val progress = Animatable(0f)
+
+    /** Ngón tay đang kéo thanh nhỏ: lúc đó chuyển động do ngón tay điều khiển, không chạy animation tự động. */
+    var dragging = false
+
+    /** Mép trên của thanh nhỏ (px, tính từ đỉnh cửa sổ): màn phát nhạc trồi lên từ đúng chỗ này và hạ về đúng chỗ này. */
+    var origin = 0f
+
+    suspend fun settle() {
+        if (!dragging) progress.animateTo(if (MusicPlayer.expanded) 1f else 0f, tween(300))
+    }
+}
+
+/** Giữ màn phát nhạc trong cây giao diện suốt lúc đang mở, đang kéo hoặc đang trượt xuống. */
+@Composable
+fun MusicPlayerHost() {
+    if (MusicPlayer.expanded || MusicSheet.progress.value > 0f) MusicPlayerScreen()
+}
+
+/**
  * Màn phát nhạc: nền và màu kiểu YouTube (tối, chữ trắng), bố cục kiểu Zing MP3 (đĩa quay ở giữa, tên bài, thanh tua,
  * hàng điều khiển). Không có phần quảng cáo / mua gói.
  */
@@ -173,8 +205,21 @@ fun MusicPlayerScreen() {
     }
     val angle = rememberDiscAngle(MusicPlayer.playing)
     val heartFx = rememberTapEffect()
+    LaunchedEffect(MusicPlayer.expanded) { MusicSheet.settle() }
 
-    Box(Modifier.fillMaxSize().background(NanColors.Background).pointerInput(Unit) { detectTapGestures { } }) {
+    Box(
+        Modifier.fillMaxSize()
+            .graphicsLayer {
+                val open = MusicSheet.progress.value
+                translationY = (1f - open) * (MusicSheet.origin.takeIf { it > 0f } ?: size.height)
+                // Mép trên bo tròn như thẻ thanh nhỏ lúc mới trồi lên, thẳng dần khi mở hết; mờ dần khi hạ về để nhường chỗ cho thanh.
+                val corner = CornerSize(14.dp.toPx() * (1f - open))
+                shape = RoundedCornerShape(corner, corner, CornerSize(0f), CornerSize(0f))
+                clip = true
+                alpha = (open * 4f).coerceIn(0f, 1f)
+            }
+            .background(NanColors.Background).pointerInput(Unit) { detectTapGestures { } }
+    ) {
         // Nền: ảnh bìa làm mờ + phủ tối, không có ảnh thì chuyển màu đỏ sẫm → đen.
         if (track.art != null) {
             AsyncImage(
@@ -186,114 +231,161 @@ fun MusicPlayerScreen() {
         }
         Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0x66000000), Color(0xCC0F0F0F)))))
 
-        Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(horizontal = 16.dp)) {
-            Row(Modifier.fillMaxWidth().height(64.dp), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(44.dp).clip(CircleShape).clickable { MusicPlayer.expanded = false }, contentAlignment = Alignment.Center) {
-                    Icon(Lucide.ChevronDown, "Thu nhỏ", Modifier.size(30.dp), tint = Color.White)
+        // Bố cục theo kích thước cửa sổ thật (xoay ngang, chia đôi màn hình, cửa sổ nổi), không theo màn hình máy.
+        BoxWithConstraints(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().displayCutoutPadding().padding(horizontal = 16.dp)) {
+            val wide = maxWidth >= 560.dp && maxWidth > maxHeight * 1.2f
+            val compact = maxHeight < 520.dp
+            val tiny = maxHeight < 360.dp && !wide
+
+            val header = @Composable {
+                Box(Modifier.fillMaxWidth().height(if (compact) 52.dp else 64.dp)) {
+                    Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(44.dp).clip(CircleShape).clickable { MusicPlayer.expanded = false }, contentAlignment = Alignment.Center) {
+                            Icon(Lucide.ChevronDown, "Thu nhỏ", Modifier.size(30.dp), tint = Color.White)
+                        }
+                        Spacer(Modifier.weight(1f))
+                        // Không .clip ở đây: chùm confetti vẽ ra ngoài khung icon (giống nút tim của Short).
+                        Box(
+                            Modifier.size(44.dp).clickable(interactionSource = null, indication = null) { likeWithEffect(heartFx) },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                if (MusicPlayer.liked) MpHeartFilledIcon else MpHeartIcon, "Thích",
+                                Modifier.size(24.dp).tapEffect(heartFx, Accent, ring = false),
+                                tint = if (MusicPlayer.liked) Accent else Color.White
+                            )
+                        }
+                        Box(Modifier.size(44.dp).clip(CircleShape).clickable {
+                            val send = Intent(Intent.ACTION_SEND).setType("text/plain")
+                                .putExtra(Intent.EXTRA_TEXT, "${track.title}\nhttps://youtu.be/${track.id}")
+                            context.startActivity(Intent.createChooser(send, null).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        }, contentAlignment = Alignment.Center) {
+                            Icon(MpShareIcon, "Chia sẻ", Modifier.size(22.dp), tint = Color.White)
+                        }
+                        Box {
+                            Control(MoreVerticalIcon, "Tùy chọn", 24.dp, Color.White, touchSize = 44.dp) { more = true }
+                            DropdownMenu(
+                                expanded = more, onDismissRequest = { more = false },
+                                shape = RoundedCornerShape(16.dp), containerColor = NanColors.Surface, tonalElevation = 0.dp
+                            ) {
+                                MusicMenuItem(TranscriptIcon, "Hiện bản chép lời") { more = false; panel = MusicPanel.Transcript }
+                                MusicMenuItem(CastIcon, "Kết nối TV", fromYouTube) { more = false; tv() }
+                                MusicMenuItem(YtDownload, "Tải xuống", fromYouTube) { more = false; download() }
+                                MusicMenuItem(IconPlaylist, "Nhạc tiếp theo") { more = false; panel = MusicPanel.Queue }
+                            }
+                        }
+                    }
+                    // Tiêu đề căn giữa theo cả hàng, không theo khoảng trống giữa mũi tên và các nút; dài quá thì mới nhích sang trái, không đè nút.
+                    Column(
+                        Modifier.align(Alignment.CenterStart).layout { measurable, constraints ->
+                            val left = 44.dp.roundToPx()
+                            val right = 3 * 44.dp.roundToPx()
+                            val text = measurable.measure(Constraints(maxWidth = (constraints.maxWidth - left - right).coerceAtLeast(0)))
+                            layout(constraints.maxWidth, text.height) {
+                                text.place(((constraints.maxWidth - text.width) / 2).coerceIn(left, maxOf(left, constraints.maxWidth - right - text.width)), 0)
+                            }
+                        },
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text("PHÁT TỪ", fontSize = 11.sp, letterSpacing = 1.5.sp, color = NanColors.TextSecondary)
+                        Text(MusicPlayer.label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
                 }
-                Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("PHÁT TỪ", fontSize = 11.sp, letterSpacing = 1.5.sp, color = NanColors.TextSecondary)
-                    Text(MusicPlayer.label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            val content = @Composable { modifier: Modifier ->
+                when (panel) {
+                    MusicPanel.Player -> BoxWithConstraints(modifier.fillMaxWidth().padding(horizontal = 8.dp), contentAlignment = Alignment.Center) {
+                        val discSize = minOf(maxWidth, maxHeight)
+                        if (discSize > 0.dp) Disc(track.art, angle, Modifier.size(discSize))
+                    }
+                    MusicPanel.Transcript -> MusicTranscript(track, position, duration > 0L, modifier) {
+                        MusicPlayer.seekTo(it)
+                        position = it
+                    }
+                    MusicPanel.Queue -> MusicQueue(modifier)
                 }
-                // Không .clip ở đây: chùm confetti vẽ ra ngoài khung icon (giống nút tim của Short).
-                Box(
-                    Modifier.size(44.dp).clickable(interactionSource = null, indication = null) { likeWithEffect(heartFx) },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        if (MusicPlayer.liked) MpHeartFilledIcon else MpHeartIcon, "Thích",
-                        Modifier.size(24.dp).tapEffect(heartFx, Accent, ring = false),
-                        tint = if (MusicPlayer.liked) Accent else Color.White
+            }
+            val info = @Composable {
+                Column(Modifier.fillMaxWidth().padding(top = if (compact) 6.dp else 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        track.title, fontSize = if (compact) 18.sp else 22.sp, fontWeight = FontWeight.Bold, maxLines = if (compact) 1 else 2,
+                        overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center
+                    )
+                    Text(
+                        MusicPlayer.error ?: track.artist ?: "Không rõ nghệ sĩ",
+                        fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
+                        color = if (MusicPlayer.error != null) Accent else NanColors.TextSecondary,
+                        modifier = Modifier.padding(top = 4.dp)
                     )
                 }
-                Box(Modifier.size(44.dp).clip(CircleShape).clickable {
-                    val send = Intent(Intent.ACTION_SEND).setType("text/plain")
-                        .putExtra(Intent.EXTRA_TEXT, "${track.title}\nhttps://youtu.be/${track.id}")
-                    context.startActivity(Intent.createChooser(send, null).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                }, contentAlignment = Alignment.Center) {
-                    Icon(MpShareIcon, "Chia sẻ", Modifier.size(22.dp), tint = Color.White)
-                }
-                Box {
-                    Control(MoreVerticalIcon, "Tùy chọn", 24.dp, Color.White, touchSize = 44.dp) { more = true }
-                    DropdownMenu(
-                        expanded = more, onDismissRequest = { more = false },
-                        shape = RoundedCornerShape(16.dp), containerColor = NanColors.Surface, tonalElevation = 0.dp
-                    ) {
-                        MusicMenuItem(TranscriptIcon, "Hiện bản chép lời") { more = false; panel = MusicPanel.Transcript }
-                        MusicMenuItem(CastIcon, "Kết nối TV", fromYouTube) { more = false; tv() }
-                        MusicMenuItem(YtDownload, "Tải xuống", fromYouTube) { more = false; download() }
-                        MusicMenuItem(IconPlaylist, "Nhạc tiếp theo") { more = false; panel = MusicPanel.Queue }
-                    }
-                }
             }
-
-            when (panel) {
-                MusicPanel.Player -> BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp), contentAlignment = Alignment.Center) {
-                    val discSize = minOf(maxWidth, maxHeight)
-                    if (discSize > 0.dp) Disc(track.art, angle, Modifier.size(discSize))
-                }
-                MusicPanel.Transcript -> MusicTranscript(track, position, duration > 0L, Modifier.weight(1f)) {
-                    MusicPlayer.seekTo(it)
-                    position = it
-                }
-                MusicPanel.Queue -> MusicQueue(Modifier.weight(1f))
-            }
-
-            if (panel == MusicPanel.Player) Column(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(
-                    track.title, fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 2,
-                    overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center
+            val controls = @Composable {
+                val total = duration.coerceAtLeast(1L)
+                NanSlider(
+                    value = if (dragging) dragValue else (position.toFloat() / total).coerceIn(0f, 1f),
+                    onValueChange = { dragging = true; dragValue = it; position = (it * total).toLong() },
+                    onValueChangeFinished = { MusicPlayer.seekTo((dragValue * total).toLong()); dragging = false },
+                    enabled = duration > 0,
+                    modifier = Modifier.padding(top = if (compact) 4.dp else 16.dp)
                 )
-                Text(
-                    MusicPlayer.error ?: track.artist ?: "Không rõ nghệ sĩ",
-                    fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
-                    color = if (MusicPlayer.error != null) Accent else NanColors.TextSecondary,
-                    modifier = Modifier.padding(top = 4.dp)
-                )
-            }
+                Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(mpClock(position), fontSize = 13.sp, color = NanColors.TextSoft)
+                    Text(mpClock(duration), fontSize = 13.sp, color = NanColors.TextSoft)
+                }
 
-            val total = duration.coerceAtLeast(1L)
-            NanSlider(
-                value = if (dragging) dragValue else (position.toFloat() / total).coerceIn(0f, 1f),
-                onValueChange = { dragging = true; dragValue = it; position = (it * total).toLong() },
-                onValueChangeFinished = { MusicPlayer.seekTo((dragValue * total).toLong()); dragging = false },
-                enabled = duration > 0,
-                modifier = Modifier.padding(top = 16.dp)
-            )
-            Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(mpClock(position), fontSize = 13.sp, color = NanColors.TextSoft)
-                Text(mpClock(duration), fontSize = 13.sp, color = NanColors.TextSoft)
-            }
-
-            Row(
-                Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically
-            ) {
-                Control(ShuffleIcon, "Phát ngẫu nhiên", 26.dp, if (MusicPlayer.shuffle) Accent else Color.White) { MusicPlayer.toggleShuffle() }
-                Control(PrevIcon, "Bài trước", 34.dp, Color.White) { MusicPlayer.prev() }
-                Box(
-                    Modifier.size(72.dp).border(2.dp, Color.White, CircleShape).clip(CircleShape).clickable { MusicPlayer.toggle() },
-                    contentAlignment = Alignment.Center
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (MusicPlayer.loading && !MusicPlayer.playing) {
-                        androidx.compose.material3.CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(30.dp))
-                    } else {
-                        Icon(if (MusicPlayer.playing) PauseIcon else PlayIcon, if (MusicPlayer.playing) "Tạm dừng" else "Phát", Modifier.size(34.dp), tint = Color.White)
+                    Control(ShuffleIcon, "Phát ngẫu nhiên", 26.dp, if (MusicPlayer.shuffle) Accent else Color.White) { MusicPlayer.toggleShuffle() }
+                    Control(PrevIcon, "Bài trước", 34.dp, Color.White) { MusicPlayer.prev() }
+                    Box(
+                        Modifier.size(if (compact) 56.dp else 72.dp).border(2.dp, Color.White, CircleShape).clip(CircleShape).clickable { MusicPlayer.toggle() },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (MusicPlayer.loading && !MusicPlayer.playing) {
+                            androidx.compose.material3.CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(30.dp))
+                        } else {
+                            Icon(if (MusicPlayer.playing) PauseIcon else PlayIcon, if (MusicPlayer.playing) "Tạm dừng" else "Phát", Modifier.size(34.dp), tint = Color.White)
+                        }
                     }
+                    Control(NextIcon, "Bài kế", 34.dp, Color.White) { MusicPlayer.next() }
+                    Control(
+                        if (MusicPlayer.repeat == RepeatKind.One) RepeatOneIcon else RepeatIcon, "Lặp lại", 26.dp,
+                        if (MusicPlayer.repeat == RepeatKind.Off) Color(0x88FFFFFF) else Accent
+                    ) { MusicPlayer.cycleRepeat() }
                 }
-                Control(NextIcon, "Bài kế", 34.dp, Color.White) { MusicPlayer.next() }
-                Control(
-                    if (MusicPlayer.repeat == RepeatKind.One) RepeatOneIcon else RepeatIcon, "Lặp lại", 26.dp,
-                    if (MusicPlayer.repeat == RepeatKind.Off) Color(0x88FFFFFF) else Accent
-                ) { MusicPlayer.cycleRepeat() }
+            }
+            val actions = @Composable {
+                Canvas(Modifier.fillMaxWidth().height(1.dp)) { drawRect(Color.White.copy(alpha = 0.14f)) }
+                Row(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 6.dp)) {
+                    MusicAction(TranscriptIcon, "Chép lời", Modifier.weight(1f), selected = panel == MusicPanel.Transcript) { show(MusicPanel.Transcript) }
+                    MusicAction(CastIcon, "Kết nối TV", Modifier.weight(1f), enabled = fromYouTube, onClick = tv)
+                    MusicAction(YtDownload, "Tải xuống", Modifier.weight(1f), enabled = fromYouTube, onClick = download)
+                    MusicAction(IconPlaylist, "Tiếp theo", Modifier.weight(1f), selected = panel == MusicPanel.Queue) { show(MusicPanel.Queue) }
+                }
             }
 
-            Canvas(Modifier.fillMaxWidth().height(1.dp)) { drawRect(Color.White.copy(alpha = 0.14f)) }
-            Row(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 6.dp)) {
-                MusicAction(TranscriptIcon, "Chép lời", Modifier.weight(1f), selected = panel == MusicPanel.Transcript) { show(MusicPanel.Transcript) }
-                MusicAction(CastIcon, "Kết nối TV", Modifier.weight(1f), enabled = fromYouTube, onClick = tv)
-                MusicAction(YtDownload, "Tải xuống", Modifier.weight(1f), enabled = fromYouTube, onClick = download)
-                MusicAction(IconPlaylist, "Tiếp theo", Modifier.weight(1f), selected = panel == MusicPanel.Queue) { show(MusicPanel.Queue) }
+            if (wide) {
+                Row(Modifier.fillMaxSize()) {
+                    Column(Modifier.weight(1f).fillMaxHeight()) {
+                        header()
+                        content(Modifier.weight(1f))
+                    }
+                    Column(Modifier.weight(1f).fillMaxHeight().padding(start = 16.dp), verticalArrangement = Arrangement.Center) {
+                        if (panel == MusicPanel.Player) info()
+                        controls()
+                        if (!compact) actions()
+                    }
+                }
+            } else {
+                Column(Modifier.fillMaxSize()) {
+                    header()
+                    content(Modifier.weight(1f))
+                    if (panel == MusicPanel.Player && !tiny) info()
+                    controls()
+                    if (!compact) actions()
+                }
             }
         }
     }
@@ -423,6 +515,7 @@ fun MiniMusicBar() {
     Box(
         Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)
             .onSizeChanged { widthPx = it.width.toFloat().coerceAtLeast(1f) }
+            .onGloballyPositioned { MusicSheet.origin = it.positionInRoot().y }
             .offset { IntOffset(offsetX.value.roundToInt(), 0) }
             .graphicsLayer { alpha = (1f - kotlin.math.abs(offsetX.value) / widthPx * 0.8f).coerceIn(0f, 1f) }
             .pointerInput(Unit) {
@@ -437,6 +530,27 @@ fun MiniMusicBar() {
                     },
                     onDragCancel = { scope.launch { offsetX.animateTo(0f, tween(160)) } },
                     onHorizontalDrag = { change, amount -> change.consume(); scope.launch { offsetX.snapTo(offsetX.value + amount) } }
+                )
+            }
+            // Kéo thanh lên: màn phát nhạc trồi lên từ chỗ thanh, mép trên dính theo ngón tay; thả quá 30% thì mở hẳn, không thì hạ về.
+            .pointerInput(Unit) {
+                detectVerticalDragGestures(
+                    onDragStart = { MusicSheet.dragging = true },
+                    onDragEnd = {
+                        MusicSheet.dragging = false
+                        if (MusicSheet.progress.value > 0.3f) MusicPlayer.expanded = true
+                        else scope.launch { MusicSheet.progress.animateTo(0f, tween(200)) }
+                    },
+                    onDragCancel = {
+                        MusicSheet.dragging = false
+                        scope.launch { MusicSheet.progress.animateTo(0f, tween(200)) }
+                    },
+                    onVerticalDrag = { change, amount ->
+                        change.consume()
+                        // Mép trên của màn đi đúng bằng quãng ngón tay kéo, nên luôn dính sát ngón tay.
+                        val range = MusicSheet.origin.coerceAtLeast(1f)
+                        scope.launch { MusicSheet.progress.snapTo((MusicSheet.progress.value - amount / range).coerceIn(0f, 1f)) }
+                    }
                 )
             }
             // Không vẽ ripple ở đây (sẽ thành hình chữ nhật cả khung); hiệu ứng nhấn vẽ riêng ở lớp bo góc cuối cùng.
