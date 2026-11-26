@@ -51,7 +51,7 @@ fun ExperimentsScreen(onBack: () -> Unit) {
             title = "Tự vào PiP khi rời app",
             subtitle = "Short đang phát thì thu thành cửa sổ nhỏ khi bạn thoát ra màn hình chính. Tắt thì Short chỉ phát tiếng ở nền.",
             checked = PipPrefs.autoPip,
-            onCheckedChange = { PipPrefs.setAutoPip(it) }
+            onCheckedChange = { PipPrefs.updateAutoPip(it) }
         )
         // Hãng máy (realme / ColorOS, Xiaomi...) vẫn đóng băng app vài phút sau khi tắt màn hình nếu còn bị tối ưu pin.
         var refresh by remember { mutableIntStateOf(0) }

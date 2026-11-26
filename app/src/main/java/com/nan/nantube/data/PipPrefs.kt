@@ -37,7 +37,7 @@ object PipPrefs {
         autoPip = json.optBoolean(KEY, true)
     }
 
-    fun setAutoPip(on: Boolean) {
+    fun updateAutoPip(on: Boolean) {
         autoPip = on
         val text = JSONObject().put(KEY, on).toString()
         Thread { runCatching { NanStorage.write(FEATURE, null, text) } }.start()
