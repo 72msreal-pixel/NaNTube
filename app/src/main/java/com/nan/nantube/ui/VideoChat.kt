@@ -1,6 +1,5 @@
 package com.nan.nantube.ui
 
-import android.os.Build
 import android.widget.Toast
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -57,11 +56,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -71,18 +66,13 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.TextLinkStyles
-import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -181,15 +171,6 @@ private val LineWidth = 0.8.dp
 private val Emojis = listOf("❤️", "😂", "🎉", "😢", "😮", "😅", "😊")
 
 private fun avatarSize(depth: Int): Dp = when (depth) { 0, 1 -> 24.dp; 2 -> 20.dp; else -> 18.dp }
-
-private fun isHandleChar(c: Char) = c.isLetterOrDigit() || c == '.' || c == '_' || c == '-'
-
-/** Phản hồi mở đầu bằng "@tên" của [author] = trả lời người đó. */
-private fun mentions(text: String, author: String): Boolean {
-    val t = text.trimStart()
-    if (author.length < 2 || !t.startsWith(author)) return false
-    return t.length == author.length || !isHandleChar(t[author.length])
-}
 
 /** Phản hồi xếp phẳng theo thứ tự YouTube trả (đã gồm cả phản hồi-của-phản-hồi), bỏ qua bình luận đã có. */
 private fun buildNodes(items: List<CommentItem>, depth: Int, rootId: String, opened: VideoChatNode? = null): List<VideoChatNode> {
@@ -768,29 +749,14 @@ private fun CommentRow(
 ) {
     val c = node.item
     val context = LocalContext.current
-    val clipboard = LocalClipboardManager.current
+    val copy = rememberChatCopier()
     var menu by remember { mutableStateOf(false) }
-    fun copy(value: String, done: String) {
-        menu = false
-        clipboard.setText(AnnotatedString(value))
-        // Android 13+ tự báo đã sao chép; bản cũ hơn thì báo bằng Toast (như meetube).
-        if (Build.VERSION.SDK_INT < 33) Toast.makeText(context, done, Toast.LENGTH_SHORT).show()
-    }
-    val haptic = LocalHapticFeedback.current
     val count = node.likeCount
     val likeEffect = rememberTapEffect()
     val dislikeEffect = rememberTapEffect()
     Box(
         Modifier.fillMaxWidth()
-            // Giữ vào bình luận là sao chép nội dung bình luận (như meetube CommentsPanel.onCopy).
-            .pointerInput(c.id) {
-                detectTapGestures(onLongPress = {
-                    if (c.text.isNotEmpty()) {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        copy(c.text, "Đã sao chép bình luận")
-                    }
-                })
-            }
+            .copyOnLongPress(c.text) { copy(c.text, "Đã sao chép bình luận") }
             .drawBehind {
                 // Đường dọc bắt đầu ngay dưới ảnh đại diện, nối liền với đường cong của các phản hồi bên dưới.
                 if (joined) {
@@ -808,7 +774,7 @@ private fun CommentRow(
                 Row(Modifier.padding(bottom = 2.dp, end = 32.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Lucide.Pin, null, Modifier.size(13.dp), tint = NanColors.TextSecondary)
                     Spacer(Modifier.width(4.dp))
-                    Text(label, fontSize = 11.5.sp, lineHeight = 14.sp, color = NanColors.TextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(label, fontSize = ChatMetaSize, lineHeight = ChatMetaLine, color = NanColors.TextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
             // Chủ video: tên nằm trong viên sáng (YouTube báo isCreator, hoặc trùng handle học từ nhãn ghim như MeeTube).
@@ -821,7 +787,7 @@ private fun CommentRow(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        c.author, fontSize = 11.5.sp, lineHeight = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        c.author, fontSize = ChatMetaSize, lineHeight = ChatMetaLine, maxLines = 1, overflow = TextOverflow.Ellipsis,
                         color = if (byCreator) Color(0xFF0F0F0F) else NanColors.TextSecondary,
                         modifier = Modifier.weight(1f, fill = false)
                     )
@@ -830,9 +796,9 @@ private fun CommentRow(
                         contentAlignment = Alignment.Center
                     ) { Icon(Lucide.Check, null, Modifier.size(8.dp), tint = Color.White) }
                 }
-                c.published?.let { Text(" • $it", fontSize = 11.5.sp, lineHeight = 14.sp, color = NanColors.TextSecondary, maxLines = 1) }
+                c.published?.let { Text(" • $it", fontSize = ChatMetaSize, lineHeight = ChatMetaLine, color = NanColors.TextSecondary, maxLines = 1) }
             }
-            Text(mentioned(c.text), fontSize = 14.sp, lineHeight = 21.sp, modifier = Modifier.padding(top = 2.dp))
+            Text(mentioned(c.text), fontSize = 14.sp, lineHeight = ChatBodyLine, modifier = Modifier.padding(top = 2.dp))
             Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 VoteButton(if (node.liked) YtThumbUpFilled else YtThumbUp, count, !node.writing, likeEffect, modifier = Modifier.widthIn(min = 23.dp)) {
                     onVote(node, true, likeEffect)
@@ -867,9 +833,9 @@ private fun CommentRow(
             ) {
                 MenuItem(YtComment, "Phản hồi") { menu = false; onReply(node) }
                 if (c.isOwnedBy(account)) MenuItem(Lucide.Pencil, "Chỉnh sửa") { menu = false; onEdit(node) }
-                MenuItem(ShareIcon, "Chia sẻ") { copy("https://www.youtube.com/watch?v=${video.id}&lc=${c.id}", "Đã sao chép liên kết bình luận") }
+                MenuItem(ShareIcon, "Chia sẻ") { menu = false; copy("https://www.youtube.com/watch?v=${video.id}&lc=${c.id}", "Đã sao chép liên kết bình luận") }
                 if (c.isOwnedBy(account)) MenuItem(TrashIcon, "Xóa") { menu = false; onDelete(node) }
-                else MenuItem(Lucide.Copy, "Sao chép") { copy(c.author, "Đã sao chép tên") }
+                else MenuItem(Lucide.Copy, "Sao chép") { menu = false; copy(c.author, "Đã sao chép tên") }
                 MenuItem(if (SavedComments.contains(account, c.id)) BookmarkFilled else BookmarkOutline, if (SavedComments.contains(account, c.id)) "Bỏ lưu" else "Lưu") {
                     menu = false
                     // Lưu: nhớ bình luận rồi mở bảng "Lưu vào…" để thêm video vào danh sách phát; mở lại video sẽ tự hiện bình luận.
@@ -937,24 +903,6 @@ private fun CommentIcon(icon: ImageVector, box: Dp, size: Dp, onClick: () -> Uni
     Box(Modifier.size(box).clip(CircleShape).plainClickable(onClick), contentAlignment = Alignment.Center) {
         Icon(icon, null, Modifier.size(size), tint = Color.White)
     }
-}
-
-/** Tô xanh @tên được nhắc tới và đường link, như YouTube. */
-private fun mentioned(text: String) = buildAnnotatedString {
-    var last = 0
-    Regex("@[^\\s@]+|https?://\\S+").findAll(text).forEach { m ->
-        append(text.substring(last, m.range.first))
-        if (m.value.startsWith("@")) {
-            withStyle(SpanStyle(color = NanColors.Blue)) { append(m.value) }
-            last = m.range.last + 1
-        } else {
-            // Link bấm được (mở bằng trình duyệt); dấu câu dính ở cuối link không tính vào link.
-            val url = m.value.trimEnd('.', ',', ';', ':', '!', '?', ')', ']', '"', '\'')
-            withLink(LinkAnnotation.Url(url, TextLinkStyles(SpanStyle(color = NanColors.Blue)))) { append(url) }
-            last = m.range.first + url.length
-        }
-    }
-    append(text.substring(last))
 }
 
 /** Ô nhập: thu gọn là một viên "Bình luận..."; chạm vào thì hiện ảnh tài khoản, nút gửi và hàng emoji nhanh. */
