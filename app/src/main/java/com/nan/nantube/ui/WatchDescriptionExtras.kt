@@ -59,17 +59,17 @@ internal fun SubscribeButton(
 @Composable
 private fun ExtraSection(title: String, subtitle: String, button: String, icon: ImageVector? = null, onClick: () -> Unit) {
     Column(Modifier.fillMaxWidth().padding(top = 28.dp)) {
-        Text(title, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-        Text(subtitle, fontSize = 14.sp, color = NanColors.TextSecondary, modifier = Modifier.padding(top = 4.dp))
+        Text(title, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+        Text(subtitle, fontSize = 13.sp, color = NanColors.TextSecondary, modifier = Modifier.padding(top = 2.dp))
         Row(
-            Modifier.padding(top = 16.dp).fillMaxWidth().clip(RoundedCornerShape(50))
+            Modifier.padding(top = 12.dp).fillMaxWidth().height(44.dp).clip(RoundedCornerShape(50))
                 .border(BorderStroke(1.dp, NanColors.Divider), RoundedCornerShape(50))
-                .plainClickable(onClick).padding(vertical = 13.dp),
+                .plainClickable(onClick),
             horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically
         ) {
             icon?.let { Icon(it, null, Modifier.size(20.dp), tint = Color.White); Spacer(Modifier.width(10.dp)) }
-            Text(button, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+            Text(button, fontSize = 14.sp, fontWeight = FontWeight.Medium)
         }
     }
 }
@@ -79,8 +79,8 @@ private fun DetailRow(icon: ImageVector, label: String, value: String) {
     Row(Modifier.fillMaxWidth().padding(vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(icon, null, Modifier.size(24.dp), tint = NanColors.TextSecondary)
         Spacer(Modifier.width(16.dp))
-        Text(label, fontSize = 16.sp, color = NanColors.TextSecondary, modifier = Modifier.weight(1f))
-        Text(value, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+        Text(label, fontSize = 14.sp, color = NanColors.TextSecondary, modifier = Modifier.weight(1f))
+        Text(value, fontSize = 14.sp, fontWeight = FontWeight.Medium)
     }
 }
 
@@ -88,7 +88,7 @@ private fun DetailRow(icon: ImageVector, label: String, value: String) {
 @Composable
 private fun VideoDetails(stats: DescStats) {
     Column(Modifier.fillMaxWidth().padding(top = 32.dp)) {
-        Text("Chi tiết video", fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 6.dp))
+        Text("Chi tiết video", fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 6.dp))
         stats.date?.let { DetailRow(CalendarIcon, "Ngày", it) }
         stats.views?.let { DetailRow(PlaySquareIcon, "Lượt xem", it) }
         stats.likes?.let { DetailRow(Lucide.ThumbsUp, "Lượt thích", it) }
@@ -121,7 +121,7 @@ internal fun WatchDescriptionExtras(
         Spacer(Modifier.width(12.dp))
         Text(
             author.orEmpty(),
-            fontSize = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f)
         )
         Spacer(Modifier.width(8.dp))

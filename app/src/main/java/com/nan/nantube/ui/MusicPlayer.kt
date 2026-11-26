@@ -25,6 +25,7 @@ import com.nan.nantube.data.MusicLyrics
 import com.nan.nantube.data.ShortsMedia
 import com.nan.nantube.data.ShortsPlayback
 import com.nan.nantube.data.ShortsCaptions
+import com.nan.nantube.data.Transcript
 import com.nan.nantube.data.CaptionCue
 import com.nan.nantube.data.VideoDownloads
 import com.nan.nantube.data.VideoItem
@@ -150,7 +151,7 @@ object MusicPlayer {
             // Lời từ các nguồn ngoài trước; không có bản thu khớp thì mới dùng phụ đề/transcript của chính YouTube.
             MusicLyrics.find(track.id, track.title, track.artist, refresh).ifEmpty {
                 ShortsPlayback.transcriptTrack(context, signedIn, track.id, refresh)
-                    ?.let { ShortsCaptions.load(it) }
+                    ?.let { Transcript.load(it) }
                     .orEmpty()
             }
         }
@@ -255,23 +256,12 @@ object MusicPlayer {
         val acc = account ?: return
         if (track.local || track.id.length != 11) return
         historyJob = scope.launch {
-            var lastSec = 0f
-            fun lengthSec(): Float? = duration().takeIf { it > 0 }?.let { it / 1000f }
-            try {
-                delay(HISTORY_DELAY_MS)
-                while (true) {
-                    lastSec = position() / 1000f
-                    WatchHistory.update(acc, track.id, lastSec, lengthSec())
-                    delay(HISTORY_REFRESH_MS)
-                }
-            } finally {
-                if (lastSec > 0f) WatchHistory.update(acc, track.id, lastSec, null)
+            WatchHistory.track(acc, track.asVideo()) {
+                val pos = position()
+                if (pos > 0L) WatchHistory.Playback(pos / 1000f, duration().takeIf { it > 0 }?.let { it / 1000f }) else null
             }
         }
     }
-
-    private const val HISTORY_DELAY_MS = 5_000L
-    private const val HISTORY_REFRESH_MS = 30_000L
 
     /** Hỏi YouTube bài này đã thích chưa (như nút tim ở Short: `next` của tài khoản). */
     private fun refreshLike(id: String) {

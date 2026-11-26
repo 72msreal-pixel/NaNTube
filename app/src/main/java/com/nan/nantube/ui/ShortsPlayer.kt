@@ -2,6 +2,9 @@
 
 package com.nan.nantube.ui
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
+import androidx.compose.ui.text.AnnotatedString
 import android.content.Intent
 import android.view.LayoutInflater
 import android.widget.Toast
@@ -930,7 +933,6 @@ private fun ShortsPager(
                     ShortPanel.Comments -> ShortChatContent(video = curVideo, account = account, imeOverlapPx = imeOverlapPx, onSave = onSave, onClose = { closeSheet() })
                     ShortPanel.Transcript -> TranscriptContent(
                         tracks = curMeta?.captionTracks.orEmpty(),
-                        captionKey = captionKey,
                         positionMs = positionMs,
                         onSeek = { ms ->
                             curSlot?.player?.seekTo(ms)
@@ -1285,10 +1287,10 @@ private fun dateFrom(vararg sources: String?): Pair<String, String>? {
 }
 
 @Composable
-private fun StatItem(value: String, label: String, modifier: Modifier) {
+private fun StatItem(value: String, label: String, modifier: Modifier, compact: Boolean = false) {
     Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(value, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-        Text(label, fontSize = 14.sp, color = NanColors.TextSecondary)
+        Text(value, fontSize = if (compact) 18.sp else 20.sp, fontWeight = FontWeight.Bold)
+        Text(label, fontSize = if (compact) 13.sp else 14.sp, color = NanColors.TextSecondary)
     }
 }
 
@@ -1307,6 +1309,8 @@ internal fun ColumnScope.ShortDescriptionContent(
     likesHint: String?,
     bottomInset: Boolean,
     onClose: () -> Unit,
+    /** Kiểu bảng mô tả của màn xem video (như YouTube): chữ nhỏ hơn, mô tả gập lại kèm nút "Xem thêm". Short giữ kiểu cũ. */
+    compact: Boolean = false,
     extras: @Composable ColumnScope.(DescStats) -> Unit = {}
 ) {
     val meta = ShortsPlayback.meta(video.id)
@@ -1353,11 +1357,11 @@ internal fun ColumnScope.ShortDescriptionContent(
     Box(Modifier.weight(1f).fillMaxWidth()) {
         Column(
             Modifier.fillMaxSize().verticalScroll(scroll).then(if (bottomInset) Modifier.navigationBarsPadding() else Modifier)
-                .padding(start = 18.dp, end = 18.dp, bottom = 28.dp)
+                .padding(start = if (compact) 16.dp else 18.dp, end = if (compact) 16.dp else 18.dp, bottom = 28.dp)
         ) {
             Text(
                 hashtagged(title, NanColors.Blue),
-                fontSize = 22.sp, lineHeight = 30.sp, fontWeight = FontWeight.Bold,
+                fontSize = if (compact) 20.sp else 22.sp, lineHeight = if (compact) 28.sp else 30.sp, fontWeight = FontWeight.Bold,
                 modifier = Modifier.padding(end = 40.dp)
             )
             Spacer(Modifier.height(14.dp))
@@ -1371,16 +1375,20 @@ internal fun ColumnScope.ShortDescriptionContent(
             }
             Spacer(Modifier.height(18.dp))
             Row(Modifier.fillMaxWidth()) {
-                StatItem(likes ?: "—", "Lượt thích", Modifier.weight(1f))
-                StatItem(views ?: "—", "Lượt xem", Modifier.weight(1f))
-                StatItem(date?.first ?: "—", date?.second ?: "Ngày đăng", Modifier.weight(1f))
+                StatItem(likes ?: "—", "Lượt thích", Modifier.weight(1f), compact)
+                StatItem(views ?: "—", "Lượt xem", Modifier.weight(1f), compact)
+                StatItem(date?.first ?: "—", date?.second ?: "Ngày đăng", Modifier.weight(1f), compact)
             }
             Spacer(Modifier.height(16.dp))
-            Text(
-                hashtagged(description, NanColors.Blue),
-                fontSize = 16.sp, lineHeight = 23.sp,
-                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(NanColors.Surface).padding(14.dp)
-            )
+            if (compact) {
+                CollapsibleDescription(hashtagged(description, NanColors.Blue))
+            } else {
+                Text(
+                    hashtagged(description, NanColors.Blue),
+                    fontSize = 16.sp, lineHeight = 23.sp,
+                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(NanColors.Surface).padding(14.dp)
+                )
+            }
             extras(stats)
         }
         // Nút X ngang với dòng đầu của tiêu đề (cao 30dp = lineHeight tiêu đề, nên tâm hai bên trùng nhau).
@@ -1392,6 +1400,37 @@ internal fun ColumnScope.ShortDescriptionContent(
         }
     }
 }
+
+/**
+ * Thẻ mô tả như YouTube: gập lại [COLLAPSED_LINES] dòng kèm nút "Xem thêm" khi mô tả dài hơn; mở ra thì có nút "Ẩn bớt".
+ * Mô tả ngắn vừa khung thì không có nút.
+ */
+@Composable
+private fun CollapsibleDescription(text: AnnotatedString) {
+    var expanded by remember(text) { mutableStateOf(false) }
+    var overflows by remember(text) { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(NanColors.Surface).padding(14.dp)) {
+        Text(
+            text,
+            fontSize = 14.sp, lineHeight = 20.sp,
+            maxLines = if (expanded) Int.MAX_VALUE else COLLAPSED_LINES,
+            overflow = TextOverflow.Ellipsis,
+            onTextLayout = { if (!expanded) overflows = it.hasVisualOverflow }
+        )
+        if (overflows || expanded) {
+            Box(
+                Modifier.padding(top = 12.dp).fillMaxWidth().height(44.dp).clip(RoundedCornerShape(50))
+                    .border(BorderStroke(1.dp, NanColors.Divider), RoundedCornerShape(50))
+                    .plainClickable { expanded = !expanded },
+                contentAlignment = Alignment.Center
+            ) {
+                Text(if (expanded) "Ẩn bớt" else "Xem thêm", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+            }
+        }
+    }
+}
+
+private const val COLLAPSED_LINES = 6
 
 @Composable
 private fun ShortAction(

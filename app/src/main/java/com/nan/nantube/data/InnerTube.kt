@@ -380,6 +380,63 @@ object InnerTube {
         return TrackingPlayer(res.requireJson(), visitor)
     }
 
+    /**
+     * /player của phiên web (cookie + SAPISIDHASH đủ ba băm, mẫu WEB của meetube) để lấy ei / vm / of gắn với đúng tài khoản.
+     * Cookie phải đi cùng thì YouTube mới ghi ping `api/stats` vào lịch sử của tài khoản (không có thì chỉ ghi ẩn danh).
+     */
+    internal suspend fun webTrackingPlayer(account: Account, videoId: String, cpn: String): TrackingPlayer {
+        require(account.kind == LoginKind.WEB)
+        val cookies = rawCookies(ORIGIN) ?: throw AuthRejected()
+        val auth = mtAuthorization(cookies, System.currentTimeMillis() / 1000, ORIGIN) ?: throw AuthRejected()
+        val visitor = visitorData()
+        val sts = try {
+            PlayerJs.get().sts.toLong()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+        val body = JSONObject()
+            .put("context", JSONObject().put("client", mtWebClient(visitor).put("hl", "vi").put("gl", "VN")).put("user", safetyUser()))
+        sts?.let {
+            body.put("playbackContext", JSONObject().put("contentPlaybackContext", JSONObject()
+                .put("html5Preference", "HTML5_PREF_WANTS").put("lactMilliseconds", 60000)
+                .put("isInlinePlaybackNoAd", true).put("signatureTimestamp", it)))
+        }
+        body.put("racyCheckOk", true).put("contentCheckOk", true).put("videoId", videoId).put("cpn", cpn)
+        val headers = mutableMapOf(
+            "Cookie" to cookies,
+            "Authorization" to auth,
+            "Origin" to ORIGIN,
+            "X-Origin" to ORIGIN,
+            "Referer" to "$ORIGIN/",
+            "X-Goog-AuthUser" to account.authUser.toString(),
+            "X-Youtube-Client-Name" to "1",
+            "X-Youtube-Client-Version" to MT_WEB_VERSION,
+            "User-Agent" to MT_WEB_UA
+        )
+        if (!visitor.isNullOrEmpty()) headers["X-Goog-Visitor-Id"] = visitor
+        val res = Http.postJson(BASE + "player?prettyPrint=false", body, headers)
+        if (res.code == 401 || res.code == 403) throw AuthRejected()
+        return TrackingPlayer(res.requireJson(), visitor)
+    }
+
+    /** Header cho ping `api/stats` của tài khoản web: cookie + chữ ký như trình duyệt (SAPISIDHASH ký theo giờ nên dựng lại mỗi lần). */
+    internal fun webStatsHeaders(account: Account, visitor: String?): Map<String, String> {
+        require(account.kind == LoginKind.WEB)
+        val cookies = rawCookies(ORIGIN) ?: throw AuthRejected()
+        val auth = mtAuthorization(cookies, System.currentTimeMillis() / 1000, ORIGIN) ?: throw AuthRejected()
+        return mutableMapOf(
+            "Cookie" to cookies,
+            "Authorization" to auth,
+            "Origin" to ORIGIN,
+            "X-Origin" to ORIGIN,
+            "Referer" to "$ORIGIN/",
+            "X-Goog-AuthUser" to account.authUser.toString(),
+            "User-Agent" to MT_WEB_UA
+        ).apply { if (!visitor.isNullOrEmpty()) put("X-Goog-Visitor-Id", visitor) }
+    }
+
     internal suspend fun tvStatsHeaders(account: Account, visitor: String?): Map<String, String> {
         require(account.kind == LoginKind.CODE)
         return mutableMapOf(

@@ -169,9 +169,7 @@ object ShortsPlayback {
 
     /** Như TranscriptSheet của MeeTube: đọc caption gốc, không dùng bản dịch tự động hay bản canh cho lồng tiếng. */
     suspend fun transcriptTrack(context: Context, account: Account?, videoId: String, refresh: Boolean): CaptionTrack? {
-        fun pick(tracks: List<CaptionTrack>): CaptionTrack? = ShortsCaptions.defaultTrack(tracks.filterNot {
-            "tlang=" in it.baseUrl || "variant=timing-optimized" in it.baseUrl
-        })
+        fun pick(tracks: List<CaptionTrack>): CaptionTrack? = Transcript.pick(tracks)
         if (!refresh) {
             val pending = synchronized(inflight) { inflight[videoId] }
             try { pending?.await() } catch (e: CancellationException) { throw e } catch (_: Exception) { }

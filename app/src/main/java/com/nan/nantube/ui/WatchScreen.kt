@@ -111,6 +111,7 @@ import com.nan.nantube.data.ChannelSubscriptions
 import com.nan.nantube.data.CommentPage
 import com.nan.nantube.data.CommentsRepository
 import com.nan.nantube.data.publishedIn
+import com.nan.nantube.data.relativePublished
 import com.nan.nantube.data.LikeCounts
 import com.nan.nantube.data.ShortDescription
 import com.nan.nantube.data.ShortInfo
@@ -687,7 +688,11 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
                                 val views = video.views ?: ShortsPlayback.meta(video.id)?.views ?: desc?.viewsText
                                 views?.let { append("$it  ") }
                                 // Chuỗi lượt xem của một số nguồn đã kèm sẵn "x phút trước": đừng nối thêm lần nữa.
-                                (video.published ?: desc?.publishText).takeIf { publishedIn(views) == null }?.let { append("$it  ") }
+                                (video.published ?: desc?.publishText).takeIf { publishedIn(views) == null }?.let { raw ->
+                                    // Mở từ "Video đã xem" thì chỉ có ngày đầy đủ: đổi sang "x ngày trước" như mọi chỗ khác.
+                                    val shown = publishedIn(raw) ?: relativePublished(desc?.isoDate, ShortsPlayback.meta(video.id)?.publishDate, raw) ?: raw
+                                    append("$shown  ")
+                                }
                                 withStyle(SpanStyle(color = Color.White, fontWeight = FontWeight.Medium)) { append("…thêm") }
                             }
                             Text(
@@ -742,6 +747,7 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
                                 likesHint = likeText,
                                 bottomInset = true,
                                 onClose = ::closePanel,
+                                compact = true,
                                 extras = { stats ->
                                     WatchDescriptionExtras(
                                         video = video,
@@ -769,7 +775,6 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
                             )
                             WatchPanel.Transcript -> TranscriptContent(
                                 tracks = pb.tracks,
-                                captionKey = WatchPrefs.captionKey,
                                 positionMs = pb.positionMs,
                                 onSeek = { pb.seekTo(it) },
                                 onClose = ::closePanel

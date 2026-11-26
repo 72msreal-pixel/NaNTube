@@ -59,6 +59,7 @@ import androidx.compose.ui.unit.sp
 import com.nan.nantube.data.CaptionCue
 import com.nan.nantube.data.CaptionTrack
 import com.nan.nantube.data.ShortsCaptions
+import com.nan.nantube.data.Transcript
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -179,28 +180,27 @@ fun clock(ms: Long, pad: Boolean = false): String {
 
 /**
  * Bản ghi lời thoại của Short như bảng Transcript của YouTube / meetube: dòng đang nói sáng lên và được cuộn theo,
- * chạm một dòng để phát từ đó, ô tìm kiếm lọc các dòng khớp. Dùng đúng bản phụ đề đang chọn,
- * chưa chọn thì lấy bản mặc định; phụ đề đã tải rồi thì lấy từ bộ nhớ đệm của [ShortsCaptions].
+ * chạm một dòng để phát từ đó, ô tìm kiếm lọc các dòng khớp. Chọn và tải bản phụ đề bằng [Transcript] (logic TranscriptSheet của MeeTube).
  */
 @Composable
 fun ColumnScope.TranscriptContent(
     tracks: List<CaptionTrack>,
-    captionKey: String?,
     positionMs: Long,
     onSeek: (Long) -> Unit,
     onClose: () -> Unit
 ) {
-    val track = remember(tracks, captionKey) { ShortsCaptions.pick(tracks, captionKey) ?: ShortsCaptions.defaultTrack(tracks) }
+    // Như TranscriptSheet của MeeTube: bản người đăng tải thắng bản tự tạo, không theo ngôn ngữ phụ đề đang chọn.
+    val track = remember(tracks) { Transcript.pick(tracks) }
     var cues by remember(track) { mutableStateOf<List<CaptionCue>?>(null) }
-    var failed by remember(track) { mutableStateOf(false) }
+    var failed by remember(track) { mutableStateOf<String?>(null) }
     LaunchedEffect(track) {
         if (track == null) return@LaunchedEffect
         try {
-            cues = ShortsCaptions.load(track)
+            cues = Transcript.load(track)
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Exception) {
-            failed = true
+        } catch (e: Exception) {
+            failed = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
         }
     }
 
@@ -258,7 +258,7 @@ fun ColumnScope.TranscriptContent(
     }
     when {
         track == null -> PanelNote("Video này không có phụ đề nên chưa có bản ghi.")
-        failed -> PanelNote("Không tải được bản ghi.")
+        failed != null -> PanelNote("Không tải được bản ghi ($failed).")
         loaded == null -> PanelNote("Đang tải bản ghi…")
         shown.isEmpty() -> PanelNote(if (loaded.isEmpty()) "Video này không có lời thoại." else "Không có dòng nào khớp.")
         else -> LazyColumn(

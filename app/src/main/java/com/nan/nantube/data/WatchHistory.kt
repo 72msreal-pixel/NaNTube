@@ -53,9 +53,9 @@ object WatchHistory {
                 val progress = reading.lengthSec?.takeIf { it.isFinite() && it > 0f }
                     ?.let { (reading.positionSec / it).coerceIn(0f, 1f) }
                 WebWatchHistory.record(account, video, progress ?: 0f, newPlayback = previous == null)
-            } else {
-                sendInBackground(account, video.id, reading)
             }
+            // Cả hai loại tài khoản đều phải ping YouTube, nếu không video chỉ hiện trong app mà không có trên YouTube.
+            sendInBackground(account, video.id, reading)
             sent = reading
             sentAt = SystemClock.elapsedRealtime()
         }
@@ -95,7 +95,8 @@ object WatchHistory {
         val length = (tracking.length ?: lengthHint)?.takeIf { it > 0f } ?: 30f
         // Kẹp trong [3s, độ dài]; Short loop có thể báo vị trí vượt độ dài.
         val position = positionRaw.coerceAtLeast(MIN_POSITION_SEC).coerceAtMost(length)
-        val headers = InnerTube.tvStatsHeaders(account, tracking.visitor)
+        val headers = if (account.kind == LoginKind.WEB) InnerTube.webStatsHeaders(account, tracking.visitor)
+        else InnerTube.tvStatsHeaders(account, tracking.visitor)
 
         fun e(s: String) = URLEncoder.encode(s, "UTF-8")
         val common = "&docid=${e(videoId)}&cpn=${tracking.cpn}&ei=${e(tracking.ei)}&vm=${e(tracking.vm)}" +
@@ -140,7 +141,8 @@ object WatchHistory {
         trackingCache[key]?.takeIf { now - it.at < TRACKING_TTL_MS }?.let { return it }
         // Như AppService.getClientPlaybackNonce: một cpn cho mỗi lần lấy /player, dùng chung cho body /player và mọi ping stats của video.
         val cpn = newCpn()
-        val player = InnerTube.tvTrackingPlayer(account, videoId, cpn)
+        val player = if (account.kind == LoginKind.WEB) InnerTube.webTrackingPlayer(account, videoId, cpn)
+        else InnerTube.tvTrackingPlayer(account, videoId, cpn)
         val json = player.json
         val info = json.optJSONObject("playbackTracking")
         val watchUrl = info.dig("videostatsWatchtimeUrl", "baseUrl") as? String

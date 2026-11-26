@@ -74,6 +74,67 @@ private val WATCHING_RE = Regex("đang xem|watching", RegexOption.IGNORE_CASE)
 /** "3 giờ trước" nằm trong một đoạn chữ như "1,2 N lượt xem · 3 giờ trước"; null nếu không có. */
 internal fun publishedIn(text: String?): String? = text?.let { PUBLISHED_RE.find(it)?.value }
 
+/**
+ * Đổi ngày đăng tuyệt đối ("26 thg 11, 2026", ISO "2026-11-26T05:00:00-08:00") thành dạng tương đối như mọi chỗ khác ("7 ngày trước").
+ * Video mở từ "Video đã xem" không mang sẵn chữ "x ngày trước" nên màn xem chỉ có ngày đầy đủ. Mỗi chuỗi trong [sources] được thử lần lượt;
+ * null nếu không đọc được chuỗi nào.
+ */
+internal fun relativePublished(vararg sources: String?, now: Long = System.currentTimeMillis()): String? {
+    for (text in sources) {
+        if (text.isNullOrBlank()) continue
+        publishedIn(text)?.let { return it }
+        val (time, hasClock) = parsePublished(text.trim()) ?: continue
+        val diff = (now - time).coerceAtLeast(0L)
+        val days = diff / 86_400_000L
+        return when {
+            !hasClock && days < 1 -> "Hôm nay"
+            diff < 60_000L -> "${diff / 1000} giây trước"
+            diff < 3_600_000L -> "${diff / 60_000L} phút trước"
+            diff < 86_400_000L -> "${diff / 3_600_000L} giờ trước"
+            days < 8 -> "$days ngày trước"
+            days < 30 -> "${days / 7} tuần trước"
+            days < 365 -> "${days / 30} tháng trước"
+            else -> "${days / 365} năm trước"
+        }
+    }
+    return null
+}
+
+private val VI_DATE = Regex("(\\d{1,2})\\s*thg\\s*(\\d{1,2}),?\\s*(\\d{4})")
+
+/** (thời điểm, có kèm giờ không) hoặc null. */
+private fun parsePublished(text: String): Pair<Long, Boolean>? {
+    VI_DATE.find(text)?.let { m ->
+        val cal = java.util.Calendar.getInstance()
+        cal.clear()
+        cal.set(m.groupValues[3].toInt(), m.groupValues[2].toInt() - 1, m.groupValues[1].toInt())
+        return cal.timeInMillis to false
+    }
+    if (text.length >= 19 && text[10] == 'T') {
+        val attempts = listOf(
+            "yyyy-MM-dd'T'HH:mm:ssXXX" to 25,
+            "yyyy-MM-dd'T'HH:mm:ss'Z'" to 20,
+            "yyyy-MM-dd'T'HH:mm:ss" to 19
+        )
+        for ((pattern, length) in attempts) {
+            try {
+                val fmt = java.text.SimpleDateFormat(pattern, java.util.Locale.US)
+                if (pattern.endsWith("'Z'")) fmt.timeZone = java.util.TimeZone.getTimeZone("UTC")
+                fmt.parse(text.take(length))?.let { return it.time to true }
+            } catch (_: Exception) {
+            }
+        }
+    }
+    if (text.length >= 10 && Regex("\\d{4}-\\d{2}-\\d{2}").containsMatchIn(text.take(10))) {
+        return try {
+            java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).parse(text.take(10))?.let { it.time to false }
+        } catch (_: Exception) {
+            null
+        }
+    }
+    return null
+}
+
 internal fun isWatchingText(text: String?): Boolean = text != null && WATCHING_RE.containsMatchIn(text)
 
 data class HistoryChip(val label: String, val token: String)
