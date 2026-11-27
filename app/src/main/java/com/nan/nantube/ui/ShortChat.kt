@@ -269,7 +269,7 @@ fun ShortChatContent(video: VideoItem, account: Account?, imeOverlapPx: Int = 0,
         error = null
         scope.launch {
             try {
-                val page = if (sortToken != null) CommentsRepository.more(sortToken, account, session.fromTv) else CommentsRepository.first(video.id, account)
+                val page = if (sortToken != null) CommentsRepository.more(sortToken, account, session.fromTv, videoId = video.id) else CommentsRepository.first(video.id, account)
                 nodes.clear()
                 nodes.addAll(topNodes(page.items))
                 token = page.token
@@ -337,7 +337,7 @@ fun ShortChatContent(video: VideoItem, account: Account?, imeOverlapPx: Int = 0,
         loadingMore = true
         scope.launch {
             try {
-                val page = CommentsRepository.more(t, account, session.fromTv)
+                val page = CommentsRepository.more(t, account, session.fromTv, videoId = video.id)
                 val seen = nodes.map { it.item.id }.toHashSet()
                 nodes.addAll(topNodes(page.items.filter { seen.add(it.id) }))
                 token = page.token?.takeIf { page.items.isNotEmpty() }
@@ -360,7 +360,7 @@ fun ShortChatContent(video: VideoItem, account: Account?, imeOverlapPx: Int = 0,
         node.loading = true
         scope.launch {
             try {
-                val page = CommentsRepository.more(t, account, node.item.fromTv)
+                val page = CommentsRepository.more(t, account, node.item.fromTv, videoId = video.id, rootId = node.rootId)
                 val fresh = buildNodes(page.items.filter { it.id != node.item.id && it.id != node.rootId }, minOf(node.depth + 1, MAX_NEST), node.rootId, node)
                 node.children = (node.children + fresh).distinctBy { it.item.id }
                 node.moreToken = page.token?.takeIf { page.items.isNotEmpty() }
@@ -758,6 +758,7 @@ private fun CommentRow(
             }
             // Chủ video: tên nằm trong viên sáng (YouTube báo isCreator, hoặc trùng handle học từ nhãn ghim).
             val byCreator = c.creator || creator.matches(c)
+            val verified = rememberVerified(c, byCreator, creator.id)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Row(
                     (if (byCreator) Modifier.height(17.dp).clip(RoundedCornerShape(50)).background(Color(0xFFF1F1F1)).padding(start = 5.dp, end = 4.dp) else Modifier)
@@ -770,7 +771,7 @@ private fun CommentRow(
                         modifier = Modifier.weight(1f, fill = false)
                     )
                     // Dấu tích chỉ khi YouTube báo xác minh: chủ video không xác minh thì chỉ có viên sáng, người thường xác minh có tích xám.
-                    if (c.verified) Box(
+                    if (verified) Box(
                         Modifier.padding(start = 4.dp).size(12.dp).clip(CircleShape).background(if (byCreator) Color(0xFF0F0F0F) else NanColors.TextSecondary),
                         contentAlignment = Alignment.Center
                     ) { Icon(Lucide.Check, null, Modifier.size(8.dp), tint = if (byCreator) Color.White else Color(0xFF0F0F0F)) }
@@ -788,7 +789,7 @@ private fun CommentRow(
                 }
                 Spacer(Modifier.width(28.dp))
                 VoteButton(YtComment, null) { onReply(node) }
-                c.heartedBy?.let { HeartBadge(it) }
+                (c.heartedBy ?: com.nan.nantube.data.CommentsRepository.heartOf(c.id))?.let { HeartBadge(it) }
             }
         }
         Box {

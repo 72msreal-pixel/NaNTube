@@ -4,8 +4,12 @@ import android.os.Build
 import android.widget.Toast
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -43,6 +47,28 @@ fun mentioned(text: String) = buildAnnotatedString {
         }
     }
     append(text.substring(last))
+}
+
+/**
+ * Có vẽ dấu tích xác minh không. Bình luận của chủ video (MrBeast...) thường không kèm cờ isVerified nên chỉ hiện viên sáng:
+ * khi đó tra thẳng kênh (InnerTube browse) xem kênh có tích không, nhớ theo mã kênh.
+ */
+@Composable
+fun rememberVerified(c: com.nan.nantube.data.CommentItem, byCreator: Boolean, ownerId: String?): Boolean {
+    val channelId = c.authorChannelId ?: ownerId.takeIf { byCreator }
+    var verified by remember(c.id, c.verified, channelId) {
+        mutableStateOf(c.verified || com.nan.nantube.data.ChannelVerified.cached(channelId) == true)
+    }
+    LaunchedEffect(c.id, c.verified, channelId) {
+        // Mọi người viết có mã kênh đều được tra (nhớ theo mã kênh, tối đa 3 lượt song song nên cuộn nhanh không dồn mạng).
+        if (!verified && channelId != null) {
+            // Chờ dòng đứng yên một chút mới tra: cuộn nhanh qua thì LaunchedEffect bị hủy, không tốn mạng cho dòng chưa ai đọc.
+            // Kênh đã có trong bộ nhớ thì ra ngay, không phải chờ.
+            if (com.nan.nantube.data.ChannelVerified.cached(channelId) == null) kotlinx.coroutines.delay(700)
+            verified = com.nan.nantube.data.ChannelVerified.check(channelId)
+        }
+    }
+    return verified
 }
 
 /** Chép [value] vào clipboard. Android 13+ tự báo đã chép; bản cũ hơn thì báo bằng Toast (như meetube). */

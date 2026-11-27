@@ -65,6 +65,7 @@ import com.nan.nantube.data.CaptionTrack
 import com.nan.nantube.data.ShortsCaptions
 import com.nan.nantube.data.SleepTimer
 import com.nan.nantube.data.WatchPrefs
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -139,13 +140,34 @@ object WatchViewer {
     var video by mutableStateOf<VideoItem?>(null)
         private set
 
+    /** Các video đã xem trong phiên mở màn xem này (cũ nhất ở đầu): nút "Trước" quay lại video ngay trước đó. */
+    private val history = mutableStateListOf<VideoItem>()
+
+    /** Có video trước đó để quay lại hay chưa (nút "Trước" chỉ bấm được khi đã đổi sang video khác). */
+    val canGoBack: Boolean get() = history.isNotEmpty()
+
     fun open(v: VideoItem) {
+        val current = video
+        if (current != null && current.id != v.id) {
+            history.removeAll { it.id == current.id }
+            history.add(current)
+            if (history.size > MAX_HISTORY) history.removeAt(0)
+        }
         video = v
+    }
+
+    /** Quay lại video trước đó (không đẩy video hiện tại vào lịch sử). */
+    fun back() {
+        if (history.isEmpty()) return
+        video = history.removeAt(history.lastIndex)
     }
 
     fun close() {
         video = null
+        history.clear()
     }
+
+    private const val MAX_HISTORY = 50
 }
 
 private val Red = Color(0xFFFF0000)
@@ -631,6 +653,8 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
                     pb = pb,
                     video = video,
                     hasNext = next != null,
+                    hasPrev = WatchViewer.canGoBack,
+                    onPrev = { WatchViewer.back() },
                     captionText = captionText,
                     captionsOn = captionsOn,
                     ambient = WatchPrefs.ambient,
@@ -858,6 +882,8 @@ private fun WatchPlayerArea(
     pb: WatchPlayback,
     video: VideoItem,
     hasNext: Boolean,
+    hasPrev: Boolean,
+    onPrev: () -> Unit,
     captionText: String?,
     captionsOn: Boolean,
     ambient: Boolean,
@@ -971,13 +997,15 @@ private fun WatchPlayerArea(
                         modifier = Modifier.align(Alignment.TopCenter).padding(top = 52.dp)
                     )
                 }
-                // Giữa: trước (trang trí) | phát / tạm dừng | sau (sang video đề xuất đầu tiên).
+                // Giữa: trước (video vừa xem, chỉ bấm được sau khi đã đổi video) | phát / tạm dừng | sau (sang video đề xuất đầu tiên).
                 Row(
                     Modifier.align(Alignment.Center),
                     horizontalArrangement = Arrangement.spacedBy(28.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Box(Modifier.alpha(0.4f)) { CircleControl(WatchSkipPrev, "Trước", 44.dp) { touch++ } }
+                    Box(Modifier.alpha(if (hasPrev) 1f else 0.4f)) {
+                        CircleControl(WatchSkipPrev, "Trước", 44.dp) { if (hasPrev) onPrev(); touch++ }
+                    }
                     CircleControl(
                         when {
                             pb.ended -> WatchReplay

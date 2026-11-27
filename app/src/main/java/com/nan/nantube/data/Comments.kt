@@ -4,6 +4,8 @@ import android.util.Base64
 import java.io.ByteArrayOutputStream
 import java.net.URLEncoder
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -126,19 +128,155 @@ object CommentsRepository {
             // Như MeeTube: lấy continuation và hành động trong cùng ngữ cảnh TV khi đăng nhập bằng mã.
             tryRead(body, account, tv = true)?.takeIf { it.signed }?.let { read ->
                 val page = try { start(read) } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
-                if (page != null && page.items.isNotEmpty()) return page
+                if (page != null && page.items.isNotEmpty()) {
+                    webStates.keys.removeAll { it.startsWith("$videoId#") } // mở lại bình luận: đọc lại từ trang WEB đầu
+                    activeSort[videoId] = 0
+                    page.sorts.forEachIndexed { i, sort ->
+                        if (sortIndexByToken.size > 300) sortIndexByToken.clear()
+                        sortIndexByToken[sort.token] = i
+                    }
+                    return enrichHearts(page, videoId, null)
+                }
             }
         }
         return start(next(body, account, tv = false))
             ?: throw IllegalStateException("Video này tắt bình luận hoặc chưa có bình luận.")
     }
 
+    /**
+     * Tim của chủ video là dữ liệu công khai nhưng client TV (tài khoản mã) không trả nó trong bình luận. Đọc song song cùng danh
+     * sách bình luận bằng client WEB không đăng nhập (mỗi video một con trỏ riêng, đọc tới đâu nhớ tới đó) rồi ghép tim vào theo mã
+     * bình luận: trang gốc ([rootId] = null) đọc các trang gốc của WEB, trang phản hồi đọc phản hồi của đúng bình luận gốc.
+     * Lỗi thì giữ nguyên trang TV (chỉ thiếu tim).
+     */
+    private class WebState {
+        val hearts = HashMap<String, String>()
+        val seen = HashSet<String>()
+        var started = false
+        var cursor: String? = null
+        var exhausted = false
+        val replyTokens = HashMap<String, String>() // mã bình luận gốc -> token phản hồi của WEB
+        val replyCursor = HashMap<String, String?>() // mã bình luận gốc -> token trang phản hồi WEB kế tiếp
+        val replyStarted = HashSet<String>()
+    }
+
+    // Khóa "videoId#chỉSốKiểuSắpXếp": mỗi kiểu (Nổi bật / Mới nhất) có danh sách WEB và con trỏ riêng.
+    private val webStates = java.util.concurrent.ConcurrentHashMap<String, WebState>()
+    private val activeSort = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    private val sortIndexByToken = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    private val heartLock = kotlinx.coroutines.sync.Mutex()
+    private const val WEB_PAGES_PER_CALL = 6
+
+    /**
+     * Tim lấy từ WEB, đọc nền và hiện sau: là trạng thái Compose nên dòng bình luận nào đọc nó sẽ tự vẽ lại khi tim về.
+     * Khóa là mã bình luận và phần cuối của mã ("gốc.phảnhồi" -> "phảnhồi") vì hai client viết mã phản hồi hơi khác nhau.
+     */
+    private val webHearts = androidx.compose.runtime.mutableStateMapOf<String, String>()
+    private val heartScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO)
+
+    /** Tim của bình luận [id] nếu đã đọc được từ WEB (null = chưa có / không có). Gọi từ giao diện, an toàn khi đang vẽ. */
+    fun heartOf(id: String): String? = webHearts[id] ?: webHearts[id.substringAfterLast('.')]
+
+    private fun publishHeart(id: String, url: String) {
+        if (webHearts.size > 20_000) webHearts.clear()
+        webHearts[id] = url
+        webHearts[id.substringAfterLast('.')] = url
+    }
+
+    private fun absorb(state: WebState, items: List<CommentItem>) {
+        for (c in items) {
+            state.seen.add(c.id)
+            c.heartedBy?.let { state.hearts[c.id] = it; publishHeart(c.id, it) }
+            if (c.level == 0 && c.repliesToken != null) state.replyTokens[c.id] = c.repliesToken
+        }
+    }
+
+    private fun heartFor(state: WebState, id: String): String? =
+        state.hearts[id] ?: state.hearts.entries.firstOrNull { sameId(it.key, id) }?.value
+
+    private fun seenOnWeb(state: WebState, id: String) = id in state.seen || state.seen.any { sameId(it, id) }
+
+    private suspend fun crawlTop(videoId: String, state: WebState, wanted: List<String>, sortIndex: Int) {
+        var pages = 0
+        if (!state.started) {
+            state.started = true
+            val read = Read(InnerTube.call("next", JSONObject().put("videoId", videoId), null))
+            // Kiểu sắp xếp thứ N của WEB ứng với kiểu thứ N của TV (cùng thứ tự Nổi bật, Mới nhất).
+            val token = if (sortIndex == 0) commentsToken(read.root) else sorts(read.root).getOrNull(sortIndex)?.token
+            if (token == null) {
+                state.exhausted = true
+                return
+            }
+            val first = more(token, null, false)
+            absorb(state, first.items)
+            state.cursor = first.token?.takeIf { first.items.isNotEmpty() }
+            if (state.cursor == null) state.exhausted = true
+            pages++
+        }
+        while (!state.exhausted && pages < WEB_PAGES_PER_CALL && !wanted.all { seenOnWeb(state, it) }) {
+            val t = state.cursor ?: break
+            val p = more(t, null, false)
+            absorb(state, p.items)
+            state.cursor = p.token?.takeIf { p.items.isNotEmpty() }
+            if (state.cursor == null) state.exhausted = true
+            pages++
+        }
+    }
+
+    private suspend fun crawlReplies(state: WebState, rootId: String, wanted: List<String>) {
+        var pages = 0
+        if (rootId !in state.replyStarted) {
+            val token = state.replyTokens[rootId] ?: return
+            state.replyStarted.add(rootId)
+            state.replyCursor[rootId] = token
+        }
+        while (pages < WEB_PAGES_PER_CALL && !wanted.all { seenOnWeb(state, it) }) {
+            val t = state.replyCursor[rootId] ?: break
+            val p = more(t, null, false)
+            absorb(state, p.items)
+            state.replyCursor[rootId] = p.token?.takeIf { p.items.isNotEmpty() }
+            pages++
+        }
+    }
+
+    /** Trả trang TV ngay (không chờ); tim đọc ở nền và hiện sau qua [heartOf]. */
+    private fun enrichHearts(page: CommentPage, videoId: String, rootId: String?): CommentPage {
+        if (page.items.isEmpty() || page.items.all { it.heartedBy != null }) return page
+        val wanted = page.items.filter { it.heartedBy == null }.map { it.id }
+        heartScope.launch {
+            try {
+                heartLock.withLock {
+                    if (webStates.size > 30) webStates.clear()
+                    val sortIndex = activeSort[videoId] ?: 0
+                    val state = webStates.getOrPut("$videoId#$sortIndex") { WebState() }
+                    if (rootId == null) {
+                        crawlTop(videoId, state, wanted, sortIndex)
+                    } else {
+                        // Cần token phản hồi của WEB cho bình luận gốc này: đọc các trang gốc của WEB tới khi gặp nó.
+                        if (rootId !in state.replyTokens) crawlTop(videoId, state, listOf(rootId), sortIndex)
+                        crawlReplies(state, rootId, wanted)
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Không đọc được tim thì thôi: bình luận vẫn hiện bình thường.
+            }
+        }
+        return page
+    }
+
     /** Chỉ gọi khi người dùng mở "Xem phản hồi" / "Phản hồi khác". */
-    suspend fun more(token: String, account: Account? = null, tv: Boolean = false, debugOf: String? = null): CommentPage {
+    suspend fun more(
+        token: String, account: Account? = null, tv: Boolean = false, debugOf: String? = null,
+        /** Video và bình luận gốc (null nếu là trang bình luận gốc) của trang này: để ghép tim của chủ video vào bản TV. */
+        videoId: String? = null, rootId: String? = null
+    ): CommentPage {
         val read = next(JSONObject().put("continuation", token), account, tv)
         val page = parse(read)
         if (debugOf != null) saveRepliesDebug(account, debugOf, read.root, page)
-        return page
+        if (tv && videoId != null && rootId == null) sortIndexByToken[token]?.let { activeSort[videoId] = it } // đổi tab sắp xếp
+        return if (tv && videoId != null) enrichHearts(page, videoId, rootId) else page
     }
 
     /**
@@ -419,7 +557,8 @@ object CommentsRepository {
             likesLiked = toolbar.field("likeCountLiked"),
             liked = state.field("likeState") == "TOOLBAR_LIKE_STATE_LIKED",
             disliked = state.field("likeState") == "TOOLBAR_LIKE_STATE_DISLIKED",
-            heartedBy = toolbar.field("creatorThumbnailUrl").takeIf { state.field("heartState") == "TOOLBAR_HEART_STATE_HEARTED" },
+            heartedBy = toolbar.field("creatorThumbnailUrl").takeIf { state.field("heartState") == "TOOLBAR_HEART_STATE_HEARTED" }
+                ?: surfaces.firstNotNullOfOrNull { heartFromRenderer(it) },
             pinned = ytText(vm?.opt("pinnedText")),
             creator = author?.optBoolean("isCreator") == true,
             verified = author?.optBoolean("isVerified") == true || author?.optBoolean("isArtist") == true,
@@ -439,6 +578,24 @@ object CommentsRepository {
             own = read.signed && (controls.edit != null || author?.optBoolean("isCurrentUser") == true),
             fromTv = read.tv
         )
+    }
+
+    /**
+     * Tim của chủ video trong định dạng cũ (client TV / tài khoản mã): commentActionButtonsRenderer.creatorHeart.creatorHeartRenderer,
+     * isHearted = true và creatorThumbnail là ảnh kênh chủ video. Không có tim thì null.
+     */
+    private fun heartFromRenderer(r: JSONObject): String? {
+        val heart = findKey(r.optJSONObject("actionButtons") ?: r, "creatorHeartRenderer") ?: return null
+        val hearted = if (heart.has("isHearted")) heart.optBoolean("isHearted") else true
+        if (!hearted) return null
+        val thumbs = heart.dig("creatorThumbnail", "thumbnails") as? JSONArray ?: return null
+        if (thumbs.length() == 0) return null
+        val url = thumbs.optJSONObject(thumbs.length() - 1)?.optString("url").orEmpty()
+        return when {
+            url.startsWith("//") -> "https:$url"
+            url.startsWith("http") -> url
+            else -> null
+        }
     }
 
     private fun fromRenderer(r: JSONObject, repliesToken: String?, read: Read): CommentItem? {
@@ -467,6 +624,7 @@ object CommentsRepository {
             likesLiked = null,
             liked = liked,
             disliked = disliked,
+            heartedBy = heartFromRenderer(r),
             pinned = ytText(r.dig("pinnedCommentBadge", "pinnedCommentBadgeRenderer", "label")),
             creator = r.optBoolean("authorIsChannelOwner") || r.optBoolean("isCreator"),
             verified = (r.dig("authorCommentBadge", "authorCommentBadgeRenderer", "icon", "iconType") as? String)
