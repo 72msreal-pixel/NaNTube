@@ -16,6 +16,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -37,6 +38,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -285,8 +287,14 @@ private const val SNAP_STIFFNESS = 550f
 private const val SNAP_DAMPING = 0.75f
 private const val THROW_S = 0.18f
 private const val FLING_VELOCITY_DP = 450f
-/** Ném ngang nhanh cỡ này (và chủ yếu là ngang) thì đóng thẻ thay vì cất vào góc. */
-private const val CLOSE_VELOCITY_DP = 1800f
+/** Ném ngang nhanh cỡ này (và chủ yếu là ngang) thì thẻ kiểu kéo thu vào mép thành nút kéo (thẻ thường chỉ về góc gần nhất). */
+private const val DOCK_VELOCITY_DP = 900f
+/** Kéo nút ở mép vào trong nhanh cỡ này thì mở thẻ ra dù chưa tới ngưỡng. */
+private const val UNDOCK_VELOCITY_DP = 600f
+/** Phải kéo thẻ ra quá tỉ lệ này của (bề ngang thẻ + lề) thì nút mới trượt vào thẻ và thẻ nằm lại; chưa tới thì tự về mép. */
+private const val UNDOCK_FRACTION = 0.4f
+private val DOCK_HANDLE_W = 26.dp
+private val DOCK_HANDLE_H = 84.dp
 private const val FLY_MIN_MS = 110
 /** Chạm xảy ra trong khoảng này sau lần kéo cuối thì coi là đuôi của cú kéo, bỏ qua. */
 private const val TAP_AFTER_DRAG_MS = 250L
@@ -310,6 +318,8 @@ internal fun miniIcon(name: String, filled: Boolean, vararg paths: String): Imag
 
 internal val MiniClose: ImageVector by lazy { miniIcon("MiniClose", false, "M18 6 6 18", "m6 6 12 12") }
 internal val MiniExpand: ImageVector by lazy { miniIcon("MiniExpand", false, "M15 3h6v6", "m21 3-7 7", "m3 21 7-7", "M9 21H3v-6") }
+internal val MiniChevronLeft: ImageVector by lazy { miniIcon("MiniChevronLeft", false, "m15 18-6-6 6-6") }
+internal val MiniChevronRight: ImageVector by lazy { miniIcon("MiniChevronRight", false, "m9 18 6-6-6-6") }
 internal val MiniPlay: ImageVector by lazy { miniIcon("MiniPlay", true, "M8,5v14l11,-7z") }
 internal val MiniPause: ImageVector by lazy { miniIcon("MiniPause", true, "M6,19h4V5H6v14zM14,5v14h4V5h-4z") }
 internal val MiniPrev: ImageVector by lazy { miniIcon("MiniPrev", true, "M6,6h2v12H6zM9.5,12l8.5,6V6z") }
@@ -321,6 +331,13 @@ fun ShortsMiniWindow(account: Account?) {
     if (ShortsMini.background) return
     val video = ShortsMini.current ?: return
     MiniContent(video, account)
+}
+
+/** Chỗ thẻ kiểu kéo đang thu ở mép: [side] -1 trái, 1 phải, 0 là không thu; [y] là độ cao (px) của thẻ lúc thu. */
+internal class MiniDock {
+    var side by mutableIntStateOf(0)
+    var y by mutableFloatStateOf(0f)
+    fun reset() { side = 0 }
 }
 
 /** Những thứ [MiniFrame] giữ giùm để từng loại thẻ vẽ nút của mình: độ mờ lớp nút, có bấm được không, nhịp "pop" của nút phát, hàm đóng (thẻ co lại rồi tắt). */
@@ -341,12 +358,19 @@ internal fun MiniFrame(
     instantEnter: Boolean = false,
     /** Vị trí thẻ do bên ngoài giữ (đổi video trong thẻ mà thẻ dựng lại thì không nhảy về góc); null thì tự giữ. */
     posState: androidx.compose.runtime.MutableState<Offset>? = null,
+    /** Khác null: thẻ kiểu kéo, ném ngang thì thu vào mép thành nút kéo (thay cho việc đóng). */
+    dock: MiniDock? = null,
+    /** Kéo thẻ thì nút hiện lại (và tính lại 3 giây tự ẩn). */
+    showOnDrag: Boolean = false,
+    /** Khác null: chạm vào thẻ thì gọi hàm này thay vì ẩn / hiện nút. */
+    onTap: (() -> Unit)? = null,
     content: @Composable BoxScope.(MiniFrameScope) -> Unit
 ) {
     val density = LocalDensity.current
     val inPip = PipState.inPip
     var controlsVisible by remember { mutableStateOf(true) }
-    LaunchedEffect(controlsVisible, paused, changeKey) {
+    var showTick by remember { mutableIntStateOf(0) }
+    LaunchedEffect(controlsVisible, paused, changeKey, showTick) {
         if (controlsVisible && !paused) {
             delay(3000)
             controlsVisible = false
@@ -430,7 +454,16 @@ internal fun MiniFrame(
         var lastDragAt by remember { mutableStateOf(0L) }
 
         fun restPos() = if (pos.isSpecified) pos else initial
-        fun visual(): Offset = if (settling) settle.value else restPos()
+        // Thu ở mép: [pull] là quãng thẻ đã được kéo ra khỏi mép (0 = nằm hẳn ngoài màn hình, chỉ còn nút kéo).
+        val pull = remember { Animatable(0f) }
+        val handleAppear = remember { Animatable(if ((dock?.side ?: 0) != 0) 1f else 0f) }
+        val handleSlide = remember { Animatable(0f) }
+        var undocking by remember { mutableStateOf(false) }
+        val fullPull = w + margin
+        fun dockActive() = dock != null && dock.side != 0
+        fun dockCardX(): Float = if ((dock?.side ?: 0) > 0) maxW - pull.value else -w + pull.value
+        fun visual(): Offset =
+            if (dockActive()) Offset(dockCardX(), dock!!.y) else if (settling) settle.value else restPos()
         fun clampDrag(o: Offset) = Offset(
             o.x.coerceIn(-w, maxW),
             o.y.coerceIn(0f, (maxH - h).coerceAtLeast(0f))
@@ -449,18 +482,47 @@ internal fun MiniFrame(
             }
         }
 
-        fun flyAway(from: Offset, toX: Float, ms: Int) {
+        /** Ném ngang (hoặc thả khi đã thò quá nửa ra mép): thẻ bay ra mép rồi chỉ còn nút kéo ở đó. */
+        fun dockAway(from: Offset, dir: Int, vx: Float) {
+            val d = dock ?: return
             if (closing) return
-            closing = true
-            onSilence() // tiếng tắt ngay, thẻ bay đi rồi mới đóng hẳn
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            val target = if (dir > 0) maxW else -w
+            val speed = max(abs(vx), FLING_VELOCITY_DP * density.density * 2f)
+            val ms = (1000f * abs(target - from.x) / speed).roundToInt().coerceIn(FLY_MIN_MS, FLY_MAX_MS)
+            val y = from.y.coerceIn(0f, (maxH - h).coerceAtLeast(0f))
             controlsVisible = false
             settleJob?.cancel()
             settleJob = scope.launch {
-                settle.snapTo(from)
+                settle.snapTo(Offset(from.x, y))
                 settling = true
-                launch { settle.animateTo(Offset(toX, from.y), tween(ms, easing = LinearEasing)) }
-                cardAlpha.animateTo(0f, tween(ms, easing = LinearEasing))
-                onClosed()
+                settle.animateTo(Offset(target, y), tween(ms, easing = LinearEasing))
+                pull.snapTo(0f)
+                handleSlide.snapTo(0f)
+                handleAppear.snapTo(0f)
+                d.y = y
+                pos = Offset(if (dir > 0) homeX else leftX, y)
+                d.side = dir
+                settling = false
+            }
+        }
+
+        /** Kéo nút ở mép ra đủ mức (hoặc chạm nút): nút trượt ngược vào thẻ rồi mờ đi, thẻ hít về góc phía mép đó. */
+        fun undock() {
+            val d = dock ?: return
+            if (d.side == 0 || undocking) return
+            undocking = true
+            val side = d.side
+            val y = d.y.coerceIn(topY, max(topY, homeY))
+            scope.launch {
+                launch { handleSlide.animateTo(1f, tween(200, easing = StandardEasing)) }
+                pull.animateTo(fullPull, spring(dampingRatio = SNAP_DAMPING, stiffness = SNAP_STIFFNESS))
+                pos = Offset(if (side > 0) homeX else leftX, y)
+                d.side = 0
+                handleSlide.snapTo(0f)
+                undocking = false
+                controlsVisible = true
+                showTick++
             }
         }
 
@@ -479,17 +541,14 @@ internal fun MiniFrame(
 
         fun release(vx: Float, vy: Float) {
             val from = restPos()
-            val closeSpeed = CLOSE_VELOCITY_DP * density.density
-            val thrownAway = abs(vx) > closeSpeed && abs(vx) > abs(vy) * 1.5f
-            val over = overhang(from.x)
-            if (thrownAway || abs(over) > w / 2f) {
-                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                val dir = if (thrownAway) Math.signum(vx) else Math.signum(over)
-                val target = dir * maxW
-                val speed = max(abs(vx), FLING_VELOCITY_DP * density.density * 2f)
-                val ms = (1000f * abs(target - from.x) / speed).roundToInt().coerceIn(FLY_MIN_MS, FLY_MAX_MS)
-                flyAway(from, target, ms)
-                return
+            if (dock != null) {
+                val flung = abs(vx) > DOCK_VELOCITY_DP * density.density && abs(vx) > abs(vy) * 1.2f
+                val over = overhang(from.x)
+                if (flung || abs(over) > w / 2f) {
+                    val dir = if (flung) (if (vx > 0f) 1 else -1) else (if (over > 0f) 1 else -1)
+                    dockAway(from, dir, vx)
+                    return
+                }
             }
             // Về góc gần nhất theo hướng ném: trái / phải tự hít, dọc thì nằm đúng chỗ thả, gần mép trên / dưới thì hít vào mép.
             val centerX = from.x + w / 2f + vx * THROW_S
@@ -512,8 +571,8 @@ internal fun MiniFrame(
                     val s = cardScale.value * nudge.value
                     scaleX = s
                     scaleY = s
-                    // Thò ra khỏi mép càng nhiều càng mờ: thả ở đó là đóng.
-                    val fade = 1f - 0.85f * min(1f, abs(overhang(visual().x)) / w)
+                    // Thẻ kiểu kéo: thò ra khỏi mép càng nhiều càng mờ, thả ở đó là thu vào mép.
+                    val fade = if (dock != null && !dockActive()) 1f - 0.85f * min(1f, abs(overhang(visual().x)) / w) else 1f
                     alpha = cardAlpha.value * fade
                 }
                 .size(width, height)
@@ -535,6 +594,10 @@ internal fun MiniFrame(
                             MiniTouch.dragged = true
                             active = !closing
                             lastDragAt = SystemClock.uptimeMillis()
+                            if (showOnDrag && active) {
+                                controlsVisible = true
+                                showTick++
+                            }
                             if (active) {
                                 // Bắt lại thẻ đang bay về góc ngay dưới ngón tay.
                                 settleJob?.cancel()
@@ -574,12 +637,88 @@ internal fun MiniFrame(
                 }
         }
 
+        if (dockActive() && !inPip) {
+            val side = dock!!.side
+            val hw = with(density) { DOCK_HANDLE_W.toPx() }
+            val hh = with(density) { DOCK_HANDLE_H.toPx() }
+            val threshold = fullPull * UNDOCK_FRACTION
+            val corner = 14.dp
+            Box(
+                Modifier
+                    .offset {
+                        val cardX = dockCardX()
+                        val x = if (side > 0) cardX - hw + (handleSlide.value + 1f - handleAppear.value) * hw
+                        else cardX + w - (handleSlide.value + 1f - handleAppear.value) * hw
+                        val y = (dock.y + (h - hh) / 2f).coerceIn(0f, (maxH - hh).coerceAtLeast(0f))
+                        IntOffset(x.roundToInt(), y.roundToInt())
+                    }
+                    .graphicsLayer { alpha = 1f - handleSlide.value }
+                    .size(DOCK_HANDLE_W, DOCK_HANDLE_H)
+                    .clip(
+                        if (side > 0) RoundedCornerShape(topStart = corner, bottomStart = corner)
+                        else RoundedCornerShape(topEnd = corner, bottomEnd = corner)
+                    )
+                    .background(Color(0xE6000000))
+                    .pointerInput(side, fullPull, maxW) { detectTapGestures(onTap = { undock() }) }
+                    .pointerInput(side, fullPull, maxW) {
+                        val tracker = VelocityTracker()
+                        var total = 0f
+                        var crossed = false
+                        detectHorizontalDragGestures(
+                            onDragStart = {
+                                if (!undocking) {
+                                    tracker.resetTracking()
+                                    total = 0f
+                                    crossed = pull.value > threshold
+                                }
+                            },
+                            onHorizontalDrag = { change, dx ->
+                                if (undocking) return@detectHorizontalDragGestures
+                                change.consume()
+                                total += dx
+                                tracker.addPosition(change.uptimeMillis, Offset(total, 0f))
+                                val np = (pull.value - dx * side).coerceIn(0f, fullPull)
+                                scope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { pull.snapTo(np) }
+                                val now = np > threshold
+                                if (now != crossed) {
+                                    crossed = now
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                }
+                            },
+                            onDragEnd = {
+                                if (undocking) return@detectHorizontalDragGestures
+                                val vIn = -tracker.calculateVelocity().x * side // dương = đang kéo thẻ ra
+                                if (pull.value > threshold || vIn > UNDOCK_VELOCITY_DP * density.density) {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    undock()
+                                } else {
+                                    scope.launch { pull.animateTo(0f, spring(dampingRatio = 0.8f, stiffness = 500f)) }
+                                }
+                            },
+                            onDragCancel = {
+                                if (!undocking) scope.launch { pull.animateTo(0f, spring(dampingRatio = 0.8f, stiffness = 500f)) }
+                            }
+                        )
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(if (side > 0) MiniChevronLeft else MiniChevronRight, null, Modifier.size(22.dp), tint = Color.White)
+            }
+        }
+        LaunchedEffect(dock?.side) {
+            if ((dock?.side ?: 0) != 0 && handleAppear.value < 1f) {
+                handleAppear.animateTo(1f, tween(240, easing = EmphasizedDecelerate))
+            }
+        }
+
         Box(
             cardModifier
                 .background(Color.Black)
                 .pointerInput(Unit) { detectTapGestures(onTap = {
                         val afterDrag = MiniTouch.dragged || SystemClock.uptimeMillis() - lastDragAt < TAP_AFTER_DRAG_MS
-                        if (!closing && !afterDrag) controlsVisible = !controlsVisible
+                        if (!closing && !afterDrag) {
+                            if (onTap != null) onTap() else controlsVisible = !controlsVisible
+                        }
                     }) }
         ) {
             content(MiniFrameScope(controlsAlpha, controlsEnabled, pop.value, ::closeShrink))

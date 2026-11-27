@@ -837,6 +837,28 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
         else if (minRun[1] > 0.5f && minRun[0] <= attachPx) minClick(false)
         minGoalPx = minGoal()
     }
+    /** Thu video vào thẻ nổi: gập hết mọi bảng đang mở (Video khác, bình luận, cài đặt...) để không còn lớp nào che / chặn thẻ, rồi đóng màn xem. */
+    fun enterPopup(fromDrag: Boolean) {
+        sheet = null
+        moreOpen = false
+        fsComments = false
+        scope.launch { moreAnim.snapTo(0f) }
+        WatchMini.start(pb, makeStash(), WatchViewer.historySnapshot(), fromDrag = fromDrag)
+        WatchViewer.close()
+    }
+    // Rời app thành cửa sổ PiP của hệ thống khi đang mở bảng (Video khác, bình luận...) hay toàn màn hình: cửa sổ PiP chụp cả giao diện nên
+    // bảng che mất video và không bấm được. Vào PiP thì tự thu thành thẻ nổi (cửa sổ PiP chỉ còn video); popup tắt thì chỉ gập các bảng.
+    LaunchedEffect(PipState.inPip) {
+        if (!PipState.inPip) return@LaunchedEffect
+        if (PipPrefs.popup) {
+            enterPopup(fromDrag = true)
+        } else {
+            sheet = null
+            moreOpen = false
+            fsComments = false
+            moreAnim.snapTo(0f)
+        }
+    }
     fun minRelease(v: Float) {
         if (!minDragging) return
         val density = dens.density
@@ -854,9 +876,29 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
                 // Rơi lên thẻ bằng lò xo (như meetube SETTLE_LAND_*): hạ cánh nhẹ, có chút nảy.
                 minimize.animateTo(1f, spring(dampingRatio = 0.85f, stiffness = 800f), initialVelocity = (v / travel).coerceIn(0f, 8f))
                 WatchMini.instantEnter = true
-                WatchMini.start(pb, makeStash(), WatchViewer.historySnapshot())
-                WatchViewer.close()
+                enterPopup(fromDrag = true)
             }
+        }
+    }
+    /** Mũi tên chỉ xuống ở góc video: thu nhỏ thành thẻ y như cú kéo xuống (video co về chỗ thẻ rồi nhận thẻ kiểu kéo), không đóng video. */
+    fun minimizeNow() {
+        if (minDragging || minimize.isRunning || minimize.value > 0f) return
+        if (!PipPrefs.popup) {
+            WatchViewer.close()
+            return
+        }
+        if (fullscreen) {
+            // Toàn màn hình (ngang): không có hiệu ứng co về góc, thu thẳng vào thẻ nổi rồi màn xem tự đóng, app về dọc.
+            haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+            enterPopup(fromDrag = true)
+            return
+        }
+        controlsShown = false
+        haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+        scope.launch {
+            minimize.animateTo(1f, spring(dampingRatio = 0.85f, stiffness = 800f))
+            WatchMini.instantEnter = true
+            enterPopup(fromDrag = true)
         }
     }
     LaunchedEffect(fullscreen) { if (!fullscreen) moreAnim.snapTo(0f) }
@@ -1078,7 +1120,7 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
                     ambient = WatchPrefs.ambient,
                     holder = playerHolder,
                     onFrame = { ambientFrame = it },
-                    onClose = { WatchViewer.close() },
+                    onClose = { minimizeNow() },
                     onNext = { next?.let { WatchViewer.open(it) } },
                     onCast = { TvScreen.show(video) },
                     onCc = {
@@ -1331,8 +1373,7 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
                 // Hình trong hình: thu video vào thẻ nổi trong app, màn xem đóng, app về tab đang mở trước đó.
                 onPip = {
                     if (PipPrefs.popup) {
-                        WatchMini.start(pb, makeStash(), WatchViewer.historySnapshot())
-                        WatchViewer.close()
+                        enterPopup(fromDrag = false)
                     } else {
                         // Popup đang tắt: mở trang cài đặt để bật lại (AppRoot đóng màn xem).
                         PipState.openExperiments = true
@@ -1514,7 +1555,7 @@ private fun WatchPlayerArea(
                 // Hàng trên: thu nhỏ (đóng) | công tắc tự phát, truyền lên TV, phụ đề (CC), cài đặt.
                 // Toàn màn hình: mũi tên thoát toàn màn hình, kèm tiêu đề + tên kênh như YouTube.
                 Row(Modifier.align(Alignment.TopStart).fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = if (fullscreen) 16.dp else 0.dp), verticalAlignment = Alignment.CenterVertically) {
-                    ControlIcon(Lucide.ChevronDown, if (fullscreen) "Thoát toàn màn hình" else "Thu nhỏ", 30.dp) { if (fullscreen) onFullscreen() else onClose() }
+                    ControlIcon(Lucide.ChevronDown, "Thu nhỏ", 30.dp) { onClose() }
                     if (fullscreen && fsInfo != null) {
                         Column(Modifier.weight(1f).padding(horizontal = 6.dp)) {
                             Text(fsInfo.title, fontSize = 16.sp, fontWeight = FontWeight.Medium, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -1662,6 +1703,25 @@ private fun FullscreenMorePanel(
             .background(Color.Black.copy(alpha = 0.8f * fraction))
             .clickable(interactionSource = remember { MutableInteractionSource() }, indication = NoRipple) { onClose() }
     ) {
+        // Tiêu đề + nút X đứng yên một chỗ (không trượt theo bảng): ẩn khi đang kéo / trượt, chỉ hiện khi bảng mở hẳn.
+        val headerAlpha by animateFloatAsState(
+            targetValue = if (fraction >= 0.999f) 1f else 0f,
+            animationSpec = tween(if (fraction >= 0.999f) 150 else 80),
+            label = "moreHeader"
+        )
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .zIndex(1f)
+                .graphicsLayer { alpha = headerAlpha }
+                .draggable(state = dragState, orientation = Orientation.Vertical, onDragStopped = { releaseNow(it) })
+                .displayCutoutPadding()
+                .padding(start = 18.dp, end = 12.dp, top = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Video khác", fontSize = 16.sp, fontWeight = FontWeight.Medium, color = Color.White, modifier = Modifier.weight(1f))
+            ControlIcon(Lucide.X, "Đóng", 26.dp) { if (headerAlpha > 0.5f) onClose() }
+        }
         Column(
             Modifier
                 .fillMaxSize()
@@ -1673,10 +1733,6 @@ private fun FullscreenMorePanel(
                 )
                 .displayCutoutPadding()
         ) {
-            Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 12.dp, top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("Video khác", fontSize = 16.sp, fontWeight = FontWeight.Medium, color = Color.White, modifier = Modifier.weight(1f))
-                ControlIcon(Lucide.X, "Đóng", 26.dp) { onClose() }
-            }
             // Khoảng trống giữa tiêu đề và chip: đẩy chip + hàng video xuống sát đáy (như YouTube), cũng kéo xuống được.
             Spacer(Modifier.weight(1f).fillMaxWidth())
             LazyRow(

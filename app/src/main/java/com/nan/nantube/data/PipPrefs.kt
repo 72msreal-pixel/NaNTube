@@ -15,7 +15,8 @@ import org.json.JSONObject
  *   mà ẩn app (không vào được PiP) thì dừng thay vì phát nền;
  * - [unrestricted] (mặc định bật): chạy nền không giới hạn (miễn tối ưu pin). Tắt thì app không xin / nhắc quyền này nữa.
  *
- * Lưu qua [NanStorage] (thư mục NaNTube) nên gỡ app cài lại vẫn còn.
+ * Lưu theo từng tài khoản qua [NanStorage]: NaNTube/accounts/<id>/app_settings.json (chưa đăng nhập: NaNTube/guest/app_settings.json),
+ * nên gỡ app cài lại vẫn còn và mỗi tài khoản có bộ công tắc riêng. Tài khoản chưa có tệp riêng thì lấy tạm từ tệp chung của bản cũ.
  */
 object PipPrefs {
     private const val FEATURE = "app_settings"
@@ -34,6 +35,17 @@ object PipPrefs {
         private set
 
     private var hooked = false
+    private var account: Account? = null
+
+    /** Đổi tài khoản (AppRoot gọi): nạp bộ công tắc của [account] (null = khách). */
+    fun bind(account: Account?) {
+        if (this.account?.id == account?.id && bound) return
+        this.account = account
+        bound = true
+        load()
+    }
+
+    private var bound = false
 
     fun init(context: Context) {
         NanStorage.init(context)
@@ -46,7 +58,13 @@ object PipPrefs {
     }
 
     private fun load() {
-        val json = NanStorage.readJson(FEATURE, null) as? JSONObject ?: return
+        val json = (NanStorage.readJson(FEATURE, account) as? JSONObject
+            ?: if (account != null) NanStorage.readJson(FEATURE, null) as? JSONObject else null)
+        // Chưa có tệp nào: về mặc định (đổi sang tài khoản mới không được giữ công tắc của tài khoản trước).
+        if (json == null) {
+            popup = true; background = true; unrestricted = true; onlyWithPopup = false
+            return
+        }
         popup = json.optBoolean(KEY_POPUP, true)
         background = json.optBoolean(KEY_BACKGROUND, true)
         unrestricted = json.optBoolean(KEY_UNRESTRICTED, true)
@@ -80,6 +98,7 @@ object PipPrefs {
             .put(KEY_UNRESTRICTED, unrestricted)
             .put(KEY_ONLY_POPUP, onlyWithPopup)
             .toString()
-        Thread { runCatching { NanStorage.write(FEATURE, null, text) } }.start()
+        val owner = account
+        Thread { runCatching { NanStorage.write(FEATURE, owner, text) } }.start()
     }
 }

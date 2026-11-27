@@ -71,6 +71,8 @@ fun AppRoot() {
     var showHistory by remember { mutableStateOf(false) }
     var openList by remember { mutableStateOf<OpenList?>(null) }
     var saveVideo by remember { mutableStateOf<VideoItem?>(null) }
+    // Video vừa thu thành thẻ nổi: bảng "Lưu vào danh sách phát" đang mở (từ màn xem) phải đóng để không che thẻ.
+    LaunchedEffect(WatchMini.pb) { if (WatchMini.pb != null) saveVideo = null }
     var showAccounts by remember { mutableStateOf(false) }
     var showNotifications by remember { mutableStateOf(false) }
     var addStep by remember { mutableStateOf(AddStep.None) }
@@ -79,6 +81,8 @@ fun AppRoot() {
 
 
     val account = AccountStore.selected
+    // Công tắc popup / phát nền lưu riêng theo từng tài khoản.
+    LaunchedEffect(account?.id) { com.nan.nantube.data.PipPrefs.bind(account) }
     val mainFeed = remember { homeFeed() }
     val homeShorts = remember { homeShortsFeed() }
     val shorts = remember { shortsFeed() }

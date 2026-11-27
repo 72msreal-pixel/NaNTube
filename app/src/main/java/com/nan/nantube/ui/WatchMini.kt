@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -74,14 +75,29 @@ internal object WatchMini {
     /** Vị trí thẻ trên màn hình, giữ ở đây để đổi sang video khác ngay trong thẻ không làm thẻ nhảy về góc. */
     val cardPos = mutableStateOf(Offset.Unspecified)
 
+    /**
+     * Thẻ do cú kéo xuống / mũi tên thu nhỏ tạo ra: giao diện riêng (chỉ Tạm dừng + X ở hai góc, tự ẩn sau 3 giây, hiện lại khi kéo,
+     * chạm vào video là mở rộng) và ném ngang thì thu vào mép thành nút kéo. Thẻ mở từ menu "Hình trong hình" thì giữ giao diện đầy đủ.
+     */
+    var dragStyle by mutableStateOf(false)
+        private set
+
+    /** Thẻ kiểu kéo đang thu ở mép nào (-1 trái, 1 phải, 0 không) và cao ở đâu: giữ ở đây để đổi video trong thẻ không làm mất. */
+    val dock = MiniDock()
+
     /** Giao [playback] cho thẻ nổi; Short đang ở thẻ nổi (nếu có) thì tắt để hai bên không giành âm thanh. */
-    fun start(playback: WatchPlayback, data: WatchStash? = null, prevs: List<VideoItem> = emptyList()) {
+    fun start(playback: WatchPlayback, data: WatchStash? = null, prevs: List<VideoItem> = emptyList(), fromDrag: Boolean = false) {
         if (pb !== playback) pb?.release()
         if (ShortsMini.open && !ShortsMini.background) ShortsMini.close()
+        // Thẻ nổi không tương tác được với các bảng phía sau: đóng các bảng cấp app (tải xuống, truyền lên TV) để không che / chặn thẻ.
+        DownloadPanel.close()
+        TvScreen.close()
         stash = data
         history.clear()
         history.addAll(prevs)
         cardPos.value = Offset.Unspecified
+        dock.reset()
+        dragStyle = fromDrag
         pb = playback
         // Thẻ nổi vừa mở khi app còn hiện: bật thẻ media (nếu có phát nền) ngay, không đợi rời app.
         ShortsBackground.onPopupOpened()
@@ -93,6 +109,7 @@ internal object WatchMini {
         if (have.video.id != video.id || have.released) return null
         pb = null
         history.clear()
+        dock.reset()
         ShortsBackground.onPopupClosed()
         return have
     }
@@ -110,6 +127,7 @@ internal object WatchMini {
         pb = null
         stash = null
         history.clear()
+        dock.reset()
         have.release()
         ShortsBackground.onPopupClosed()
     }
@@ -220,6 +238,9 @@ private fun WatchMiniContent(pb: WatchPlayback, account: Account?) {
         changeKey = video.id,
         instantEnter = instant,
         posState = WatchMini.cardPos,
+        dock = if (WatchMini.dragStyle) WatchMini.dock else null,
+        showOnDrag = WatchMini.dragStyle,
+        onTap = if (WatchMini.dragStyle) ({ WatchMini.expand() }) else null,
         onSilence = { pb.player.playWhenReady = false }, // tiếng tắt ngay, thẻ bay đi rồi mới đóng hẳn
         onClosed = { WatchMini.close() }
     ) { f ->
@@ -266,7 +287,23 @@ private fun WatchMiniContent(pb: WatchPlayback, account: Account?) {
             CaptionOverlay(captionText, Modifier.align(Alignment.BottomCenter).padding(start = 8.dp, end = 8.dp, bottom = 8.dp), small = true)
         }
 
-        if (f.controlsAlpha > 0.001f && !inPip && !pb.failed) {
+        if (f.controlsAlpha > 0.001f && !inPip && !pb.failed && WatchMini.dragStyle) {
+            // Thẻ kiểu kéo: chỉ hai nút tròn ở hai góc (Tạm dừng | Đóng), không lớp phủ; chạm vào video là mở rộng.
+            Box(Modifier.fillMaxSize().graphicsLayer { alpha = f.controlsAlpha }) {
+                MiniButton(Modifier.align(Alignment.TopStart).padding(6.dp), 40.dp, f.controlsEnabled, { pb.toggle() }) {
+                    Crossfade(targetState = !pb.wantPlay || pb.ended, animationSpec = tween(MINI_FADE_IN_MS), label = "dragPlayPause") { paused ->
+                        Box(Modifier.size(36.dp).background(Color(0x99000000), CircleShape), contentAlignment = Alignment.Center) {
+                            MiniIcon(if (paused) MiniPlay else MiniPause, 22.dp)
+                        }
+                    }
+                }
+                MiniButton(Modifier.align(Alignment.TopEnd).padding(6.dp), 40.dp, f.controlsEnabled, f.closeShrink) {
+                    Box(Modifier.size(36.dp).background(Color(0x99000000), CircleShape), contentAlignment = Alignment.Center) {
+                        MiniIcon(MiniClose, 22.dp)
+                    }
+                }
+            }
+        } else if (f.controlsAlpha > 0.001f && !inPip && !pb.failed) {
             Box(Modifier.fillMaxSize().graphicsLayer { alpha = f.controlsAlpha }) {
                 Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0x99000000), Color(0x40000000), Color(0x99000000)))))
                 MiniButton(Modifier.align(Alignment.TopStart).padding(2.dp), 36.dp, f.controlsEnabled, f.closeShrink) {
