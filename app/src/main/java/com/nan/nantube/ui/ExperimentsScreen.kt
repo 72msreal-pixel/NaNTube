@@ -53,22 +53,35 @@ fun ExperimentsScreen(onBack: () -> Unit) {
         }
         NanSwitchRow(
             title = "Xem video dạng popup",
-            subtitle = "Bật: Short thu thành cửa sổ nhỏ trong app, và thành PiP khi bạn thoát ra màn hình chính. Tắt: không tạo popup nào, bấm nút Hình trong hình sẽ mở trang cài đặt này.",
+            subtitle = "Bật: Short và video thu thành cửa sổ nhỏ trong app, và thành PiP khi bạn thoát ra màn hình chính. Tắt: không tạo popup nào, bấm nút Hình trong hình sẽ mở trang cài đặt này.",
             checked = PipPrefs.popup,
             onCheckedChange = {
                 PipPrefs.updatePopup(it)
-                if (!it) ShortsMini.close()
+                if (!it) {
+                    ShortsMini.close()
+                    WatchMini.close()
+                }
             }
         )
         NanSwitchRow(
             title = "Hỗ trợ phát nền video",
-            subtitle = "Bật: Short vẫn phát tiếng khi tắt màn hình hoặc sang app khác, có thẻ điều khiển media. Tắt: chỉ xem video, rời app là dừng.",
+            subtitle = "Bật: Short và video vẫn phát tiếng khi tắt màn hình hoặc sang app khác, có thẻ điều khiển media. Tắt: chỉ xem video, rời app là dừng.",
             checked = PipPrefs.background,
             onCheckedChange = {
                 PipPrefs.updateBackground(it)
                 if (!it && ShortsBackground.appVisible) ShortsPlaybackService.stop(context)
                 if (it) ShortsBackground.onPopupOpened()
             }
+        )
+        NanSwitchRow(
+            title = "Chỉ phát nền khi có popup",
+            subtitle = if (PipPrefs.onlyWithPopup) {
+                "Bật: Short và video chỉ phát nền khi đang ở popup (thẻ nổi, hoặc PiP lúc vừa rời app). Đang xem toàn màn hình mà ẩn app không vào được PiP thì dừng."
+            } else {
+                "Tắt: Short và video phát nền cả khi đang xem toàn màn hình, không cần popup."
+            },
+            checked = PipPrefs.onlyWithPopup,
+            onCheckedChange = { PipPrefs.updateOnlyWithPopup(it) }
         )
         // Hãng máy (realme / ColorOS, Xiaomi...) vẫn đóng băng app vài phút sau khi tắt màn hình nếu còn bị tối ưu pin.
         var refresh by remember { mutableIntStateOf(0) }

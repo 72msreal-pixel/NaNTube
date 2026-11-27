@@ -63,6 +63,12 @@ Tab Music dùng InnerTube của YouTube Music (WEB_REMIX, theo `MusicApi` của 
 - Mục "Nội dung đã tải" (video tải về xem khi không có mạng) mới có giao diện, chưa có chức năng tải; sẽ làm theo bộ tải của meetube (`DownloadRegistry`, `DownloadStorage`, `DownloadJob`).
 - Chip "Gần đây" mở bảng sắp xếp Gần đây / A-Z / Z-A. Chip Đã tải xuống / Danh sách phát (Video đã thích + Xem sau) / Âm nhạc lọc các mục thư viện, chạm lại để bỏ lọc. "Âm nhạc" lấy các danh sách có video nhạc, đoán qua kênh "- Topic" hoặc tiêu đề MV / lyrics / remix (`VideoItem.isMusic`).
 
+## Popup / phát nền cho cả video dài (Cài đặt → Thử nghiệm các tính năng mới)
+Ba công tắc áp dụng cho **cả Short lẫn video dài** (màn xem `WatchScreen` và thẻ nổi `WatchMini`):
+- **Xem video dạng popup**: bật thì Hình trong hình ở menu video dài thu video vào thẻ nổi, rời app thì thành PiP; tắt thì bấm Hình trong hình sẽ mở trang cài đặt này.
+- **Hỗ trợ phát nền video**: bật thì video dài cũng phát tiếp khi tắt màn hình / sang app khác. Dùng chung `ShortsPlaybackService` + `ShortsBackground` với Short: app ẩn thì `WatchPlayback.setAudioOnly(true)` (tắt luồng hình), thẻ media có Phát/Tạm dừng và hai nút lùi / tua 10 giây, hiện lại app thì bật hình lại. Tắt thì rời app là dừng.
+- **Chỉ phát nền khi có popup** (`PipPrefs.onlyWithPopup`, mặc định tắt): bật thì Short / video chỉ phát nền khi đang ở popup (thẻ nổi, hoặc PiP lúc vừa rời app). Đang xem toàn màn hình mà ẩn app không vào được PiP thì dừng, không phát nền.
+
 ## Version
 Sửa duy nhất file `version.txt` (dạng `00.00.01`). Tên version và versionCode đều lấy từ đây.
 Mỗi lần ra bản mới nhớ tăng số, đừng giảm, nếu không máy sẽ không cho cập nhật đè.

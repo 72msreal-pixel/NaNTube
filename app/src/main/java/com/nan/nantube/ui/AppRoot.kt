@@ -180,6 +180,7 @@ fun AppRoot() {
     LaunchedEffect(PipState.openExperiments) {
         if (!PipState.openExperiments) return@LaunchedEffect
         ShortsViewer.close()
+        WatchViewer.close()
         tab = Tab.Info
         showHistory = false
         openList = null

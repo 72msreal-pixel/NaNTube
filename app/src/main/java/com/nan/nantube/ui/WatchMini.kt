@@ -59,6 +59,8 @@ internal object WatchMini {
         if (pb !== playback) pb?.release()
         if (ShortsMini.open && !ShortsMini.background) ShortsMini.close()
         pb = playback
+        // Thẻ nổi vừa mở khi app còn hiện: bật thẻ media (nếu có phát nền) ngay, không đợi rời app.
+        ShortsBackground.onPopupOpened()
     }
 
     /** Màn xem mở đúng video đang ở thẻ nổi: nhận lại bộ phát đang chạy, thẻ biến mất. */
@@ -66,6 +68,7 @@ internal object WatchMini {
         val have = pb ?: return null
         if (have.video.id != video.id || have.released) return null
         pb = null
+        ShortsBackground.onPopupClosed()
         return have
     }
 
@@ -74,6 +77,7 @@ internal object WatchMini {
         val have = pb ?: return
         pb = null
         have.release()
+        ShortsBackground.onPopupClosed()
     }
 
     /** Nút mở rộng: mở lại màn xem đúng video này, bộ phát chạy liền mạch. */
@@ -116,7 +120,9 @@ private fun WatchMiniContent(pb: WatchPlayback, account: Account?) {
         )
         PipState.controls = controls
         PipState.watchStop = { WatchMini.close() }
+        PipState.watchPb = pb
         onDispose {
+            if (PipState.watchPb === pb) PipState.watchPb = null
             if (PipState.controls === controls) PipState.controls = null
             PipState.watchStop = null
             PipState.watchId = null

@@ -52,14 +52,18 @@ val WatchThumbDownOutline: ImageVector by lazy {
     )
 }
 
+/** Chia sẻ kiểu YouTube: mũi tên cong viền rỗng (khoét giữa bằng EvenOdd). */
 val WatchShare: ImageVector by lazy {
-    fill(
-        "WatchShare",
-        "M18,16.08c-0.76,0 -1.44,0.3 -1.96,0.77L8.91,12.7c0.05,-0.23 0.09,-0.46 0.09,-0.7s-0.04,-0.47 -0.09,-0.7l7.05,-4.11" +
-            "c0.54,0.5 1.25,0.81 2.04,0.81 1.66,0 3,-1.34 3,-3s-1.34,-3 -3,-3 -3,1.34 -3,3c0,0.24 0.04,0.47 0.09,0.7L8.04,9.81" +
-            "C7.5,9.31 6.79,9 6,9c-1.66,0 -3,1.34 -3,3s1.34,3 3,3c0.79,0 1.5,-0.31 2.04,-0.81l7.12,4.16c-0.05,0.21 -0.08,0.43 -0.08,0.65" +
-            " 0,1.61 1.31,2.92 2.92,2.92 1.61,0 2.92,-1.31 2.92,-2.92s-1.31,-2.92 -2.92,-2.92z"
-    )
+    ImageVector.Builder("WatchShare", 24.dp, 24.dp, 24f, 24f).apply {
+        addPath(
+            pathData = PathParser().parsePathString(
+                "M15,5.63L20.66,12 15,18.37V14h-1c-3.96,0 -7.14,1 -9.75,3.09 1.84,-4.07 5.11,-6.4 9.89,-7.1l0.86,-0.13V5.63" +
+                    "M14,3v6C6.22,10.13 3.11,15.33 2,21c2.78,-3.97 6.44,-6.05 12,-6v6l9,-9 -9,-9z"
+            ).toNodes(),
+            pathFillType = androidx.compose.ui.graphics.PathFillType.EvenOdd,
+            fill = SolidColor(Color.Black)
+        )
+    }.build()
 }
 
 val WatchMore: ImageVector by lazy {
@@ -87,8 +91,13 @@ val WatchCast: ImageVector by lazy {
     )
 }
 
+/** Phóng to video kiểu YouTube: hai mũi tên chéo đầu chữ L hướng ra góc trên phải / dưới trái. */
 val WatchFullscreen: ImageVector by lazy {
-    fill("WatchFullscreen", "M7,14L5,14v5h5v-2L7,17v-3zM5,10h2L7,7h3L10,5L5,5v5zM17,17h-3v2h5v-5h-2v3zM14,5v2h3v3h2L19,5h-5z")
+    fill(
+        "WatchFullscreen",
+        "M14,3h7v7h-2V6.41l-5.29,5.3 -1.42,-1.42L17.59,5H14V3z",
+        "M10,21H3v-7h2v3.59l5.29,-5.3 1.42,1.42L6.41,19H10v2z"
+    )
 }
 
 val WatchPlay: ImageVector by lazy { fill("WatchPlay", "M8,5v14l11,-7z") }
