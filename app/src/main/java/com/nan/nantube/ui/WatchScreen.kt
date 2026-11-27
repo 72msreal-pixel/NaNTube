@@ -510,7 +510,7 @@ internal class WatchPlayback(
     }
 
     /** Công tắc chủ động, độc lập với chế độ chỉ âm thanh tạm thời khi app ẩn. */
-    fun setOnTheGo(on: Boolean) {
+    fun updateOnTheGo(on: Boolean) {
         if (released || onTheGo == on) return
         onTheGo = on
         if (WatchMini.pb !== this && WatchViewer.video?.id == video.id) WatchViewer.onTheGo = on
@@ -874,18 +874,14 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
         WatchMini.start(pb, makeStash(), WatchViewer.historySnapshot(), fromDrag = fromDrag)
         WatchViewer.close()
     }
-    // Rời app thành cửa sổ PiP của hệ thống khi đang mở bảng (Video khác, bình luận...) hay toàn màn hình: cửa sổ PiP chụp cả giao diện nên
-    // bảng che mất video và không bấm được. Vào PiP thì tự thu thành thẻ nổi (cửa sổ PiP chỉ còn video); popup tắt thì chỉ gập các bảng.
+    // Rời app thành cửa sổ PiP của hệ thống khi đang mở bảng (Video khác, bình luận...): cửa sổ PiP chụp cả giao diện nên bảng che mất video.
+    // Chỉ gập các bảng lại, giữ nguyên màn xem (không đổi sang thẻ nổi giữa chừng vì làm cửa sổ PiP bị méo / tự phóng to).
     LaunchedEffect(PipState.inPip) {
         if (!PipState.inPip) return@LaunchedEffect
-        if (PipPrefs.popup) {
-            enterPopup(fromDrag = true)
-        } else {
-            sheet = null
-            moreOpen = false
-            fsComments = false
-            moreAnim.snapTo(0f)
-        }
+        sheet = null
+        moreOpen = false
+        fsComments = false
+        moreAnim.snapTo(0f)
     }
     fun minRelease(v: Float) {
         if (!minDragging) return

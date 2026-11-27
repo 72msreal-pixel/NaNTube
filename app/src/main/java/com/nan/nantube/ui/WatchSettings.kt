@@ -211,7 +211,7 @@ internal fun WatchSettingsSheet(
                 SheetEntry(SpeedIcon, "Tốc độ phát", speedShort(pb.speed), chevron = true) { onPage(WatchSheetPage.Speed) },
                 SheetEntry(AudioLinesIcon, "Bản âm thanh", pickedAudio?.label ?: "Mặc định", chevron = true) { onPage(WatchSheetPage.Audio) },
                 SheetEntry(CaptionsIcon, "Phụ đề", activeTrack?.label) { onPage(WatchSheetPage.Captions) },
-                SheetEntry(OnTheGoIcon, "trên đường đi", toggle = pb.onTheGo) { pb.setOnTheGo(!pb.onTheGo) },
+                SheetEntry(OnTheGoIcon, "trên đường đi", toggle = pb.onTheGo) { pb.updateOnTheGo(!pb.onTheGo) },
                 SheetEntry(Lucide.Settings, "Tuỳ chọn khác", chevron = true) { onPage(WatchSheetPage.More) }
             )
             WatchSheetPage.More -> listOf(
