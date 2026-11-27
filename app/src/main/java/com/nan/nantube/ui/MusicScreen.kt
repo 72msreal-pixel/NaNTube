@@ -78,7 +78,9 @@ fun MusicScreen(ui: MusicUi, account: Account?, onSaveToPlaylist: (VideoItem) ->
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         SearchBox(ui.query, "Tìm bài hát, nghệ sĩ", { ui.query = it }) { ui.submitted = ui.query.trim() }
         PagedBody(ui.home, onRetry = { ui.home.load(account, ui.submitted, force = true) }) {
-            ShelfList(ui.home, account, onSaveToPlaylist, onOpen = ui::open)
+            YtPullRefresh(ui.home.loading, onRefresh = { ui.home.load(account, ui.submitted, force = true, keep = true) }) {
+                ShelfList(ui.home, account, onSaveToPlaylist, onOpen = ui::open)
+            }
         }
     }
 }
@@ -101,7 +103,9 @@ private fun MusicDetail(
             Text(item.title, fontSize = 20.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         PagedBody(feed, onRetry = { feed.load(account, force = true) }) {
-            ShelfList(feed, account, onSaveToPlaylist, onOpen)
+            YtPullRefresh(feed.loading, onRefresh = { feed.load(account, force = true, keep = true) }) {
+                ShelfList(feed, account, onSaveToPlaylist, onOpen)
+            }
         }
     }
 }

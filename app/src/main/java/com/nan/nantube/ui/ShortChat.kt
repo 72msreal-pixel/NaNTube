@@ -93,6 +93,8 @@ import com.nan.nantube.data.CommentItem
 import com.nan.nantube.data.CommentSort
 import com.nan.nantube.data.CommentsRepository
 import com.nan.nantube.data.VideoItem
+import com.nan.nantube.data.OwnerRef
+import com.nan.nantube.data.VideoOwner
 import com.nan.nantube.data.pinnedHandle
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
@@ -139,8 +141,9 @@ class ShortChatSession {
     var loadedAt = 0L
     var scrollIndex = 0
     var scrollOffset = 0
-    /** Handle của chủ video, học từ nhãn ghim (chỉ bảng "Nổi bật nhất" có bình luận ghim) rồi nhớ lại cho cả "Mới nhất". */
-    var creator by mutableStateOf<String?>(null)
+    /** Mã kênh (UC…) của chủ video, lấy từ trang video rồi nhớ lại cho cả "Nổi bật nhất" và "Mới nhất". */
+    var ownerId by mutableStateOf<String?>(null)
+    var ownerHandle by mutableStateOf<String?>(null)
 }
 
 /** Bình luận đã tải của một kiểu sắp xếp (như MeeTube giữ riêng Top / Newest): đổi qua lại không phải tải lại. */
@@ -190,9 +193,27 @@ fun ShortChatContent(video: VideoItem, account: Account?, imeOverlapPx: Int = 0,
     val keyboard = LocalSoftwareKeyboardController.current
     val session = remember(video.id, account?.id) { ShortChatCache.get(video.id + "|" + (account?.id ?: "")) }
     val nodes = session.nodes
-    val creator = session.creator
-    LaunchedEffect(nodes.size) {
-        if (session.creator == null) session.creator = nodes.firstNotNullOfOrNull { pinnedHandle(it.item.pinned) }
+    // Nhãn ghim chỉ chủ video mới có: handle trong nhãn cũng là handle chủ video (vẫn so từng ký tự với người viết).
+    val creator = OwnerRef(
+        session.ownerId,
+        (listOfNotNull(session.ownerHandle) + nodes.mapNotNull { pinnedHandle(it.item.pinned) }).toSet()
+    )
+    // Mã kênh chủ video lấy từ trang video (như check nhãn ghim nhưng chính xác): bình luận có cùng mã kênh là của chủ video.
+    LaunchedEffect(video.id) {
+        if (session.ownerId != null && session.ownerHandle != null) return@LaunchedEffect
+        val info = try {
+            com.nan.nantube.data.ShortsPlayback.info(context.applicationContext, account, video).await()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+        val found = VideoOwner.find(video.id, account)
+        session.ownerId = (info?.channelId ?: found?.id ?: video.channelId)?.takeIf { it.startsWith("UC") }
+        // Không đọc được handle từ trang video thì thử tên kênh của thẻ, chỉ khi nó có dạng handle (không dấu cách).
+        session.ownerHandle = found?.handle
+            ?: info?.author?.trim()?.trimStart('@')?.takeIf { it.isNotEmpty() && it.none(Char::isWhitespace) }?.let { "@$it" }
+        android.util.Log.d("NanCreator", "video=${video.id} ownerId=${session.ownerId} ownerHandle=${session.ownerHandle}")
     }
     val listState = rememberLazyListState(session.scrollIndex, session.scrollOffset)
     DisposableEffect(session) {
@@ -602,7 +623,7 @@ private fun CommentBlock(
     node: ShortChatNode,
     video: VideoItem,
     account: Account?,
-    creator: String?,
+    creator: OwnerRef,
     onSave: (VideoItem) -> Unit,
     onVote: (ShortChatNode, Boolean, TapEffectState) -> Unit,
     onReply: (ShortChatNode) -> Unit,
@@ -697,7 +718,7 @@ private fun CommentRow(
     node: ShortChatNode,
     video: VideoItem,
     account: Account?,
-    creator: String?,
+    creator: OwnerRef,
     onSave: (VideoItem) -> Unit,
     avatar: Dp,
     joined: Boolean,
@@ -736,7 +757,7 @@ private fun CommentRow(
                 }
             }
             // Chủ video: tên nằm trong viên sáng (YouTube báo isCreator, hoặc trùng handle học từ nhãn ghim).
-            val byCreator = c.creator || (creator != null && c.author == creator)
+            val byCreator = c.creator || creator.matches(c)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Row(
                     (if (byCreator) Modifier.height(17.dp).clip(RoundedCornerShape(50)).background(Color(0xFFF1F1F1)).padding(start = 5.dp, end = 4.dp) else Modifier)
@@ -748,10 +769,11 @@ private fun CommentRow(
                         color = if (byCreator) Color(0xFF0F0F0F) else NanColors.TextSecondary,
                         modifier = Modifier.weight(1f, fill = false)
                     )
-                    if (byCreator) Box(
-                        Modifier.padding(start = 4.dp).size(12.dp).clip(CircleShape).background(Color(0xFF0F0F0F)),
+                    // Dấu tích chỉ khi YouTube báo xác minh: chủ video không xác minh thì chỉ có viên sáng, người thường xác minh có tích xám.
+                    if (c.verified) Box(
+                        Modifier.padding(start = 4.dp).size(12.dp).clip(CircleShape).background(if (byCreator) Color(0xFF0F0F0F) else NanColors.TextSecondary),
                         contentAlignment = Alignment.Center
-                    ) { Icon(Lucide.Check, null, Modifier.size(8.dp), tint = Color.White) }
+                    ) { Icon(Lucide.Check, null, Modifier.size(8.dp), tint = if (byCreator) Color.White else Color(0xFF0F0F0F)) }
                 }
                 c.published?.let { Text(" • $it", fontSize = ChatMetaSize, lineHeight = ChatMetaLine, color = NanColors.TextSecondary, maxLines = 1) }
             }

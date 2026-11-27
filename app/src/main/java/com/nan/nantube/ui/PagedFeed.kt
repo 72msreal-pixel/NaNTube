@@ -91,6 +91,8 @@ class PagedFeed<T : Any>(
         val key = (account?.id ?: "") + "|" + arg
         if (!force && key == currentKey) return
         stash()
+        // Làm mới: bỏ hết bản nhớ cũ (mọi chip / từ khóa) để không bao giờ hiện lại danh sách cũ sau khi đã kéo làm mới.
+        if (force) cache.clear()
         job?.cancel()
         moreJob?.cancel()
         currentKey = key

@@ -75,7 +75,7 @@ private const val ROWS_PER_BLOCK = 2
 
 /** Nguồn Short (có tiêu đề + ảnh bìa) cho các hàng Short xen giữa trang chủ. */
 fun homeShortsFeed() = PagedFeed<VideoItem>(
-    first = { _, _ -> VideoRepository.shortsSearchPage(ShortDetector.account) },
+    first = { _, _ -> VideoRepository.shortsSearchPage(ShortDetector.account, varied = true) },
     more = { account, token -> VideoRepository.shortsMore(account, token) },
     keyOf = { it.id }
 )
@@ -121,7 +121,11 @@ fun MainFeedScreen(
                 // Hết Short để xen thì nạp thêm, để hàng nào cũng đủ 2 ô.
                 if (withShorts && shortsFeed.items.size / (2 * ROWS_PER_BLOCK) <= feed.items.size / VIDEOS_PER_SHORT_ROW + 1) shortsFeed.loadMore(account)
             }
-            YtPullRefresh(feed.loading, onRefresh = { feed.load(account, chip.toString(), force = true, keep = true) }) {
+            YtPullRefresh(feed.loading, onRefresh = {
+                feed.load(account, chip.toString(), force = true, keep = true)
+                // Hàng Short xen giữa cũng phải lấy bộ mới, không thì vẫn kẹt mấy Short cũ.
+                if (withShorts) shortsFeed.load(account, force = true, keep = true)
+            }) {
                 LazyColumn(Modifier.fillMaxSize(), state = feed.listState, contentPadding = PaddingValues(bottom = 16.dp)) {
                     val onHidden: (VideoItem, Boolean) -> Unit = { v, wholeChannel ->
                         // "Không đề xuất kênh này" ẩn luôn các video khác của kênh đó đang hiện.

@@ -238,6 +238,10 @@ object VideoRepository {
     private const val SEARCH_ANY = "EgIQAQ%3D%3D" // chỉ video
     private const val SEARCH_SHORT = "EgIYAQ%3D%3D" // dưới 4 phút
     private const val SEARCH_SHORTS_ONLY = "EgIQCQ%3D%3D" // chỉ Shorts
+    private val SHORTS_TOPICS = listOf(
+        "#shorts", "#shorts hài", "#shorts hay nhất", "#shorts nhạc", "#shorts game",
+        "#shorts thể thao", "#shorts động vật", "#shorts nấu ăn", "#shorts công nghệ", "#shorts du lịch"
+    )
 
     suspend fun home(account: Account?): List<VideoItem> {
         val json = InnerTube.call("browse", JSONObject().put("browseId", "FEwhat_to_watch"), account)
@@ -273,9 +277,14 @@ object VideoRepository {
     }
 
     /** Short có tiêu đề (từ tìm kiếm) cho các hàng Short xen giữa trang chủ; feed reel chỉ có mã video nên không dùng được cho thẻ. */
-    suspend fun shortsSearchPage(account: Account?): Paged<VideoItem> {
+    suspend fun shortsSearchPage(account: Account?, varied: Boolean = false): Paged<VideoItem> {
+        // Tìm kiếm "#shorts" luôn trả cùng một bộ nên làm mới không đổi gì: khi [varied] thì chọn ngẫu nhiên một chủ đề và xáo thứ tự.
+        val query = if (varied) SHORTS_TOPICS.random() else "#shorts"
         val page = try {
-            searchPage("#shorts", SEARCH_SHORTS_ONLY, account).let { Paged(it.items.shortVideos(), it.token) }
+            searchPage(query, SEARCH_SHORTS_ONLY, account).let {
+                val list = it.items.shortVideos()
+                Paged(if (varied) list.shuffled() else list, it.token)
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: AuthRejected) {

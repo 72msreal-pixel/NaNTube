@@ -24,6 +24,10 @@ data class CommentItem(
     val pinned: String? = null,
     /** YouTube báo thẳng người viết là chủ kênh của video (định dạng mới có isCreator). */
     val creator: Boolean = false,
+    /** Mã kênh (UC…) của người viết, để so với mã kênh chủ video (xem [VideoOwner]). */
+    val authorChannelId: String? = null,
+    /** Người viết có dấu tích xác minh (kênh xác minh / nghệ sĩ chính thức) theo YouTube. */
+    val verified: Boolean = false,
     /** Số phản hồi ("5") và token mở danh sách phản hồi (null = không có phản hồi). */
     val replies: String?,
     val repliesToken: String?,
@@ -47,7 +51,36 @@ data class CommentItem(
     }
 }
 
-/** "@handle" trong nhãn ghim, dù nhãn viết kiểu "Pinned by @handle" hay "@handle đã ghim": đó là chủ kênh của video. */
+/** Chủ video: mã kênh (UC…) và các handle (@…) đã biết; người viết là chủ video nếu trùng mã kênh hoặc trùng handle ĐÚNG TỪNG KÝ TỰ. */
+class OwnerRef(val id: String?, val handles: Set<String>) {
+    fun matches(c: CommentItem): Boolean =
+        (id != null && c.authorChannelId == id) || (c.author.startsWith("@") && c.author in handles)
+}
+
+/** Chủ video đọc từ videoOwnerRenderer trong `next` của chính video (mã kênh + handle từ canonicalBaseUrl); nhớ lại theo video. */
+object VideoOwner {
+    class Found(val id: String?, val handle: String?)
+    private val cache = java.util.concurrent.ConcurrentHashMap<String, Found>()
+
+    suspend fun find(videoId: String, account: Account?): Found? {
+        cache[videoId]?.let { return it }
+        return try {
+            val json = InnerTube.callAny("next", JSONObject().put("videoId", videoId), account)
+            val owner = findKey(json, "videoOwnerRenderer")
+            val endpoint = owner.dig("navigationEndpoint", "browseEndpoint") as? JSONObject
+                ?: owner.dig("title", "runs", 0, "navigationEndpoint", "browseEndpoint") as? JSONObject
+            val id = endpoint?.optString("browseId")?.takeIf { it.startsWith("UC") }
+            val handle = endpoint?.optString("canonicalBaseUrl")?.trimStart('/')?.takeIf { it.startsWith("@") }
+            if (id == null && handle == null) null else Found(id, handle).also { cache[videoId] = it }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+    }
+}
+
+/** "@handle" trong nhãn ghim, dù nhãn viết kiểu "Pinned by @handle" hay "@handle đã ghim". */
 fun pinnedHandle(label: String?): String? = label?.let { Regex("@[\\p{L}\\p{N}._-]+").find(it)?.value }
 
 /** Endpoint và tham số chỉnh sửa do chính YouTube cấp cho bình luận của tài khoản. */
@@ -389,6 +422,11 @@ object CommentsRepository {
             heartedBy = toolbar.field("creatorThumbnailUrl").takeIf { state.field("heartState") == "TOOLBAR_HEART_STATE_HEARTED" },
             pinned = ytText(vm?.opt("pinnedText")),
             creator = author?.optBoolean("isCreator") == true,
+            verified = author?.optBoolean("isVerified") == true || author?.optBoolean("isArtist") == true,
+            authorChannelId = author.field("channelId")?.takeIf { it.startsWith("UC") }
+                ?: listOf(author, vm).firstNotNullOfOrNull { node ->
+                    findAllKeys(node, "browseEndpoint").firstNotNullOfOrNull { it.optString("browseId").takeIf { id -> id.startsWith("UC") } }
+                },
             replies = toolbar.field("replyCount")?.takeIf { repliesToken != null && it != "0" },
             repliesToken = repliesToken,
             level = props.optInt("replyLevel"),
@@ -430,6 +468,10 @@ object CommentsRepository {
             liked = liked,
             disliked = disliked,
             pinned = ytText(r.dig("pinnedCommentBadge", "pinnedCommentBadgeRenderer", "label")),
+            creator = r.optBoolean("authorIsChannelOwner") || r.optBoolean("isCreator"),
+            verified = (r.dig("authorCommentBadge", "authorCommentBadgeRenderer", "icon", "iconType") as? String)
+                ?.let { it.startsWith("CHECK") || it.contains("ARTIST") } == true,
+            authorChannelId = (r.dig("authorEndpoint", "browseEndpoint", "browseId") as? String)?.takeIf { it.startsWith("UC") },
             replies = if (repliesToken != null || detailToken != null) r.field("replyCount")
                 ?: ytText(r.opt("repliesCount")) ?: findKey(r.opt("repliesCount"), "accessibilityData").field("label") else null,
             repliesToken = repliesToken ?: detailToken.takeIf { r.has("repliesCount") || r.optInt("replyCount") > 0 },
