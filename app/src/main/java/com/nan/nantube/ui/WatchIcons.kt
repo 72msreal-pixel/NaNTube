@@ -52,14 +52,22 @@ val WatchThumbDownOutline: ImageVector by lazy {
     )
 }
 
+/**
+ * Chia sẻ kiểu YouTube (đo từ ảnh chụp): mũi tên cong, đầu mũi tên to, chỉ có viền dày ~2 và bo tròn góc, bên trong rỗng.
+ * Vẽ bằng nét (stroke) thay vì tô hai đường lồng nhau nên viền luôn đều, không mảnh như bản trước.
+ */
 val WatchShare: ImageVector by lazy {
-    fill(
-        "WatchShare",
-        "M18,16.08c-0.76,0 -1.44,0.3 -1.96,0.77L8.91,12.7c0.05,-0.23 0.09,-0.46 0.09,-0.7s-0.04,-0.47 -0.09,-0.7l7.05,-4.11" +
-            "c0.54,0.5 1.25,0.81 2.04,0.81 1.66,0 3,-1.34 3,-3s-1.34,-3 -3,-3 -3,1.34 -3,3c0,0.24 0.04,0.47 0.09,0.7L8.04,9.81" +
-            "C7.5,9.31 6.79,9 6,9c-1.66,0 -3,1.34 -3,3s1.34,3 3,3c0.79,0 1.5,-0.31 2.04,-0.81l7.12,4.16c-0.05,0.21 -0.08,0.43 -0.08,0.65" +
-            " 0,1.61 1.31,2.92 2.92,2.92 1.61,0 2.92,-1.31 2.92,-2.92s-1.31,-2.92 -2.92,-2.92z"
-    )
+    ImageVector.Builder("WatchShare", 24.dp, 24.dp, 24f, 24f).apply {
+        addPath(
+            pathData = PathParser().parsePathString(
+                "M14,3.5L22,12L14,20.5V15.8C8.6,15.8 4.9,17.4 2.5,20.8C3.5,14.2 7.4,9.8 14,8.6Z"
+            ).toNodes(),
+            stroke = SolidColor(Color.Black),
+            strokeLineWidth = 2f,
+            strokeLineCap = androidx.compose.ui.graphics.StrokeCap.Round,
+            strokeLineJoin = androidx.compose.ui.graphics.StrokeJoin.Round
+        )
+    }.build()
 }
 
 val WatchMore: ImageVector by lazy {
@@ -87,8 +95,13 @@ val WatchCast: ImageVector by lazy {
     )
 }
 
+/** Phóng to video kiểu YouTube (đo từ ảnh chụp): hai mũi tên chéo đầu chữ L, một ở góc trên trái, một ở góc dưới phải, giữa hở. */
 val WatchFullscreen: ImageVector by lazy {
-    fill("WatchFullscreen", "M7,14L5,14v5h5v-2L7,17v-3zM5,10h2L7,7h3L10,5L5,5v5zM17,17h-3v2h5v-5h-2v3zM14,5v2h3v3h2L19,5h-5z")
+    fill(
+        "WatchFullscreen",
+        "M3,3h7v2H6.41l5.3,5.29 -1.42,1.42L5,6.41V10H3V3z",
+        "M21,21h-7v-2h3.59l-5.3,-5.29 1.42,-1.42L19,17.59V14h2v7z"
+    )
 }
 
 val WatchPlay: ImageVector by lazy { fill("WatchPlay", "M8,5v14l11,-7z") }

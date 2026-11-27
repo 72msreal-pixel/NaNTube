@@ -62,11 +62,11 @@ class ShortsPlaybackService : Service() {
                     if (ShortsBackground.isPlaying) ShortsBackground.toggle()
                 }
 
-                override fun onSkipToNext() = ShortsBackground.next()
-                override fun onSkipToPrevious() = ShortsBackground.prev()
+                override fun onSkipToNext() = ShortsBackground.mediaNext()
+                override fun onSkipToPrevious() = ShortsBackground.mediaPrev()
                 override fun onStop() = ShortsBackground.stopAll()
                 override fun onSeekTo(pos: Long) {
-                    ShortsBackground.currentVideo?.let { ShortsPool.slot(it.id)?.player?.seekTo(pos) }
+                    ShortsBackground.seekTo(pos)
                     updateState()
                 }
             })
@@ -80,9 +80,9 @@ class ShortsPlaybackService : Service() {
         updateState()
         foreground(notification())
         when (intent?.action) {
-            ACTION_PREV -> ShortsBackground.prev()
+            ACTION_PREV -> ShortsBackground.mediaPrev()
             ACTION_TOGGLE -> ShortsBackground.toggle()
-            ACTION_NEXT -> ShortsBackground.next()
+            ACTION_NEXT -> ShortsBackground.mediaNext()
             ACTION_CLOSE -> {
                 ShortsBackground.stopAll()
                 return START_NOT_STICKY
@@ -113,12 +113,10 @@ class ShortsPlaybackService : Service() {
 
     private fun updateState() {
         val s = session ?: return
-        val video = ShortsBackground.currentVideo
-        val slot = video?.let { ShortsPool.slot(it.id) }
         val playing = ShortsBackground.isPlaying
-        val pos = (slot?.player?.currentPosition ?: 0L).coerceAtLeast(0L)
+        val pos = ShortsBackground.positionMs()
         val state = when {
-            slot?.buffering == true && playing -> PlaybackState.STATE_BUFFERING
+            ShortsBackground.isBuffering() && playing -> PlaybackState.STATE_BUFFERING
             playing -> PlaybackState.STATE_PLAYING
             else -> PlaybackState.STATE_PAUSED
         }
@@ -137,11 +135,12 @@ class ShortsPlaybackService : Service() {
     private fun updateMetadata() {
         val s = session ?: return
         val video = ShortsBackground.currentVideo ?: return
-        val duration = ShortsPool.slot(video.id)?.player?.duration?.takeIf { it > 0 } ?: -1L
+        val duration = ShortsBackground.durationMs()
+        val watch = ShortsBackground.isWatchSession
         val builder = MediaMetadata.Builder()
             .putString(MediaMetadata.METADATA_KEY_TITLE, video.title)
-            .putString(MediaMetadata.METADATA_KEY_ARTIST, video.channel ?: "Short")
-            .putString(MediaMetadata.METADATA_KEY_ALBUM, "Shorts")
+            .putString(MediaMetadata.METADATA_KEY_ARTIST, video.channel ?: if (watch) "Video" else "Short")
+            .putString(MediaMetadata.METADATA_KEY_ALBUM, if (watch) "Video" else "Shorts")
             .putLong(MediaMetadata.METADATA_KEY_DURATION, duration)
         if (artId == video.id) art?.let { builder.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, it) }
         s.setMetadata(builder.build())
@@ -221,28 +220,29 @@ class ShortsPlaybackService : Service() {
     private fun notification(): Notification {
         val manager = getSystemService(NotificationManager::class.java)
         if (Build.VERSION.SDK_INT >= 26) {
-            manager.createNotificationChannel(NotificationChannel(CHANNEL_ID, "Short phát nền", NotificationManager.IMPORTANCE_LOW))
+            manager.createNotificationChannel(NotificationChannel(CHANNEL_ID, "Short / video phát nền", NotificationManager.IMPORTANCE_LOW))
         }
         val tap = Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         val open = PendingIntent.getActivity(this, 0, tap, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val video = ShortsBackground.currentVideo
         val playing = ShortsBackground.isPlaying
+        val watch = ShortsBackground.isWatchSession
         val builder = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, CHANNEL_ID) else Notification.Builder(this)
         builder
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(video?.title ?: "NaNTube")
-            .setContentText(video?.channel ?: "Short")
+            .setContentText(video?.channel ?: if (watch) "Video" else "Short")
             .setContentIntent(open)
             .setOngoing(playing)
             .setOnlyAlertOnce(true)
             .setCategory(Notification.CATEGORY_TRANSPORT)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
-            .addAction(action(ACTION_PREV, 1, R.drawable.ic_pip_prev, "Short trước"))
+            .addAction(action(ACTION_PREV, 1, R.drawable.ic_pip_prev, if (watch) "Lùi 10 giây" else "Short trước"))
             .addAction(
                 if (playing) action(ACTION_TOGGLE, 2, R.drawable.ic_pip_pause, "Tạm dừng")
                 else action(ACTION_TOGGLE, 2, R.drawable.ic_pip_play, "Phát")
             )
-            .addAction(action(ACTION_NEXT, 3, R.drawable.ic_pip_next, "Short tiếp"))
+            .addAction(action(ACTION_NEXT, 3, R.drawable.ic_pip_next, if (watch) "Tua 10 giây" else "Short tiếp"))
             .addAction(action(ACTION_CLOSE, 4, R.drawable.ic_pip_close, "Đóng"))
         if (artId == video?.id) art?.let { builder.setLargeIcon(it) }
         val style = Notification.MediaStyle().setShowActionsInCompactView(0, 1, 2)

@@ -50,7 +50,9 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.ColorFilter
@@ -62,6 +64,7 @@ import androidx.compose.ui.graphics.Brush
 import android.view.TextureView
 import com.nan.nantube.data.CaptionCue
 import com.nan.nantube.data.CaptionTrack
+import com.nan.nantube.data.PipPrefs
 import com.nan.nantube.data.ShortsCaptions
 import com.nan.nantube.data.SleepTimer
 import com.nan.nantube.data.WatchPrefs
@@ -244,12 +247,20 @@ internal class WatchPlayback(private val context: Context, val video: VideoItem,
     init {
         player.addListener(object : Player.Listener {
             override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                // App ẩn mà không được phát nền (xem ShortsBackground.mayPlay): không để video tự phát lại nốt phần đã tải.
+                if (playWhenReady && !ShortsBackground.mayPlay()) {
+                    player.playWhenReady = false
+                    return
+                }
                 wantPlay = playWhenReady
+                // Thẻ media (phát nền) phải theo đúng trạng thái, kể cả khi bị dừng từ ngoài (app khác giành âm thanh, hẹn giờ ngủ).
+                ShortsBackground.onSessionChanged()
             }
 
             override fun onPlaybackStateChanged(state: Int) {
                 buffering = state == Player.STATE_BUFFERING
                 ended = state == Player.STATE_ENDED
+                ShortsBackground.onSessionChanged()
                 if (state == Player.STATE_READY) {
                     tries = 0
                     val d = player.duration
@@ -438,12 +449,24 @@ internal class WatchPlayback(private val context: Context, val video: VideoItem,
         if (d > 0) durationMs = d
     }
 
+    /**
+     * Video dài còn phát mà app không còn hiện (phát nền): chỉ phát âm thanh, tắt giải mã + tải luồng hình cho nhẹ mạng và pin, như
+     * [ShortsPool.enterAudioOnly]. Hiện lại app thì bật hình trở lại.
+     */
+    fun setAudioOnly(on: Boolean) {
+        if (released) return
+        val params = player.trackSelectionParameters
+        if (params.disabledTrackTypes.contains(C.TRACK_TYPE_VIDEO) == on) return
+        player.trackSelectionParameters = params.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, on).build()
+    }
+
     fun release() {
         if (released) return
         released = true
         job?.cancel()
         scope.cancel()
         player.release()
+        if (PipState.watchPb === this) PipState.watchPb = null
     }
 }
 
@@ -531,6 +554,8 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
 
     var sheet by remember { mutableStateOf<WatchSheetPage?>(null) }
     var moreOpen by remember { mutableStateOf(false) }
+    // Lớp nút của trình phát đang hiện hay ẩn: thanh tua theo (hiện: đỏ + chấm, ẩn: trắng xám, không chấm) như YouTube.
+    var controlsShown by remember { mutableStateOf(true) }
     var ambientFrame by remember { mutableStateOf<ImageBitmap?>(null) }
 
     // Chưa lấy xong danh sách phụ đề thì coi như đang bật nếu người dùng đã bật, để nút CC không nháy.
@@ -613,11 +638,13 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
         )
         PipState.controls = controls
         PipState.watchStop = { pb.player.playWhenReady = false }
+        PipState.watchPb = pb
         onDispose {
             if (PipState.controls === controls) PipState.controls = null
             PipState.watchStop = null
             PipState.watchId = null
             PipState.watchPlaying = false
+            if (PipState.watchPb === pb) PipState.watchPb = null
         }
     }
     LaunchedEffect(video.id, pb.wantPlay) {
@@ -743,7 +770,9 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
                             else WatchPrefs.setCaption(pick.key)
                         }
                     },
-                    onSettings = { sheet = WatchSheetPage.Main }
+                    onSettings = { sheet = WatchSheetPage.Main },
+                    controls = controlsShown,
+                    onControls = { controlsShown = it }
                 )
                 // Thanh tua nằm đè lên đáy video như YouTube, không chiếm thêm chiều cao bên dưới.
                 if (!PipState.inPip) WatchSeekBar(
@@ -751,6 +780,7 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
                     durationMs = pb.durationMs,
                     bufferedMs = pb.bufferedMs,
                     onSeek = { pb.seekTo(it) },
+                    active = controlsShown,
                     modifier = Modifier.align(Alignment.BottomCenter)
                 )
             }
@@ -894,7 +924,15 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
         if (moreOpen && !PipState.inPip) {
             WatchMoreSheet(
                 // Hình trong hình: thu video vào thẻ nổi trong app, màn xem đóng, app về tab đang mở trước đó.
-                onPip = { WatchMini.start(pb); WatchViewer.close() },
+                onPip = {
+                    if (PipPrefs.popup) {
+                        WatchMini.start(pb)
+                        WatchViewer.close()
+                    } else {
+                        // Popup đang tắt: mở trang cài đặt để bật lại (AppRoot đóng màn xem).
+                        PipState.openExperiments = true
+                    }
+                },
                 onSave = { onSave(video) },
                 onDownload = { DownloadPanel.open(video, account) },
                 onClose = { moreOpen = false }
@@ -974,9 +1012,10 @@ private fun WatchPlayerArea(
     onNext: () -> Unit,
     onCast: () -> Unit,
     onCc: () -> Unit,
-    onSettings: () -> Unit
+    onSettings: () -> Unit,
+    controls: Boolean,
+    onControls: (Boolean) -> Unit
 ) {
-    var controls by remember { mutableStateOf(true) }
     var touch by remember { mutableStateOf(0) }
     // Dòng báo "Tự động phát đang bật / tắt" hiện giữa trên video ~1,5 giây sau khi gạt công tắc.
     var hint by remember { mutableStateOf<String?>(null) }
@@ -990,7 +1029,7 @@ private fun WatchPlayerArea(
     LaunchedEffect(controls, pb.wantPlay, touch) {
         if (controls && pb.wantPlay && !pb.ended) {
             delay(3_500)
-            controls = false
+            onControls(false)
         }
     }
     DisposableEffect(Unit) { onDispose { holder[0]?.player = null } }
@@ -1012,7 +1051,7 @@ private fun WatchPlayerArea(
             .fillMaxWidth()
             .aspectRatio(16f / 9f)
             .background(Color.Black)
-            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = NoRipple) { controls = !controls }
+            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = NoRipple) { onControls(!controls) }
     ) {
         AndroidView(
             factory = { ctx ->
@@ -1181,42 +1220,89 @@ private fun CircleControl(icon: ImageVector, description: String, size: Dp, onCl
     }
 }
 
-/** Thanh tua dưới video: nền mờ, phần đã đệm trắng nhạt, phần đã xem đỏ + chấm đỏ; chạm hoặc kéo để tua. */
+/**
+ * Thanh tua dưới video, đo theo YouTube: dày 2dp, nền xám đặc #444444. Lớp nút đang hiện ([active]): phần đã xem đỏ #FF0033 + chấm đỏ.
+ * Lớp nút ẩn: phần đã xem xám trắng #CCCCCC, không chấm. Chạm hoặc kéo để tua.
+ *
+ * Hoạt ảnh làm theo thanh tua của Short: đổi màu đỏ / xám trắng mượt, chấm phóng ra khi nút hiện và thu lại khi ẩn, kéo thì thanh dày lên
+ * 3dp, chấm to hơn và phồng thêm theo tốc độ kéo (nhanh thì to, chậm / dừng thì nhỏ lại), và hiện "đang ở / tổng" ngay trên thanh.
+ */
 @Composable
-private fun WatchSeekBar(positionMs: Long, durationMs: Long, bufferedMs: Long, onSeek: (Long) -> Unit, modifier: Modifier = Modifier) {
+private fun WatchSeekBar(
+    positionMs: Long,
+    durationMs: Long,
+    bufferedMs: Long,
+    onSeek: (Long) -> Unit,
+    modifier: Modifier = Modifier,
+    active: Boolean = true
+) {
     var drag by remember { mutableStateOf<Float?>(null) }
+    // Chấm phồng theo tốc độ kéo, xẹp lại sau 120ms không di chuyển (cùng cách với thanh tua của Short).
+    var knobBoost by remember { mutableFloatStateOf(0f) }
+    var lastMove by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(lastMove) {
+        delay(120)
+        knobBoost = 0f
+    }
+    val dragging = drag != null
+    val knobScale by animateFloatAsState(1f + knobBoost * 1.2f, label = "watchKnob")
+    val thumbAmount by animateFloatAsState(if (active || dragging) 1f else 0f, tween(160), label = "watchThumb")
+    val trackHeight by animateDpAsState(if (dragging) 3.dp else 2.dp, tween(120), label = "watchTrack")
+    val accent by animateColorAsState(if (active || dragging) Color(0xFFFF0033) else Color(0xFFCCCCCC), tween(180), label = "watchAccent")
     val played = if (durationMs > 0) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
     val frac = drag ?: played
     val buffered = if (durationMs > 0) (bufferedMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
-    Box(
-        modifier
-            .fillMaxWidth()
-            .height(16.dp)
-            .pointerInput(durationMs) {
-                detectTapGestures { o ->
-                    if (durationMs > 0) onSeek((o.x / size.width * durationMs).toLong().coerceIn(0L, durationMs))
+    Box(modifier.fillMaxWidth()) {
+        drag?.let { f ->
+            Text(
+                buildAnnotatedString {
+                    append(clock((durationMs * f).toLong()))
+                    withStyle(SpanStyle(color = Color(0xB3FFFFFF))) { append(" / ${clock(durationMs)}") }
+                },
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = Color.White,
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 34.dp)
+            )
+        }
+        Box(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .height(16.dp)
+                .pointerInput(durationMs) {
+                    detectTapGestures { o ->
+                        if (durationMs > 0) onSeek((o.x / size.width * durationMs).toLong().coerceIn(0L, durationMs))
+                    }
+                }
+                .pointerInput(durationMs) {
+                    detectHorizontalDragGestures(
+                        onDragStart = { o -> drag = (o.x / size.width).coerceIn(0f, 1f) },
+                        onDragEnd = {
+                            drag?.let { if (durationMs > 0) onSeek((it * durationMs).toLong()) }
+                            drag = null
+                        },
+                        onDragCancel = { drag = null },
+                        onHorizontalDrag = { change, dx ->
+                            drag = (change.position.x / size.width).coerceIn(0f, 1f)
+                            val dt = (change.uptimeMillis - change.previousUptimeMillis).coerceAtLeast(1L)
+                            knobBoost = (kotlin.math.abs(dx) / dt / 2f).coerceIn(0f, 1f)
+                            lastMove = change.uptimeMillis
+                        }
+                    )
+                }
+        ) {
+            Canvas(Modifier.fillMaxSize()) {
+                val track = trackHeight.toPx()
+                val top = size.height - track
+                drawRect(Color(0xFF444444), Offset(0f, top), Size(size.width, track))
+                drawRect(Color(0x33FFFFFF), Offset(0f, top), Size(size.width * buffered, track))
+                drawRect(accent, Offset(0f, top), Size(size.width * frac, track))
+                if (thumbAmount > 0.01f) {
+                    val radius = (if (dragging) 7.dp.toPx() * knobScale else 6.dp.toPx()) * thumbAmount
+                    drawCircle(accent, radius, Offset((size.width * frac).coerceIn(radius, size.width - radius), top + track / 2f))
                 }
             }
-            .pointerInput(durationMs) {
-                detectHorizontalDragGestures(
-                    onDragStart = { o -> drag = (o.x / size.width).coerceIn(0f, 1f) },
-                    onDragEnd = {
-                        drag?.let { if (durationMs > 0) onSeek((it * durationMs).toLong()) }
-                        drag = null
-                    },
-                    onDragCancel = { drag = null },
-                    onHorizontalDrag = { change, _ -> drag = (change.position.x / size.width).coerceIn(0f, 1f) }
-                )
-            }
-    ) {
-        Canvas(Modifier.fillMaxSize()) {
-            val track = 3.dp.toPx()
-            val top = size.height - track
-            drawRect(Color(0x4DFFFFFF), Offset(0f, top), Size(size.width, track))
-            drawRect(Color(0x80FFFFFF), Offset(0f, top), Size(size.width * buffered, track))
-            drawRect(Red, Offset(0f, top), Size(size.width * frac, track))
-            val radius = (if (drag != null) 8.dp else 6.dp).toPx()
-            drawCircle(Red, radius, Offset((size.width * frac).coerceIn(radius, size.width - radius), top + track / 2f))
         }
     }
 }
