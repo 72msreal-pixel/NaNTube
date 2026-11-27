@@ -14,6 +14,15 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.animation.core.Animatable
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalDensity
+import com.nan.nantube.data.HistoryChip
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -35,6 +44,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
@@ -632,15 +642,36 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
     }
 
 
+    // Chip lọc của bảng "Video khác" (toàn màn hình) do chính YouTube trả cùng trang đề xuất: "Của <kênh>", "Video có liên quan", "Dành cho bạn".
+    var relatedChips by remember { mutableStateOf<List<HistoryChip>>(emptyList()) }
     val related = remember {
         PagedFeed<VideoItem>(
-            first = { acc, _ -> VideoRepository.watchRelated(acc, video.id) },
+            first = { acc, _ ->
+                val r = VideoRepository.watchRelatedWithChips(acc, video.id)
+                relatedChips = r.chips
+                r.page
+            },
             more = { acc, token -> VideoRepository.watchRelatedMore(acc, token, video.id) },
             keyOf = { it.id },
             prepare = { ChannelAvatars.prefetchFor(it) }
         )
     }
     LaunchedEffect(account?.id) { related.load(account) }
+    // Danh sách của chip đang chọn (khác "Tất cả"): token chip = trang đề xuất đã lọc; "c:<id kênh>" = video của kênh (khi server không trả chip).
+    val chipFeed = remember {
+        PagedFeed<VideoItem>(
+            first = { acc, arg ->
+                if (arg.startsWith("c:")) VideoRepository.channelVideosPage(acc, arg.removePrefix("c:"))
+                else VideoRepository.watchRelatedMore(acc, "w:$arg", video.id)
+            },
+            more = { acc, token ->
+                if (token.startsWith("b:")) VideoRepository.homeMore(acc, token)
+                else VideoRepository.watchRelatedMore(acc, token, video.id)
+            },
+            keyOf = { it.id },
+            prepare = { ChannelAvatars.prefetchFor(it) }
+        )
+    }
 
     // Video kế tiếp = đề xuất đầu tiên (nút "Sau" và tự phát).
     val next = related.items.firstOrNull { it.id != video.id }
@@ -689,8 +720,16 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
     // Toàn màn hình + bình luận: khung chat trượt vào từ mép phải, video thu hẹp lại bên trái (như YouTube ngang).
     var fsComments by remember { mutableStateOf(false) }
     LaunchedEffect(fullscreen) { if (!fullscreen) fsComments = false }
-    val fsPanelFraction by animateFloatAsState(if (fsComments && fullscreen) 1f else 0f, tween(260), label = "fsComments")
+    // Tỉ lệ mở của khung chat: kéo bằng ngón tay thì đi theo ngón tay, thả tay thì tự về mốc mở / đóng gần nhất.
+    val fsAnim = remember { Animatable(0f) }
+    val fsPanelFraction = fsAnim.value
+    LaunchedEffect(fsComments, fullscreen) { fsAnim.animateTo(if (fsComments && fullscreen) 1f else 0f, tween(260)) }
     val fsPanelWidth = maxOf(300f, LocalConfiguration.current.screenWidthDp * 0.34f).dp
+    val fsPanelPx = with(LocalDensity.current) { fsPanelWidth.toPx() }
+    // Bảng "Video khác" (toàn màn hình): trượt từ đáy lên, kéo lên xuống được, 0 = ẩn hẳn, 1 = mở hết.
+    val moreAnim = remember { Animatable(0f) }
+    var rootHeight by remember { mutableIntStateOf(1) }
+    LaunchedEffect(fullscreen) { if (!fullscreen) moreAnim.snapTo(0f) }
     // Toàn màn hình: ẩn thanh trạng thái + thanh điều hướng (vuốt từ mép để hiện tạm); thoát thì hiện lại.
     DisposableEffect(fullscreen) {
         val window = (context as? android.app.Activity)?.window
@@ -704,8 +743,65 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
         }
     }
 
+    fun chatDrag(dx: Float) {
+        scope.launch { fsAnim.snapTo((fsAnim.value - dx / fsPanelPx).coerceIn(0f, 1f)) }
+    }
+
+    /** [velocity] px/s, dương = đang kéo sang phải (đóng). */
+    fun chatSettle(velocity: Float) {
+        val target = when {
+            velocity > 900f -> 0f
+            velocity < -900f -> 1f
+            fsAnim.value > 0.5f -> 1f
+            else -> 0f
+        }
+        fsComments = target > 0f
+        if (target > 0f) controlsShown = false
+        scope.launch { fsAnim.animateTo(target, tween(220)) }
+    }
+    val chatDragState = rememberDraggableState { chatDrag(it) }
+
+    fun moreDrag(dy: Float, gain: Float = 1f) {
+        scope.launch { moreAnim.snapTo((moreAnim.value - dy * gain / rootHeight).coerceIn(0f, 1f)) }
+    }
+
+    /** [velocity] px/s, dương = đang kéo xuống (đóng). */
+    fun moreSettle(velocity: Float) {
+        val target = when {
+            velocity > 1000f -> 0f
+            velocity < -1000f -> 1f
+            moreAnim.value > 0.5f -> 1f
+            else -> 0f
+        }
+        scope.launch { moreAnim.animateTo(target, tween(220)) }
+    }
+
+    fun openMore() {
+        controlsShown = false
+        scope.launch { moreAnim.animateTo(1f, tween(260)) }
+    }
+
+    fun closeMore() {
+        scope.launch { moreAnim.animateTo(0f, tween(240)) }
+    }
+
+    val moreChips = remember(relatedChips, info) {
+        val author = info?.author ?: video.channel
+        val chId = info?.channelId ?: video.channelId
+        buildList<Pair<String, String?>> {
+            add("Tất cả" to null)
+            relatedChips.forEach { add(it.label to it.token) }
+            if (relatedChips.isEmpty() && !chId.isNullOrBlank() && !author.isNullOrBlank()) add("Của $author" to "c:$chId")
+        }
+    }
+    var moreChip by remember { mutableIntStateOf(0) }
+    val moreSel = moreChip.coerceIn(0, moreChips.lastIndex)
+    val moreFeed = if (moreSel == 0) related else chipFeed
+    val moreListState = remember(moreSel) { LazyListState() }
+
     BackHandler(enabled = true) {
         when {
+            moreAnim.value > 0.01f -> closeMore()
             fsComments -> fsComments = false
             fullscreen -> WatchViewer.updateFullscreen(false)
             panel != null -> closePanel()
@@ -785,7 +881,7 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
     val likeText = LikeCounts.show(video.id, liked) ?: info?.likes ?: desc?.likesText
     val title = video.title.ifBlank { info?.title ?: ShortsPlayback.meta(video.id)?.title.orEmpty() }
 
-    Box(Modifier.fillMaxSize().background(NanColors.Background)) {
+    Box(Modifier.fillMaxSize().background(NanColors.Background).onSizeChanged { rootHeight = it.height.coerceAtLeast(1) }) {
         if (WatchPrefs.ambient && !fullscreen) AmbientGlowBackground(ambientFrame)
         Column(Modifier.fillMaxSize()) {
             Box((if (fullscreen) Modifier.fillMaxSize().padding(end = fsPanelWidth * fsPanelFraction) else Modifier.fillMaxWidth()).background(Color.Black).then(if (PipState.inPip || fullscreen) Modifier else Modifier.statusBarsPadding())) {
@@ -832,10 +928,9 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
                         onSave = { onSave(video) },
                         onShare = { share() },
                         onMore = { moreOpen = true },
-                        onMoreVideos = {
-                            WatchViewer.updateFullscreen(false)
-                            scope.launch { related.listState.scrollToItem(3) }
-                        }
+                        onMoreVideos = { openMore() },
+                        onSwipeUpDrag = { moreDrag(it, gain = 1.6f) },
+                        onSwipeUpEnd = { moreSettle(it) }
                     )
                 )
                 // Thanh tua nằm đè lên đáy video như YouTube, không chiếm thêm chiều cao bên dưới.
@@ -977,9 +1072,22 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
             }
         }
 
-        // Khung bình luận toàn màn hình: trượt từ phải vào; bấm nút bình luận lần nữa, bấm X hoặc kéo sang phải để trượt về.
+        // Vuốt sang trái ở mép phải video (lúc các nút đang ẩn) để kéo khung chat ra, ngón tay kéo tới đâu khung ra tới đó.
+        // Mép này cao 70% để nửa dưới còn lại dành cho cử chỉ vuốt lên mở "Video khác".
+        if (fullscreen && !fsComments && !controlsShown && moreAnim.value == 0f && !PipState.inPip) {
+            Box(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .fillMaxHeight(0.7f)
+                    .width(72.dp)
+                    .draggable(state = chatDragState, orientation = Orientation.Horizontal, onDragStopped = { chatSettle(it) })
+                    .clickable(interactionSource = remember { MutableInteractionSource() }, indication = NoRipple) { controlsShown = true }
+            )
+        }
+
+        // Khung bình luận toàn màn hình: kéo ra / vào bằng ngón tay (cả khung kéo ngang được, có thanh nắm ở mép trái),
+        // hoặc bấm nút bình luận / X; thả tay thì tự về mốc gần nhất.
         if (fullscreen && fsPanelFraction > 0f) {
-            var dragged by remember { mutableFloatStateOf(0f) }
             Box(
                 Modifier
                     .align(Alignment.CenterEnd)
@@ -987,18 +1095,41 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
                     .width(fsPanelWidth)
                     .offset { IntOffset(((1f - fsPanelFraction) * fsPanelWidth.toPx()).roundToInt(), 0) }
                     .background(Color(0xFF0F0F0F))
-                    .pointerInput(Unit) {
-                        detectHorizontalDragGestures(
-                            onDragEnd = { if (dragged > 100f) fsComments = false; dragged = 0f },
-                            onDragCancel = { dragged = 0f }
-                        ) { _, dx -> dragged += dx }
-                    }
+                    .draggable(state = chatDragState, orientation = Orientation.Horizontal, onDragStopped = { chatSettle(it) })
                     .imePadding()
             ) {
                 Column(Modifier.fillMaxSize()) {
                     VideoChatContent(video = video, account = account, onSave = onSave, onClose = { fsComments = false })
                 }
+                Box(
+                    Modifier
+                        .align(Alignment.CenterStart)
+                        .padding(start = 4.dp)
+                        .size(width = 4.dp, height = 40.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(Color(0x66FFFFFF))
+                )
             }
+        }
+
+        // Bảng "Video khác" toàn màn hình: trượt từ đáy lên; kéo xuống, bấm X hoặc bấm nền tối để trượt xuống.
+        if (fullscreen && moreAnim.value > 0f) {
+            FullscreenMorePanel(
+                fraction = moreAnim.value,
+                chips = moreChips.map { it.first },
+                selected = moreSel,
+                onChip = { i ->
+                    moreChip = i
+                    moreChips.getOrNull(i)?.second?.let { chipFeed.load(account, it) }
+                },
+                feed = moreFeed,
+                listState = moreListState,
+                onLoadMore = { moreFeed.loadMore(account) },
+                onDrag = { moreDrag(it) },
+                onRelease = { moreSettle(it) },
+                onClose = { closeMore() },
+                onOpen = { WatchViewer.open(it) }
+            )
         }
 
         sheet?.let { page ->
@@ -1142,10 +1273,19 @@ private fun WatchPlayerArea(
         }
     }
 
+    // Toàn màn hình + các nút đang ẩn: vuốt từ dưới lên để kéo bảng "Video khác" ra.
+    val fsNow by rememberUpdatedState(fsInfo)
+    val swipeUpState = rememberDraggableState { fsNow?.onSwipeUpDrag?.invoke(it) }
     Box(
         (if (fullscreen) Modifier.fillMaxSize() else Modifier.fillMaxWidth().aspectRatio(16f / 9f))
             .background(Color.Black)
             .clickable(interactionSource = remember { MutableInteractionSource() }, indication = NoRipple) { onControls(!controls) }
+            .draggable(
+                state = swipeUpState,
+                orientation = Orientation.Vertical,
+                enabled = fullscreen && !controls && fsInfo != null,
+                onDragStopped = { fsNow?.onSwipeUpEnd?.invoke(it) }
+            )
     ) {
         AndroidView(
             factory = { ctx ->
@@ -1306,6 +1446,137 @@ private fun WatchPlayerArea(
     }
 }
 
+/**
+ * Bảng "Video khác" của chế độ toàn màn hình (như YouTube): tiêu đề + X, hàng chip lọc, hàng thẻ video cuộn ngang.
+ * [fraction] 0..1 là mức trượt từ đáy lên; kéo dọc ở vùng tiêu đề / chip / khoảng trống để trượt xuống, bấm nền tối cũng đóng.
+ */
+@Composable
+private fun FullscreenMorePanel(
+    fraction: Float,
+    chips: List<String>,
+    selected: Int,
+    onChip: (Int) -> Unit,
+    feed: PagedFeed<VideoItem>,
+    listState: LazyListState,
+    onLoadMore: () -> Unit,
+    onDrag: (Float) -> Unit,
+    onRelease: (Float) -> Unit,
+    onClose: () -> Unit,
+    onOpen: (VideoItem) -> Unit
+) {
+    val dragNow by rememberUpdatedState(onDrag)
+    val releaseNow by rememberUpdatedState(onRelease)
+    val dragState = rememberDraggableState { dragNow(it) }
+    val screen = LocalConfiguration.current
+    // Thẻ rộng theo chiều cao màn hình để cả bảng (tiêu đề + chip + thẻ) luôn vừa khi xoay ngang.
+    val cardWidth = ((screen.screenHeightDp - 150) * 16f / 9f).coerceIn(150f, 280f).dp
+    val shown = feed.items.filter { it.playlist == null }
+    LoadMoreEffect(listState, shown.size, onLoadMore)
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.8f * fraction))
+            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = NoRipple) { onClose() }
+    ) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .graphicsLayer { translationY = (1f - fraction) * size.height }
+                .draggable(
+                    state = dragState,
+                    orientation = Orientation.Vertical,
+                    onDragStopped = { releaseNow(it) }
+                )
+                .displayCutoutPadding()
+        ) {
+            Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 12.dp, top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Video khác", fontSize = 18.sp, fontWeight = FontWeight.Medium, color = Color.White, modifier = Modifier.weight(1f))
+                ControlIcon(Lucide.X, "Đóng", 26.dp) { onClose() }
+            }
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 18.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                itemsIndexed(chips) { i, label ->
+                    val on = i == selected
+                    Box(
+                        Modifier
+                            .height(34.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (on) Color(0xFFF1F1F1) else Color(0x33FFFFFF))
+                            .clickable { onChip(i) }
+                            .padding(horizontal = 14.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(label, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = if (on) Color.Black else Color.White, maxLines = 1)
+                    }
+                }
+            }
+            when {
+                shown.isEmpty() && (feed.loading || feed.loadingMore) -> Box(Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(28.dp))
+                }
+                shown.isEmpty() -> Box(Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) {
+                    Text("Không có video nào.", fontSize = 14.sp, color = Color(0xFFCCCCCC))
+                }
+                else -> LazyRow(
+                    state = listState,
+                    contentPadding = PaddingValues(horizontal = 18.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    items(shown, key = { it.id }) { v -> MoreVideoCard(v, cardWidth) { onOpen(v) } }
+                    if (feed.loadingMore) item(key = "more") {
+                        Box(Modifier.width(60.dp).aspectRatio(16f / 9f), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(24.dp))
+                        }
+                    }
+                }
+            }
+            // Khoảng trống bên dưới cũng kéo xuống được (nền của Column nhận cử chỉ kéo dọc).
+            Spacer(Modifier.weight(1f).fillMaxWidth())
+        }
+    }
+}
+
+@Composable
+private fun MoreVideoCard(video: VideoItem, width: Dp, onClick: () -> Unit) {
+    Column(Modifier.width(width).clip(RoundedCornerShape(12.dp)).clickable { onClick() }) {
+        Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(12.dp)).background(Color(0xFF222222))) {
+            AsyncImage(
+                model = video.hqThumbnail,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+            video.duration?.takeIf { it.isNotBlank() }?.let {
+                Text(
+                    it,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Color.White,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(6.dp)
+                        .clip(RoundedCornerShape(5.dp))
+                        .background(Color(0xB3000000))
+                        .padding(horizontal = 5.dp, vertical = 1.dp)
+                )
+            }
+        }
+        Row(Modifier.padding(top = 8.dp, bottom = 4.dp), verticalAlignment = Alignment.Top) {
+            ChannelAvatar(video, 32.dp)
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(video.title, fontSize = 14.sp, lineHeight = 18.sp, fontWeight = FontWeight.Medium, color = Color.White, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                val sub = listOfNotNull(video.channel, video.views, video.published.takeIf { publishedIn(video.views) == null }).joinToString(" · ")
+                if (sub.isNotEmpty()) {
+                    Text(sub, fontSize = 12.sp, color = Color(0xFFAAAAAA), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
+                }
+            }
+        }
+    }
+}
+
 /** Dữ liệu + hành động cho lớp nút ở chế độ toàn màn hình (hàng tiêu đề trên cùng, hàng nút dưới cùng). */
 private class FullscreenInfo(
     val title: String,
@@ -1319,7 +1590,10 @@ private class FullscreenInfo(
     val onSave: () -> Unit,
     val onShare: () -> Unit,
     val onMore: () -> Unit,
-    val onMoreVideos: () -> Unit
+    val onMoreVideos: () -> Unit,
+    /** Vuốt dọc trên video lúc các nút đang ẩn: [onSwipeUpDrag] nhận px (âm = lên), [onSwipeUpEnd] nhận vận tốc px/s. */
+    val onSwipeUpDrag: (Float) -> Unit,
+    val onSwipeUpEnd: (Float) -> Unit
 )
 
 /** Khung "Video đề xuất" hiện đè lên video khi hết phim mà Tự động phát đang tắt: ảnh bìa + tiêu đề + kênh, nút Đóng / Phát ngay. */

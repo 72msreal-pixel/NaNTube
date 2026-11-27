@@ -555,10 +555,23 @@ object VideoRepository {
      * Video đề xuất bên dưới trình phát (màn xem video dài): đọc từ `next` của chính video, như cột "Tiếp theo" của YouTube.
      * Short bị bỏ (đã có tab riêng), video đang xem cũng bỏ. Token trang kế có tiền tố "w:".
      */
-    suspend fun watchRelated(account: Account?, videoId: String): Paged<VideoItem> {
+    suspend fun watchRelated(account: Account?, videoId: String): Paged<VideoItem> = watchRelatedWithChips(account, videoId).page
+
+    /** Video đề xuất + các chip lọc YouTube kèm theo ("Của kênh…", "Video có liên quan", "Dành cho bạn"). Chip đang chọn ("Tất cả") không có token nên không nằm trong [chips]. */
+    class WatchRelated(val page: Paged<VideoItem>, val chips: List<HistoryChip>)
+
+    suspend fun watchRelatedWithChips(account: Account?, videoId: String): WatchRelated {
         val json = InnerTube.callAny("next", JSONObject().put("videoId", videoId), account)
         val items = parse(json).filter { !it.isShort && it.id != videoId }
-        return Paged(items, findContinuation(json)?.let { "w:$it" })
+        return WatchRelated(Paged(items, findContinuation(json)?.let { "w:$it" }), findChips(json))
+    }
+
+    /** Tab "Video" của một kênh (dùng cho chip "Của kênh" khi server không trả chip). Token trang kế có tiền tố "b:" (xem [homeMore]). */
+    private const val CHANNEL_VIDEOS_TAB = "EgZ2aWRlb3PyBgQKAjoA"
+
+    suspend fun channelVideosPage(account: Account?, channelId: String): Paged<VideoItem> {
+        val json = InnerTube.call("browse", JSONObject().put("browseId", channelId).put("params", CHANNEL_VIDEOS_TAB), account)
+        return Paged(parse(json).filter { !it.isShort }, findContinuation(json)?.let { "b:$it" })
     }
 
     suspend fun watchRelatedMore(account: Account?, token: String, videoId: String): Paged<VideoItem> {
