@@ -36,8 +36,20 @@ object PipState {
     /** Có Short đang phát trên màn hình (dù máy có PiP hay không): rời app thì phải phát tiếp ở nền. */
     val playingShort: Boolean get() = shortId != null && playing
 
-    /** Rời app lúc này thì vào PiP: có Short đang phát (như YouTube, tạm dừng rồi thì không vào). */
-    val armed: Boolean get() = supported && playingShort
+    /** Video dài đang xem ([WatchScreen] đăng ký); null = không xem video dài. Cửa sổ PiP của nó luôn 16:9. */
+    var watchId by mutableStateOf<String?>(null)
+
+    /** Video dài đang xem có đang phát. */
+    var watchPlaying by mutableStateOf(false)
+
+    /** Tạm dừng video dài khi cửa sổ PiP bị đóng. */
+    var watchStop: (() -> Unit)? = null
+
+    /** Thẻ nổi của video dài đang giữ cửa sổ PiP: hai nút bên là lùi / tua 10 giây (màn xem thì là video trước / sau). */
+    var watchSeek by mutableStateOf(false)
+
+    /** Rời app lúc này thì vào PiP: có Short hoặc video dài đang phát (như YouTube, tạm dừng rồi thì không vào). */
+    val armed: Boolean get() = supported && (playingShort || (watchId != null && watchPlaying))
 
     var controls: PipControls? = null
 

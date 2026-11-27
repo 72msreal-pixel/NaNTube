@@ -29,6 +29,8 @@ import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -60,13 +62,18 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import java.util.Locale
 import com.composables.icons.lucide.ArrowLeft
 import com.composables.icons.lucide.Check
 import com.composables.icons.lucide.ChevronRight
+import com.composables.icons.lucide.Download
 import com.composables.icons.lucide.Lucide
+import com.composables.icons.lucide.Minus
+import com.composables.icons.lucide.Plus
 import com.composables.icons.lucide.Settings
 import com.nan.nantube.data.CaptionTrack
 import com.nan.nantube.data.ShortsCaptions
@@ -74,11 +81,12 @@ import com.nan.nantube.data.ShortsPlayback
 import com.nan.nantube.data.SleepTimer
 import com.nan.nantube.data.WatchPrefs
 
-/** Các trang của bảng cài đặt trình phát (nút bánh răng): trang chính, ba trang chọn và trang "Tuỳ chọn khác" cùng trang Hẹn giờ ngủ. */
+/** Các trang của bảng cài đặt trình phát (nút bánh răng): trang chính, các trang chọn (chất lượng, tốc độ, bản âm thanh, phụ đề) và trang "Tuỳ chọn khác" cùng trang Hẹn giờ ngủ. */
 internal enum class WatchSheetPage(val title: String) {
     Main(""),
     Quality("Chất lượng"),
     Speed("Tốc độ phát"),
+    Audio("Bản âm thanh"),
     Captions("Phụ đề"),
     More("Tuỳ chọn khác"),
     Sleep("Hẹn giờ ngủ")
@@ -100,7 +108,7 @@ private fun lucide(name: String, vararg paths: String): ImageVector =
         }
     }.build()
 
-// Path lucide (sliders-horizontal, gauge, captions, repeat-1, sun/monitor, audio-lines, moon).
+// Path lucide (sliders-horizontal, gauge, captions, repeat-1, sun/monitor, audio-lines, moon). Bản âm thanh dùng chung hình audio-lines với Âm lượng ổn định.
 private val QualityIcon: ImageVector by lazy {
     lucide(
         "WatchSheetQuality",
@@ -138,18 +146,15 @@ private val AmbientIcon: ImageVector by lazy {
         "M12 2v2", "M12 20v2", "M3 12h.01", "M21 12h.01"
     )
 }
-private val StableVolumeIcon: ImageVector by lazy {
-    lucide("WatchSheetStable", "M2 10v3", "M6 6v11", "M10 3v18", "M14 8v7", "M18 5v13", "M22 10v3")
+private val AudioLinesIcon: ImageVector by lazy {
+    lucide("WatchSheetAudioLines", "M2 10v3", "M6 6v11", "M10 3v18", "M14 8v7", "M18 5v13", "M22 10v3")
 }
 private val SleepIcon: ImageVector by lazy { lucide("WatchSheetSleep", "M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z") }
 
 /** Lề hai bên của thẻ cài đặt (càng lớn thẻ càng hẹp). */
 private val SHEET_SIDE_MARGIN = 12.dp
 
-private val SPEEDS = listOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
-
 private fun speedShort(speed: Float) = speed.toString().removeSuffix(".0") + "x"
-private fun speedLabel(speed: Float) = if (speed == 1f) "Bình thường" else speedShort(speed)
 
 private class SheetEntry(
     val icon: ImageVector,
@@ -164,7 +169,7 @@ private class SheetEntry(
 private class SheetChoice(val label: String, val selected: Boolean, val onPick: () -> Unit)
 
 /**
- * Bảng cài đặt của trình phát video dài, trượt từ đáy như app YouTube: trang chính gồm Chất lượng, Tốc độ phát, Phụ đề, Tuỳ chọn khác;
+ * Bảng cài đặt của trình phát video dài, trượt từ đáy như app YouTube: trang chính gồm Chất lượng, Tốc độ phát, Bản âm thanh, Phụ đề, Tuỳ chọn khác;
  * "Tuỳ chọn khác" có Cho video lặp lại, Chế độ môi trường xung quanh, Âm lượng ổn định, Hẹn giờ ngủ.
  * (Khóa màn hình, Trên đường đi, Xem ở chế độ thực tế ảo, Trợ giúp và phản hồi không làm: không có trong app này.)
  * Nội dung đọc / ghi thẳng vào [WatchPlayback]; công tắc lưu theo tài khoản ở [WatchPrefs].
@@ -179,7 +184,86 @@ internal fun WatchSettingsSheet(
     modifier: Modifier = Modifier
 ) {
     BackHandler { if (page == WatchSheetPage.Main) onClose() else onPage(parentOf(page)) }
+    WatchSheetShell(onClose, modifier) {
+        val playing = pb.playingSide.takeIf { it > 0 }
+        val auto = "Tự động" + (playing?.let { " (${it}p)" } ?: "")
+        val activeTrack = activeCaption(tracks)
+        val qualities = ShortsPlayback.qualities(pb.video.id)
+        val audios = ShortsPlayback.audioChoices(pb.video.id)
+        // Dòng có dấu tích: bản đang phát; chưa nạp xong thì bản người dùng chọn, không có thì bản gốc (đứng đầu).
+        val pickedAudio = audios.firstOrNull { it.key == pb.playingAudio() }
+            ?: audios.firstOrNull { it.key == pb.audioKey }
+            ?: audios.firstOrNull()
 
+        val entries: List<SheetEntry>? = when (page) {
+            WatchSheetPage.Main -> listOf(
+                SheetEntry(QualityIcon, "Chất lượng", pb.quality?.let { "${it}p" } ?: auto, chevron = true) { onPage(WatchSheetPage.Quality) },
+                SheetEntry(SpeedIcon, "Tốc độ phát", speedShort(pb.speed), chevron = true) { onPage(WatchSheetPage.Speed) },
+                SheetEntry(AudioLinesIcon, "Bản âm thanh", pickedAudio?.label ?: "Mặc định", chevron = true) { onPage(WatchSheetPage.Audio) },
+                SheetEntry(CaptionsIcon, "Phụ đề", activeTrack?.label) { onPage(WatchSheetPage.Captions) },
+                SheetEntry(Lucide.Settings, "Tuỳ chọn khác", chevron = true) { onPage(WatchSheetPage.More) }
+            )
+            WatchSheetPage.More -> listOf(
+                SheetEntry(LoopIcon, "Cho video lặp lại", toggle = pb.loop) { pb.setLooping(!pb.loop) },
+                SheetEntry(AmbientIcon, "Chế độ môi trường xung quanh", toggle = WatchPrefs.ambient) { WatchPrefs.updateAmbient(!WatchPrefs.ambient) },
+                SheetEntry(AudioLinesIcon, "Âm lượng ổn định", toggle = WatchPrefs.stableVolume) { WatchPrefs.updateStableVolume(!WatchPrefs.stableVolume) },
+                SheetEntry(SleepIcon, "Hẹn giờ ngủ", SleepTimer.label(SleepTimer.picked), chevron = true) { onPage(WatchSheetPage.Sleep) }
+            )
+            else -> null
+        }
+
+        var note: String? = null
+        val choices: List<SheetChoice> = when (page) {
+            WatchSheetPage.Quality -> {
+                // Mức nào của video này gần với lựa chọn đang giữ nhất thì đánh dấu mức đó.
+                val chosen = pb.quality?.let { q -> qualities.minByOrNull { kotlin.math.abs(it - q) } }
+                if (qualities.isEmpty()) note = "Video này chỉ có một mức chất lượng."
+                listOf(SheetChoice(auto, pb.quality == null) { pb.selectQuality(null); onClose() }) +
+                    qualities.map { q -> SheetChoice("${q}p", chosen == q) { pb.selectQuality(q); onClose() } }
+            }
+            WatchSheetPage.Audio -> {
+                // Chọn bản gốc = quay về mặc định của video (như Short).
+                if (audios.size < 2) note = "Video này chỉ có một bản âm thanh."
+                audios.mapIndexed { i, a -> SheetChoice(a.label, pickedAudio?.key == a.key) { pb.selectAudio(if (i == 0) null else a.key); onClose() } }
+            }
+            WatchSheetPage.Captions -> {
+                if (tracks.isEmpty()) note = "Video này không có phụ đề."
+                listOf(SheetChoice("Tắt", activeTrack == null) { WatchPrefs.setCaption(null); onClose() }) +
+                    tracks.map { t -> SheetChoice(t.label, activeTrack?.key == t.key) { WatchPrefs.setCaption(t.key); onClose() } }
+            }
+            WatchSheetPage.Sleep -> SleepTimer.PRESETS.map { m ->
+                SheetChoice(SleepTimer.label(m), SleepTimer.picked == m) { SleepTimer.set(m); onClose() }
+            }
+            else -> emptyList()
+        }
+
+        // Trang Tốc độ phát không có tiêu đề, như YouTube: chạm ra ngoài hoặc bấm Back để quay lại.
+        if (page == WatchSheetPage.Speed) {
+            SpeedPicker(pb.speed) { pb.selectSpeed(it) }
+        } else {
+            if (page != WatchSheetPage.Main) SheetHeader(page.title) { onPage(parentOf(page)) }
+            SheetList(entries, choices, note)
+        }
+    }
+}
+
+/** Bảng ba chấm của video: Hình trong hình, Lưu, Tải xuống. Cùng khung và kiểu dòng với bảng cài đặt. */
+@Composable
+internal fun WatchMoreSheet(onPip: () -> Unit, onSave: () -> Unit, onDownload: () -> Unit, onClose: () -> Unit) {
+    BackHandler { onClose() }
+    WatchSheetShell(onClose) {
+        val entries = listOf(
+            SheetEntry(PipIcon, "Hình trong hình") { onClose(); onPip() },
+            SheetEntry(BookmarkOutline, "Lưu") { onClose(); onSave() },
+            SheetEntry(Lucide.Download, "Tải xuống") { onClose(); onDownload() }
+        )
+        SheetList(entries, emptyList(), null)
+    }
+}
+
+/** Khung chung của các bảng trượt từ đáy: nền mờ, thẻ bo góc, thanh nắm kéo xuống để đóng. */
+@Composable
+private fun WatchSheetShell(onClose: () -> Unit, modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
     // Kéo xuống để đóng: chỉ kéo ở thanh nắm xám trên đỉnh (nội dung bên dưới không kéo được bảng). Thả quá ~110dp hoặc vuốt nhanh thì đóng, không thì bật lại.
     var dy by remember { mutableFloatStateOf(0f) }
     val closeAt = with(LocalDensity.current) { 110.dp.toPx() }
@@ -225,57 +309,70 @@ internal fun WatchSettingsSheet(
             ) {
                 Box(Modifier.size(width = 36.dp, height = 4.dp).clip(RoundedCornerShape(2.dp)).background(Color(0x66FFFFFF)))
             }
+            content()
+        }
+    }
+}
 
-            val playing = pb.playingSide.takeIf { it > 0 }
-            val auto = "Tự động" + (playing?.let { " (${it}p)" } ?: "")
-            val activeTrack = activeCaption(tracks)
-            val qualities = ShortsPlayback.qualities(pb.video.id)
+/** Danh sách dòng của một trang: [entries] nếu có, không thì các dòng chọn [choices] kèm ghi chú [note]. */
+@Composable
+private fun SheetList(entries: List<SheetEntry>?, choices: List<SheetChoice>, note: String?) {
+    LazyColumn(Modifier.fillMaxWidth(), contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 6.dp)) {
+        if (entries != null) items(entries) { SheetRow(it) } else {
+            items(choices) { SheetChoiceRow(it) }
+            note?.let { n -> item { Text(n, fontSize = 14.sp, color = NanColors.TextSecondary, modifier = Modifier.padding(20.dp)) } }
+        }
+    }
+}
 
-            val entries: List<SheetEntry>? = when (page) {
-                WatchSheetPage.Main -> listOf(
-                    SheetEntry(QualityIcon, "Chất lượng", pb.quality?.let { "${it}p" } ?: auto, chevron = true) { onPage(WatchSheetPage.Quality) },
-                    SheetEntry(SpeedIcon, "Tốc độ phát", speedShort(pb.speed), chevron = true) { onPage(WatchSheetPage.Speed) },
-                    SheetEntry(CaptionsIcon, "Phụ đề", activeTrack?.label, chevron = true) { onPage(WatchSheetPage.Captions) },
-                    SheetEntry(Lucide.Settings, "Tuỳ chọn khác", chevron = true) { onPage(WatchSheetPage.More) }
-                )
-                WatchSheetPage.More -> listOf(
-                    SheetEntry(LoopIcon, "Cho video lặp lại", toggle = pb.loop) { pb.setLooping(!pb.loop) },
-                    SheetEntry(AmbientIcon, "Chế độ môi trường xung quanh", toggle = WatchPrefs.ambient) { WatchPrefs.updateAmbient(!WatchPrefs.ambient) },
-                    SheetEntry(StableVolumeIcon, "Âm lượng ổn định", toggle = WatchPrefs.stableVolume) { WatchPrefs.updateStableVolume(!WatchPrefs.stableVolume) },
-                    SheetEntry(SleepIcon, "Hẹn giờ ngủ", SleepTimer.label(SleepTimer.picked), chevron = true) { onPage(WatchSheetPage.Sleep) }
-                )
-                else -> null
-            }
+private const val SPEED_MIN = 0.25f
+private const val SPEED_MAX = 5f
+private const val SPEED_STEP = 0.25f
 
-            var note: String? = null
-            val choices: List<SheetChoice> = when (page) {
-                WatchSheetPage.Quality -> {
-                    // Mức nào của video này gần với lựa chọn đang giữ nhất thì đánh dấu mức đó.
-                    val chosen = pb.quality?.let { q -> qualities.minByOrNull { kotlin.math.abs(it - q) } }
-                    if (qualities.isEmpty()) note = "Video này chỉ có một mức chất lượng."
-                    listOf(SheetChoice(auto, pb.quality == null) { pb.selectQuality(null); onClose() }) +
-                        qualities.map { q -> SheetChoice("${q}p", chosen == q) { pb.selectQuality(q); onClose() } }
-                }
-                WatchSheetPage.Speed -> SPEEDS.map { s -> SheetChoice(speedLabel(s), pb.speed == s) { pb.selectSpeed(s); onClose() } }
-                WatchSheetPage.Captions -> {
-                    if (tracks.isEmpty()) note = "Video này không có phụ đề."
-                    listOf(SheetChoice("Tắt", activeTrack == null) { WatchPrefs.setCaption(null); onClose() }) +
-                        tracks.map { t -> SheetChoice(t.label, activeTrack?.key == t.key) { WatchPrefs.setCaption(t.key); onClose() } }
-                }
-                WatchSheetPage.Sleep -> SleepTimer.PRESETS.map { m ->
-                    SheetChoice(SleepTimer.label(m), SleepTimer.picked == m) { SleepTimer.set(m); onClose() }
-                }
-                else -> emptyList()
-            }
-
-            if (page != WatchSheetPage.Main) SheetHeader(page.title) { onPage(parentOf(page)) }
-            LazyColumn(Modifier.fillMaxWidth(), contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 6.dp)) {
-                if (entries != null) items(entries) { SheetRow(it) } else {
-                    items(choices) { SheetChoiceRow(it) }
-                    note?.let { n -> item { Text(n, fontSize = 14.sp, color = NanColors.TextSecondary, modifier = Modifier.padding(20.dp)) } }
+/** Trang Tốc độ phát như YouTube: số to ở giữa, nút -/+ và thanh trượt (mỗi nấc 0,25x, tối đa 5x), hàng nút nhanh 1-5. */
+@Composable
+private fun SpeedPicker(speed: Float, onSpeed: (Float) -> Unit) {
+    fun set(v: Float) {
+        val snapped = (Math.round(v / SPEED_STEP) * SPEED_STEP).coerceIn(SPEED_MIN, SPEED_MAX)
+        if (snapped != speed) onSpeed(snapped)
+    }
+    Column(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 16.dp)) {
+        Text(
+            "%.2fx".format(Locale.US, speed),
+            fontSize = 20.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = Color.White,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SpeedRound(Lucide.Minus) { set(speed - SPEED_STEP) }
+            NanSlider(speed, { set(it) }, Modifier.weight(1f).padding(horizontal = 12.dp), valueRange = SPEED_MIN..SPEED_MAX)
+            SpeedRound(Lucide.Plus) { set(speed + SPEED_STEP) }
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            for (v in 1..5) {
+                val on = speed == v.toFloat()
+                Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Box(
+                        Modifier.fillMaxWidth().height(40.dp).clip(RoundedCornerShape(20.dp))
+                            .background(if (on) Color.White else Color(0xFF3A3A3A))
+                            .clickable { set(v.toFloat()) },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("$v", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = if (on) Color.Black else Color.White)
+                    }
+                    if (v == 1) Text("Bình thường", fontSize = 12.sp, color = Color.White, maxLines = 1, modifier = Modifier.padding(top = 6.dp))
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun SpeedRound(icon: ImageVector, onClick: () -> Unit) {
+    Box(Modifier.size(44.dp).clip(CircleShape).background(Color(0xFF3A3A3A)).clickable(onClick = onClick), contentAlignment = Alignment.Center) {
+        Icon(icon, null, Modifier.size(22.dp), tint = Color.White)
     }
 }
 

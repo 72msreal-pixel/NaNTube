@@ -285,12 +285,12 @@ fun CleanRestoreButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
 
 /** Dòng phụ đề đang hiện: chữ trắng trên nền đen mờ như phụ đề YouTube. */
 @Composable
-fun CaptionOverlay(text: String, modifier: Modifier = Modifier) {
+fun CaptionOverlay(text: String, modifier: Modifier = Modifier, small: Boolean = false) {
     Text(
         text,
         color = Color.White,
-        fontSize = 15.sp,
-        lineHeight = 20.sp,
+        fontSize = if (small) 10.sp else 15.sp,
+        lineHeight = if (small) 13.sp else 20.sp,
         textAlign = TextAlign.Center,
         modifier = modifier.background(Color(0xB3000000), RoundedCornerShape(4.dp)).padding(horizontal = 8.dp, vertical = 3.dp)
     )

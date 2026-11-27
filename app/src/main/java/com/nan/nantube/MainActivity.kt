@@ -145,7 +145,7 @@ class MainActivity : ComponentActivity() {
         }
         // Nút Phát/Tạm dừng và tỉ lệ cửa sổ luôn khớp Short đang hiện; Android 12+ còn tự vào PiP khi vuốt về Home (auto-enter).
         pipScope.launch {
-            snapshotFlow { listOf(PipState.armed, PipState.playing, PipState.vertical, PipPrefs.popup, resumedNow) }.collect { updatePipParams() }
+            snapshotFlow { listOf(PipState.armed, PipState.playing, PipState.vertical, PipPrefs.popup, resumedNow, PipState.watchId, PipState.watchPlaying, PipState.watchSeek) }.collect { updatePipParams() }
         }
     }
 
@@ -160,14 +160,15 @@ class MainActivity : ComponentActivity() {
 
     @RequiresApi(Build.VERSION_CODES.O)
     private fun buildPipParams(): PictureInPictureParams {
+        val watch = PipState.watchId != null
         val builder = PictureInPictureParams.Builder()
-            .setAspectRatio(if (PipState.vertical) Rational(9, 16) else Rational(16, 9))
+            .setAspectRatio(if (PipState.vertical && !watch) Rational(9, 16) else Rational(16, 9))
             .setActions(
                 listOf(
-                    pipAction(ACTION_PIP_PREV, 1, R.drawable.ic_pip_prev, "Short trước"),
-                    if (PipState.playing) pipAction(ACTION_PIP_TOGGLE, 2, R.drawable.ic_pip_pause, "Tạm dừng")
+                    pipAction(ACTION_PIP_PREV, 1, R.drawable.ic_pip_prev, if (!watch) "Short trước" else if (PipState.watchSeek) "Lùi 10 giây" else "Video trước"),
+                    if (if (watch) PipState.watchPlaying else PipState.playing) pipAction(ACTION_PIP_TOGGLE, 2, R.drawable.ic_pip_pause, "Tạm dừng")
                     else pipAction(ACTION_PIP_TOGGLE, 2, R.drawable.ic_pip_play, "Phát"),
-                    pipAction(ACTION_PIP_NEXT, 3, R.drawable.ic_pip_next, "Short tiếp")
+                    pipAction(ACTION_PIP_NEXT, 3, R.drawable.ic_pip_next, if (!watch) "Short tiếp" else if (PipState.watchSeek) "Tua 10 giây" else "Video sau")
                 )
             )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {

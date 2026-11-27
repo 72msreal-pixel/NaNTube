@@ -69,6 +69,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.layout.onSizeChanged
@@ -208,6 +209,10 @@ internal class WatchPlayback(private val context: Context, val video: VideoItem,
     var released = false
         private set
 
+    /** Đã nạp nguồn phát ít nhất một lần: bộ phát nhận lại từ thẻ nổi thì không nạp lại từ đầu. */
+    var started = false
+        private set
+
     /** Tốc độ phát người dùng chọn (nút bánh răng → Tốc độ phát). */
     var speed by mutableFloatStateOf(1f)
         private set
@@ -261,21 +266,46 @@ internal class WatchPlayback(private val context: Context, val video: VideoItem,
             }
 
             override fun onTracksChanged(tracks: Tracks) {
-                applyOriginalAudio(tracks)
+                applyAudio(tracks)
                 applyQuality()
             }
         })
     }
 
-    /** Video có nhiều bản âm thanh (lồng tiếng): ép về bản gốc (đứng đầu bản kê DASH), như Short, dù máy đặt ngôn ngữ khác. */
-    private fun applyOriginalAudio(tracks: Tracks) {
+    /** Bản âm thanh người dùng chọn ([AudioChoice.key]); null = bản gốc (đứng đầu bản kê DASH). Video không có bản đó thì dùng bản gốc. */
+    var audioKey by mutableStateOf<String?>(null)
+        private set
+
+    fun selectAudio(key: String?) {
+        audioKey = key
+        applyAudio(player.currentTracks)
+    }
+
+    /** Số thứ tự bản âm thanh của một nhóm track (đọc từ id biểu diễn trong bản kê DASH, xem ShortsMedia.mpd). */
+    private fun audioIndex(group: Tracks.Group): Int? =
+        group.getTrackFormat(0).id?.let { AUDIO_REP.find(it)?.groupValues?.get(1)?.toIntOrNull() }
+
+    /** Khóa bản âm thanh đang phát (null nếu chưa nạp xong hoặc video chỉ có một bản). */
+    fun playingAudio(): String? {
+        val group = player.currentTracks.groups.firstOrNull { it.type == C.TRACK_TYPE_AUDIO && it.length > 0 && it.isSelected } ?: return null
+        val index = audioIndex(group) ?: return null
+        return ShortsPlayback.audioChoices(video.id).firstOrNull { it.index == index }?.key
+    }
+
+    /**
+     * Video có nhiều bản âm thanh (lồng tiếng): ép vào bản người dùng chọn, không có thì bản gốc, như Short,
+     * dù máy đặt ngôn ngữ khác.
+     */
+    private fun applyAudio(tracks: Tracks) {
         if (released) return
         val groups = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO && it.length > 0 }
         if (groups.size < 2) return
-        val group = groups.firstOrNull { g ->
-            g.getTrackFormat(0).id?.let { AUDIO_REP.find(it)?.groupValues?.get(1)?.toIntOrNull() } == 0
-        } ?: return
+        val choices = ShortsPlayback.audioChoices(video.id)
+        if (choices.isEmpty()) return
+        val want = audioKey?.let { key -> choices.firstOrNull { it.key == key } } ?: choices.first()
+        val group = groups.firstOrNull { audioIndex(it) == want.index } ?: return
         val params = player.trackSelectionParameters
+        // Đã ép đúng rồi thì thôi, tránh vòng lặp onTracksChanged → đặt lại → onTracksChanged.
         if (params.overrides[group.mediaTrackGroup]?.trackIndices == listOf(0)) return
         player.trackSelectionParameters = params.buildUpon()
             .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, 0))
@@ -285,6 +315,7 @@ internal class WatchPlayback(private val context: Context, val video: VideoItem,
     /** Lấy link → dựng DASH → nạp vào ExoPlayer, bắt đầu từ [resumeMs]. */
     fun start(resumeMs: Long = 0L) {
         if (released) return
+        started = true
         job?.cancel()
         failed = false
         job = scope.launch {
@@ -425,30 +456,23 @@ fun WatchScreen(account: Account?, onSave: (VideoItem) -> Unit) {
 
 private fun toast(context: Context, text: String) = Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
 
-private fun clock(ms: Long): String {
-    val total = (ms / 1000).coerceAtLeast(0)
-    val h = total / 3600
-    val m = (total % 3600) / 60
-    val s = total % 60
-    return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
-}
+/** Nút CC đang bật: chưa lấy xong danh sách phụ đề thì coi như bật nếu người dùng đã bật, để nút CC không nháy. */
+internal fun watchCaptionsOn(pb: WatchPlayback): Boolean =
+    WatchPrefs.captionKey != null && (!pb.tracksReady || activeCaption(pb.tracks) != null)
 
+/**
+ * Mọi việc phải chạy suốt đời một [WatchPlayback], dù nó đang ở màn xem hay ở thẻ nổi ([WatchMiniWindow]): cập nhật vị trí, cài đặt theo tài khoản,
+ * hẹn giờ ngủ, âm lượng ổn định, ghi lịch sử xem, nạp phụ đề. Trả về dòng phụ đề đang hiện (null nếu không có).
+ */
 @Composable
-private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem) -> Unit) {
+internal fun WatchPlaybackEffects(pb: WatchPlayback, account: Account?): String? {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val pb = remember { WatchPlayback(context, video, account) }
-    DisposableEffect(pb) {
-        pb.start(0L)
-        onDispose { pb.release() }
-    }
     LaunchedEffect(pb) {
         while (true) {
             pb.poll()
             delay(250)
         }
     }
-
     // Cài đặt theo tài khoản (tự phát, môi trường xung quanh, âm lượng ổn định, phụ đề).
     LaunchedEffect(account?.id) { WatchPrefs.bind(account) }
     // Hẹn giờ ngủ: hết giờ thì tạm dừng video đang xem.
@@ -458,9 +482,13 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
         onDispose { SleepTimer.detach(pause) }
     }
     LaunchedEffect(WatchPrefs.stableVolume, pb.tracksReady) { pb.applyStableVolume(WatchPrefs.stableVolume) }
-
-    var sheet by remember { mutableStateOf<WatchSheetPage?>(null) }
-    var ambientFrame by remember { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(pb, account?.id) {
+        WatchHistory.track(account, pb.video) {
+            if (!pb.released && pb.firstFrame && (pb.player.isPlaying || pb.ended)) {
+                WatchHistory.Playback(pb.player.currentPosition / 1000f, pb.durationMs.takeIf { it > 0 }?.let { it / 1000f })
+            } else null
+        }
+    }
 
     // Phụ đề: bản đang bật (nhớ qua các video, theo tài khoản); tải khi có bản, tự vẽ theo vị trí phát.
     val captionTrack = activeCaption(pb.tracks)
@@ -477,8 +505,36 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
         }
     }
     val captionText by remember { derivedStateOf { if (cues.isEmpty()) null else ShortsCaptions.textAt(cues, pb.positionMs) } }
+    return captionText
+}
+
+private fun clock(ms: Long): String {
+    val total = (ms / 1000).coerceAtLeast(0)
+    val h = total / 3600
+    val m = (total % 3600) / 60
+    val s = total % 60
+    return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
+}
+
+@Composable
+private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem) -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    // Mở lại đúng video đang ở thẻ nổi thì nhận lại bộ phát đang chạy (không nạp lại); mở video khác thì thẻ nổi tắt.
+    val pb = remember { WatchMini.take(video) ?: run { WatchMini.close(); WatchPlayback(context, video, account) } }
+    DisposableEffect(pb) {
+        if (!pb.started) pb.start(0L)
+        // Bấm Hình trong hình: bộ phát đã giao cho thẻ nổi, không giải phóng.
+        onDispose { if (WatchMini.pb !== pb) pb.release() }
+    }
+    val captionText = WatchPlaybackEffects(pb, account)
+
+    var sheet by remember { mutableStateOf<WatchSheetPage?>(null) }
+    var moreOpen by remember { mutableStateOf(false) }
+    var ambientFrame by remember { mutableStateOf<ImageBitmap?>(null) }
+
     // Chưa lấy xong danh sách phụ đề thì coi như đang bật nếu người dùng đã bật, để nút CC không nháy.
-    val captionsOn = WatchPrefs.captionKey != null && (!pb.tracksReady || captionTrack != null)
+    val captionsOn = watchCaptionsOn(pb)
 
     var info by remember { mutableStateOf<ShortInfo?>(null) }
     var desc by remember { mutableStateOf<ShortDescription?>(ShortsPlayback.cachedDescription(video.id)) }
@@ -533,13 +589,6 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
         }
     }
 
-    LaunchedEffect(pb, account?.id) {
-        WatchHistory.track(account, video) {
-            if (!pb.released && pb.firstFrame && (pb.player.isPlaying || pb.ended)) {
-                WatchHistory.Playback(pb.player.currentPosition / 1000f, pb.durationMs.takeIf { it > 0 }?.let { it / 1000f })
-            } else null
-        }
-    }
 
     val related = remember {
         PagedFeed<VideoItem>(
@@ -553,6 +602,28 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
 
     // Video kế tiếp = đề xuất đầu tiên (nút "Sau" và tự phát).
     val next = related.items.firstOrNull { it.id != video.id }
+
+    // Hình trong hình: nút Trước / Phát-Tạm dừng / Sau của cửa sổ PiP điều khiển đúng video này; rời app khi đang phát thì tự vào PiP.
+    val latestNext by rememberUpdatedState(next)
+    DisposableEffect(pb) {
+        val controls = PipControls(
+            prev = { WatchViewer.back() },
+            next = { latestNext?.let { WatchViewer.open(it) } },
+            toggle = { pb.toggle() }
+        )
+        PipState.controls = controls
+        PipState.watchStop = { pb.player.playWhenReady = false }
+        onDispose {
+            if (PipState.controls === controls) PipState.controls = null
+            PipState.watchStop = null
+            PipState.watchId = null
+            PipState.watchPlaying = false
+        }
+    }
+    LaunchedEffect(video.id, pb.wantPlay) {
+        PipState.watchId = video.id
+        PipState.watchPlaying = pb.wantPlay
+    }
     var sleepStopped by remember { mutableStateOf(false) }
     // Hết video: hẹn giờ "Cuối video" thì dừng hẳn, không thì tự phát video kế nếu công tắc tự phát đang bật.
     LaunchedEffect(pb.ended, WatchPrefs.autoplay, next?.id) {
@@ -648,7 +719,7 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
     Box(Modifier.fillMaxSize().background(NanColors.Background)) {
         if (WatchPrefs.ambient) AmbientGlowBackground(ambientFrame)
         Column(Modifier.fillMaxSize()) {
-            Box(Modifier.fillMaxWidth().background(Color.Black).statusBarsPadding()) {
+            Box(Modifier.fillMaxWidth().background(Color.Black).then(if (PipState.inPip) Modifier else Modifier.statusBarsPadding())) {
                 WatchPlayerArea(
                     pb = pb,
                     video = video,
@@ -675,7 +746,7 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
                     onSettings = { sheet = WatchSheetPage.Main }
                 )
                 // Thanh tua nằm đè lên đáy video như YouTube, không chiếm thêm chiều cao bên dưới.
-                WatchSeekBar(
+                if (!PipState.inPip) WatchSeekBar(
                     positionMs = pb.positionMs,
                     durationMs = pb.durationMs,
                     bufferedMs = pb.bufferedMs,
@@ -747,7 +818,7 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
                             WatchAction(if (liked) WatchThumbUp else WatchThumbUpOutline, "Thích", likeEffect) { toggleLike() }
                             WatchAction(if (disliked) WatchThumbDown else WatchThumbDownOutline, "Không thích") { toggleDislike() }
                             WatchAction(WatchShare, "Chia sẻ") { share() }
-                            WatchAction(WatchMore, "Thêm") { onSave(video) }
+                            WatchAction(WatchMore, "Thêm") { moreOpen = true }
                         }
                     }
                     item(key = "comments") {
@@ -817,6 +888,16 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
                 page = page,
                 onPage = { sheet = it },
                 onClose = { sheet = null }
+            )
+        }
+
+        if (moreOpen && !PipState.inPip) {
+            WatchMoreSheet(
+                // Hình trong hình: thu video vào thẻ nổi trong app, màn xem đóng, app về tab đang mở trước đó.
+                onPip = { WatchMini.start(pb); WatchViewer.close() },
+                onSave = { onSave(video) },
+                onDownload = { DownloadPanel.open(video, account) },
+                onClose = { moreOpen = false }
             )
         }
 
@@ -971,7 +1052,7 @@ private fun WatchPlayerArea(
             )
         }
 
-        AnimatedVisibility(visible = controls && !pb.failed, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.fillMaxSize()) {
+        AnimatedVisibility(visible = controls && !pb.failed && !PipState.inPip, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.fillMaxSize()) {
             Box(Modifier.fillMaxSize().background(Color(0x66000000))) {
                 // Hàng trên: thu nhỏ (đóng) | công tắc tự phát, truyền lên TV, phụ đề (CC), cài đặt.
                 Row(Modifier.align(Alignment.TopStart).fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {

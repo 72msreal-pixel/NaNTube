@@ -141,6 +141,7 @@ object ShortsMini {
         startSerial++
         background = false
         ShortsViewer.close()
+        WatchMini.close()
         ShortsBackground.onPopupOpened()
         ensureMore()
     }
@@ -322,71 +323,28 @@ fun ShortsMiniWindow(account: Account?) {
     MiniContent(video, account)
 }
 
+/** Những thứ [MiniFrame] giữ giùm để từng loại thẻ vẽ nút của mình: độ mờ lớp nút, có bấm được không, nhịp "pop" của nút phát, hàm đóng (thẻ co lại rồi tắt). */
+internal class MiniFrameScope(val controlsAlpha: Float, val controlsEnabled: Boolean, val pop: Float, val closeShrink: () -> Unit)
+
+/**
+ * Khung thẻ nổi dùng chung cho thẻ Short ([MiniContent]) và thẻ video dài ([WatchMiniWindow]): hiệu ứng vào / ra, nút tự mờ, kéo thả,
+ * ném ra mép để đóng, hít về góc. [changeKey] đổi (sang video khác) thì thẻ nhún nhẹ; [onSilence] tắt tiếng ngay lúc bắt đầu đóng; [onClosed] đóng hẳn.
+ */
 @Composable
-private fun MiniContent(video: VideoItem, account: Account?) {
-    val context = LocalContext.current
+internal fun MiniFrame(
+    width: Dp,
+    height: Dp,
+    paused: Boolean,
+    changeKey: Any,
+    onSilence: () -> Unit,
+    onClosed: () -> Unit,
+    content: @Composable BoxScope.(MiniFrameScope) -> Unit
+) {
     val density = LocalDensity.current
-    val list = ShortsMini.list
-    val idx = ShortsMini.index
     val inPip = PipState.inPip
-
-    remember(account?.id) { ShortsPool.bind(context, account) }
-    DisposableEffect(Unit) { onDispose { ShortsPool.pagerGone() } }
-
-    // Giữ ô phát của video này + kế + trước (kể cả sau khi tab Short vừa nhả), rồi chỉ phát video đang hiện.
-    LaunchedEffect(video.id, list) {
-        ShortsPool.window(listOfNotNull(list.getOrNull(idx), list.getOrNull(idx + 1), list.getOrNull(idx - 1)))
-    }
-    val slot = ShortsPool.slot(video.id)
-    var tick by remember { mutableIntStateOf(0) }
-    LaunchedEffect(video.id, slot, ShortsMini.paused, tick) {
-        ShortsPool.setActive(video.id, !ShortsMini.paused)
-    }
-    // Bật tự vuốt ở menu Short thì hết video là sang video kế như trong Short.
-    val ended = slot?.ended == true
-    LaunchedEffect(ended, video.id) {
-        if (ended && ShortsPool.autoScroll) {
-            delay(AUTO_SWIPE_TAIL_MS)
-            ShortsMini.next()
-        }
-    }
-
-    // Báo cho MainActivity: rời app lúc đang phát thì vào PiP; nút Trước / Phát-Tạm dừng / Tiếp của cửa sổ PiP điều khiển cửa sổ này.
-    val shownPaused = ShortsMini.shownPaused
-    LaunchedEffect(video.id, shownPaused, slot?.vertical) {
-        PipState.shortId = video.id
-        PipState.video = video
-        PipState.playing = !shownPaused
-        PipState.vertical = slot?.vertical ?: true
-    }
-    DisposableEffect(Unit) {
-        val controls = PipControls(
-            prev = { ShortsMini.prev() },
-            next = { ShortsMini.next() },
-            toggle = { ShortsMini.toggle() }
-        )
-        PipState.controls = controls
-        onDispose {
-            if (PipState.controls === controls) {
-                PipState.controls = null
-                PipState.shortId = null
-                PipState.video = null
-                PipState.playing = false
-            }
-        }
-    }
-
-    // Rời app / về lại app do ShortsBackground lo (MainActivity gọi đúng chỗ); ở đây chỉ nhắc hiệu ứng phát chạy lại khi app hiện lại.
-    val lifecycle = LocalLifecycleOwner.current.lifecycle
-    DisposableEffect(lifecycle) {
-        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME) tick++ }
-        lifecycle.addObserver(observer)
-        onDispose { lifecycle.removeObserver(observer) }
-    }
-
     var controlsVisible by remember { mutableStateOf(true) }
-    LaunchedEffect(controlsVisible, ShortsMini.paused, video.id) {
-        if (controlsVisible && !ShortsMini.paused) {
+    LaunchedEffect(controlsVisible, paused, changeKey) {
+        if (controlsVisible && !paused) {
             delay(3000)
             controlsVisible = false
         }
@@ -407,7 +365,7 @@ private fun MiniContent(video: VideoItem, account: Account?) {
     // Chuyển sang Short khác (Trước / Tiếp / tự vuốt): thẻ nhún nhẹ để báo đã đổi (Motion.nudge của meetube).
     val nudge = remember { Animatable(1f) }
     var firstVideo by remember { mutableStateOf(true) }
-    LaunchedEffect(video.id) {
+    LaunchedEffect(changeKey) {
         if (firstVideo) {
             firstVideo = false
             return@LaunchedEffect
@@ -423,7 +381,7 @@ private fun MiniContent(video: VideoItem, account: Account?) {
     // Nút Phát / Tạm dừng "pop": ép xuống 78%, nảy lên 112%, rồi về 100%.
     val pop = remember { Animatable(1f) }
     var firstPause by remember { mutableStateOf(true) }
-    LaunchedEffect(ShortsMini.paused) {
+    LaunchedEffect(paused) {
         if (firstPause) {
             firstPause = false
             return@LaunchedEffect
@@ -447,8 +405,8 @@ private fun MiniContent(video: VideoItem, account: Account?) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val maxW = constraints.maxWidth.toFloat()
         val maxH = constraints.maxHeight.toFloat()
-        val w = with(density) { MINI_WIDTH.toPx() }
-        val h = with(density) { MINI_HEIGHT.toPx() }
+        val w = with(density) { width.toPx() }
+        val h = with(density) { height.toPx() }
         val margin = with(density) { 12.dp.toPx() }
         val barPx = with(density) { 64.dp.toPx() }
         val navPx = WindowInsets.navigationBars.getBottom(density).toFloat()
@@ -490,7 +448,7 @@ private fun MiniContent(video: VideoItem, account: Account?) {
         fun flyAway(from: Offset, toX: Float, ms: Int) {
             if (closing) return
             closing = true
-            ShortsMini.paused = true // tiếng tắt ngay, thẻ bay đi rồi mới đóng hẳn
+            onSilence() // tiếng tắt ngay, thẻ bay đi rồi mới đóng hẳn
             controlsVisible = false
             settleJob?.cancel()
             settleJob = scope.launch {
@@ -498,7 +456,7 @@ private fun MiniContent(video: VideoItem, account: Account?) {
                 settling = true
                 launch { settle.animateTo(Offset(toX, from.y), tween(ms, easing = LinearEasing)) }
                 cardAlpha.animateTo(0f, tween(ms, easing = LinearEasing))
-                ShortsMini.close()
+                onClosed()
             }
         }
 
@@ -506,12 +464,12 @@ private fun MiniContent(video: VideoItem, account: Account?) {
         fun closeShrink() {
             if (closing) return
             closing = true
-            ShortsMini.paused = true
+            onSilence()
             controlsVisible = false
             scope.launch {
                 launch { cardScale.animateTo(0.9f, tween(MINI_EXIT_MS, easing = EmphasizedAccelerate)) }
                 cardAlpha.animateTo(0f, tween(MINI_EXIT_MS, easing = EmphasizedAccelerate))
-                ShortsMini.close()
+                onClosed()
             }
         }
 
@@ -554,7 +512,7 @@ private fun MiniContent(video: VideoItem, account: Account?) {
                     val fade = 1f - 0.85f * min(1f, abs(overhang(visual().x)) / w)
                     alpha = cardAlpha.value * fade
                 }
-                .size(MINI_WIDTH, MINI_HEIGHT)
+                .size(width, height)
                 .shadow(8.dp, RoundedCornerShape(12.dp))
                 .clip(RoundedCornerShape(12.dp))
                 .pointerInput(Unit) {
@@ -620,72 +578,145 @@ private fun MiniContent(video: VideoItem, account: Account?) {
                         if (!closing && !afterDrag) controlsVisible = !controlsVisible
                     }) }
         ) {
-            AsyncImage(
-                model = video.thumbnail,
-                contentDescription = null,
-                contentScale = ContentScale.Fit,
-                modifier = Modifier.fillMaxSize()
-            )
-            val holder = remember { arrayOfNulls<PlayerView>(1) }
-            DisposableEffect(Unit) { onDispose { holder[0]?.player = null } }
-            // Về lại app (từ cửa sổ nổi ngoài app, PiP...): bộ phát có thể đã bị cửa sổ kia giành mặt vẽ hoặc đã đổi sang video khác.
-            // Gắn lại ngay, rồi gắn thêm hai lần vì cửa sổ nổi được gỡ trễ hơn một nhịp sau onResume.
-            LaunchedEffect(tick, slot) {
-                for (wait in longArrayOf(0L, 150L, 500L)) {
-                    delay(wait)
-                    holder[0]?.rebind(slot?.player)
-                }
-            }
-            AndroidView(
-                factory = { ctx ->
-                    (LayoutInflater.from(ctx).inflate(R.layout.shorts_player_view, null) as PlayerView).also {
-                        holder[0] = it
-                        it.rebind(slot?.player)
-                    }
-                },
-                update = {
-                    it.rebind(slot?.player)
-                    it.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                },
-                modifier = Modifier.fillMaxSize()
-            )
+            content(MiniFrameScope(controlsAlpha, controlsEnabled, pop.value, ::closeShrink))
+        }
+    }
+}
 
-            if (controlsAlpha > 0.001f && !inPip) {
-                // Không còn nền tròn đen sau từng nút: chỉ một lớp phủ tối dần ở đỉnh / đáy để biểu tượng trắng vẫn đọc được.
+@Composable
+private fun MiniContent(video: VideoItem, account: Account?) {
+    val context = LocalContext.current
+    val list = ShortsMini.list
+    val idx = ShortsMini.index
+    val inPip = PipState.inPip
+
+    remember(account?.id) { ShortsPool.bind(context, account) }
+    DisposableEffect(Unit) { onDispose { ShortsPool.pagerGone() } }
+
+    // Giữ ô phát của video này + kế + trước (kể cả sau khi tab Short vừa nhả), rồi chỉ phát video đang hiện.
+    LaunchedEffect(video.id, list) {
+        ShortsPool.window(listOfNotNull(list.getOrNull(idx), list.getOrNull(idx + 1), list.getOrNull(idx - 1)))
+    }
+    val slot = ShortsPool.slot(video.id)
+    var tick by remember { mutableIntStateOf(0) }
+    LaunchedEffect(video.id, slot, ShortsMini.paused, tick) {
+        ShortsPool.setActive(video.id, !ShortsMini.paused)
+    }
+    // Bật tự vuốt ở menu Short thì hết video là sang video kế như trong Short.
+    val ended = slot?.ended == true
+    LaunchedEffect(ended, video.id) {
+        if (ended && ShortsPool.autoScroll) {
+            delay(AUTO_SWIPE_TAIL_MS)
+            ShortsMini.next()
+        }
+    }
+
+    // Báo cho MainActivity: rời app lúc đang phát thì vào PiP; nút Trước / Phát-Tạm dừng / Tiếp của cửa sổ PiP điều khiển cửa sổ này.
+    val shownPaused = ShortsMini.shownPaused
+    LaunchedEffect(video.id, shownPaused, slot?.vertical) {
+        PipState.shortId = video.id
+        PipState.video = video
+        PipState.playing = !shownPaused
+        PipState.vertical = slot?.vertical ?: true
+    }
+    DisposableEffect(Unit) {
+        val controls = PipControls(
+            prev = { ShortsMini.prev() },
+            next = { ShortsMini.next() },
+            toggle = { ShortsMini.toggle() }
+        )
+        PipState.controls = controls
+        onDispose {
+            if (PipState.controls === controls) {
+                PipState.controls = null
+                PipState.shortId = null
+                PipState.video = null
+                PipState.playing = false
+            }
+        }
+    }
+
+    // Rời app / về lại app do ShortsBackground lo (MainActivity gọi đúng chỗ); ở đây chỉ nhắc hiệu ứng phát chạy lại khi app hiện lại.
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle) {
+        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME) tick++ }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
+    }
+
+    MiniFrame(
+        width = MINI_WIDTH,
+        height = MINI_HEIGHT,
+        paused = ShortsMini.paused,
+        changeKey = video.id,
+        onSilence = { ShortsMini.paused = true }, // tiếng tắt ngay, thẻ bay đi rồi mới đóng hẳn
+        onClosed = { ShortsMini.close() }
+    ) { f ->
+        AsyncImage(
+            model = video.thumbnail,
+            contentDescription = null,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.fillMaxSize()
+        )
+        val holder = remember { arrayOfNulls<PlayerView>(1) }
+        DisposableEffect(Unit) { onDispose { holder[0]?.player = null } }
+        // Về lại app (từ cửa sổ nổi ngoài app, PiP...): bộ phát có thể đã bị cửa sổ kia giành mặt vẽ hoặc đã đổi sang video khác.
+        // Gắn lại ngay, rồi gắn thêm hai lần vì cửa sổ nổi được gỡ trễ hơn một nhịp sau onResume.
+        LaunchedEffect(tick, slot) {
+            for (wait in longArrayOf(0L, 150L, 500L)) {
+                delay(wait)
+                holder[0]?.rebind(slot?.player)
+            }
+        }
+        AndroidView(
+            factory = { ctx ->
+                (LayoutInflater.from(ctx).inflate(R.layout.shorts_player_view, null) as PlayerView).also {
+                    holder[0] = it
+                    it.rebind(slot?.player)
+                }
+            },
+            update = {
+                it.rebind(slot?.player)
+                it.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+            },
+            modifier = Modifier.fillMaxSize()
+        )
+
+        if (f.controlsAlpha > 0.001f && !inPip) {
+            // Không còn nền tròn đen sau từng nút: chỉ một lớp phủ tối dần ở đỉnh / đáy để biểu tượng trắng vẫn đọc được.
+            Box(
+                Modifier.fillMaxSize().graphicsLayer { alpha = f.controlsAlpha }
+            ) {
                 Box(
-                    Modifier.fillMaxSize().graphicsLayer { alpha = controlsAlpha }
-                ) {
-                    Box(
-                        Modifier.fillMaxSize().background(
-                            Brush.verticalGradient(listOf(Color(0x99000000), Color(0x40000000), Color(0x99000000)))
-                        )
+                    Modifier.fillMaxSize().background(
+                        Brush.verticalGradient(listOf(Color(0x99000000), Color(0x40000000), Color(0x99000000)))
                     )
-                    MiniButton(Modifier.align(Alignment.TopStart).padding(2.dp), 36.dp, controlsEnabled, ::closeShrink) {
-                        MiniIcon(MiniClose, 22.dp)
-                    }
-                    MiniButton(Modifier.align(Alignment.TopEnd).padding(2.dp), 36.dp, controlsEnabled, { ShortsMini.expand() }) {
-                        MiniIcon(MiniExpand, 22.dp)
-                    }
-                    Row(
-                        Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                )
+                MiniButton(Modifier.align(Alignment.TopStart).padding(2.dp), 36.dp, f.controlsEnabled, f.closeShrink) {
+                    MiniIcon(MiniClose, 22.dp)
+                }
+                MiniButton(Modifier.align(Alignment.TopEnd).padding(2.dp), 36.dp, f.controlsEnabled, { ShortsMini.expand() }) {
+                    MiniIcon(MiniExpand, 22.dp)
+                }
+                Row(
+                    Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    MiniButton(Modifier, 36.dp, f.controlsEnabled, { ShortsMini.prev() }) { MiniIcon(MiniPrev, 24.dp) }
+                    MiniButton(
+                        Modifier.padding(horizontal = 2.dp).graphicsLayer {
+                            scaleX = f.pop
+                            scaleY = f.pop
+                        },
+                        44.dp, f.controlsEnabled, { ShortsMini.toggle() }
                     ) {
-                        MiniButton(Modifier, 36.dp, controlsEnabled, { ShortsMini.prev() }) { MiniIcon(MiniPrev, 24.dp) }
-                        MiniButton(
-                            Modifier.padding(horizontal = 2.dp).graphicsLayer {
-                                scaleX = pop.value
-                                scaleY = pop.value
-                            },
-                            44.dp, controlsEnabled, { ShortsMini.toggle() }
-                        ) {
-                            Crossfade(targetState = ShortsMini.shownPaused, animationSpec = tween(MINI_FADE_IN_MS), label = "playPause") { paused ->
-                                Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
-                                    MiniIcon(if (paused) MiniPlay else MiniPause, 32.dp)
-                                }
+                        Crossfade(targetState = ShortsMini.shownPaused, animationSpec = tween(MINI_FADE_IN_MS), label = "playPause") { paused ->
+                            Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
+                                MiniIcon(if (paused) MiniPlay else MiniPause, 32.dp)
                             }
                         }
-                        MiniButton(Modifier, 36.dp, controlsEnabled, { ShortsMini.next() }) { MiniIcon(MiniNext, 24.dp) }
                     }
+                    MiniButton(Modifier, 36.dp, f.controlsEnabled, { ShortsMini.next() }) { MiniIcon(MiniNext, 24.dp) }
                 }
             }
         }

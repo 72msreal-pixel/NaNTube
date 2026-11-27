@@ -135,6 +135,7 @@ object ShortsBackground {
     /** Cửa sổ PiP bị đóng / bấm Đóng ở thông báo / thoát app: dừng hẳn, không để âm thanh chạy mồ côi. */
     fun stopAll() {
         endJob?.cancel()
+        PipState.watchStop?.invoke()
         if (ShortsMini.open) ShortsMini.closeAndStop() else ShortsPool.pauseAll()
         ShortsPool.enterAudioOnly(false)
         appContext?.let { ShortsPlaybackService.stop(it) }

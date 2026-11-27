@@ -206,7 +206,10 @@ fun AppRoot() {
     }
     // Mở lại Short toàn màn hình (tab Short hoặc màn xem Short) thì cửa sổ nhỏ tắt để hai bên không giành một trình phát.
     LaunchedEffect(tab, ShortsViewer.items) {
-        if (tab == Tab.Shorts || ShortsViewer.items != null) ShortsMini.close()
+        if (tab == Tab.Shorts || ShortsViewer.items != null) {
+            ShortsMini.close()
+            WatchMini.close()
+        }
     }
 
     // Back: đóng lớp trên cùng trước, rồi mới về tab Main.
@@ -351,6 +354,8 @@ fun AppRoot() {
             }
             // Cửa sổ Short nhỏ nổi (hoặc cả cửa sổ PiP khi rời app): trên cùng mọi lớp.
             if (tab != Tab.Shorts && ShortsViewer.items == null) ShortsMiniWindow(account)
+            // Thẻ nổi của video dài (bấm Hình trong hình ở màn xem): ẩn khi đang mở lại màn xem.
+            if (tab != Tab.Shorts && ShortsViewer.items == null && WatchViewer.video == null) WatchMiniWindow(account)
         }
     }
 }
