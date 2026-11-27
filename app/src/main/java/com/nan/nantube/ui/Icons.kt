@@ -95,3 +95,7 @@ val IconHistory: ImageVector by lazy {
 val IconPlaylist: ImageVector by lazy { strokeIcon("Playlist", "M3 6h13", "M3 12h13", "M3 18h7", "m16 14 5 3-5 3z") }
 /** Mũi tên chéo lên-trái: chép gợi ý vào ô tìm kiếm mà chưa tìm. */
 val IconFillQuery: ImageVector by lazy { strokeIcon("FillQuery", "M7 17V7h10", "M17 17 7 7") }
+
+// Icon tua kiểu meetube (dtpv_ic_fast_forward / dtpv_ic_fast_rewind): hai tam giác đặc, viewBox 24.
+val IconRewind: ImageVector by lazy { filledIcon("Rewind", "M22 5.5 13 12l9 6.5z", "M12 5.5 3 12l9 6.5z") }
+val IconFastForward: ImageVector by lazy { filledIcon("FastForward", "M2 5.5 11 12l-9 6.5z", "M12 5.5 21 12l-9 6.5z") }

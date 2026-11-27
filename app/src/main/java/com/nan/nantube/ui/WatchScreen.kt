@@ -30,6 +30,9 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.ui.platform.LocalDensity
 import com.nan.nantube.data.HistoryChip
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -1525,10 +1528,31 @@ private fun WatchPlayerArea(
     // Toàn màn hình + các nút đang ẩn: vuốt từ dưới lên để kéo bảng "Video khác" ra.
     val fsNow by rememberUpdatedState(fsInfo)
     val swipeUpState = rememberDraggableState { fsNow?.onSwipeUpDrag?.invoke(it) }
+    val tapScope = rememberCoroutineScope()
+    val doubleTapSeek = remember { DoubleTapSeek(tapScope) }
+    val onControlsNow by rememberUpdatedState(onControls)
+    val controlsNow by rememberUpdatedState(controls)
+    val seekEnabledNow by rememberUpdatedState(!pb.failed && !PipState.inPip && suggest == null && !pb.ended)
     Box(
         (if (fullscreen) Modifier.fillMaxSize() else Modifier.fillMaxWidth().aspectRatio(16f / 9f))
             .background(Color.Black)
-            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = NoRipple) { onControls(!controls) }
+            .pointerInput(pb) {
+                // Chạm đơn = hiện/ẩn nút; nhấn đúp nửa trái/phải = lùi/tiến 10s, nhấn tiếp thì cộng dồn.
+                awaitEachGesture {
+                    awaitFirstDown()
+                    val up = waitForUpOrCancellation() ?: return@awaitEachGesture
+                    up.consume()
+                    doubleTapSeek.tap(
+                        side = if (up.position.x < size.width / 2f) -1 else 1,
+                        enabled = seekEnabledNow,
+                        positionMs = pb.positionMs,
+                        durationMs = pb.durationMs,
+                        seekTo = { pb.seekTo(it) },
+                        hideControls = { onControlsNow(false) },
+                        toggleControls = { onControlsNow(!controlsNow) }
+                    )
+                }
+            }
             .draggable(
                 state = swipeUpState,
                 orientation = Orientation.Vertical,
@@ -1568,6 +1592,8 @@ private fun WatchPlayerArea(
                 CircularProgressIndicator(color = Color.White, strokeWidth = 3.dp, modifier = Modifier.size(40.dp))
             }
         }
+
+        DoubleTapSeekOverlay(doubleTapSeek)
 
         // Phụ đề nằm dưới giữa video, nhích lên khi lớp nút điều khiển đang hiện.
         if (captionsOn && captionText != null && !pb.failed) {
