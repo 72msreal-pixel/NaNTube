@@ -338,6 +338,9 @@ internal fun MiniFrame(
     changeKey: Any,
     onSilence: () -> Unit,
     onClosed: () -> Unit,
+    instantEnter: Boolean = false,
+    /** Vị trí thẻ do bên ngoài giữ (đổi video trong thẻ mà thẻ dựng lại thì không nhảy về góc); null thì tự giữ. */
+    posState: androidx.compose.runtime.MutableState<Offset>? = null,
     content: @Composable BoxScope.(MiniFrameScope) -> Unit
 ) {
     val density = LocalDensity.current
@@ -355,8 +358,8 @@ internal fun MiniFrame(
     var closing by remember { mutableStateOf(false) }
 
     // Vào: thẻ nở từ 90% và hiện dần, đường cong "emphasized decelerate" của meetube (cửa sổ PiP thì hiện luôn).
-    val cardScale = remember { Animatable(if (inPip) 1f else 0.9f) }
-    val cardAlpha = remember { Animatable(if (inPip) 1f else 0f) }
+    val cardScale = remember { Animatable(if (inPip || instantEnter) 1f else 0.9f) }
+    val cardAlpha = remember { Animatable(if (inPip || instantEnter) 1f else 0f) }
     LaunchedEffect(Unit) {
         launch { cardScale.animateTo(1f, tween(MINI_ENTER_MS, easing = EmphasizedDecelerate)) }
         cardAlpha.animateTo(1f, tween(MINI_FADE_IN_MS, easing = StandardEasing))
@@ -418,7 +421,8 @@ internal fun MiniFrame(
         val initial = Offset(homeX, homeY)
 
         // Vị trí khi nằm yên / đang kéo (pos) và khi đang bay về góc (settle, lò xo).
-        var pos by remember { mutableStateOf(Offset.Unspecified) }
+        val posHolder = posState ?: remember { mutableStateOf(Offset.Unspecified) }
+        var pos by posHolder
         val settle = remember { Animatable(Offset.Zero, Offset.VectorConverter) }
         var settling by remember { mutableStateOf(false) }
         var settleJob by remember { mutableStateOf<Job?>(null) }

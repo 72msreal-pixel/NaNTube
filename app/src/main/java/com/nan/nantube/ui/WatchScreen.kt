@@ -21,6 +21,12 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.animation.core.Animatable
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.zIndex
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.ui.platform.LocalDensity
 import com.nan.nantube.data.HistoryChip
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -89,6 +95,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -175,6 +182,16 @@ object WatchViewer {
             history.add(current)
             if (history.size > MAX_HISTORY) history.removeAt(0)
         }
+        video = v
+    }
+
+    /** Bản chụp danh sách video đã xem trong phiên (cũ nhất ở đầu): thẻ nổi giữ lại để nút Trước vẫn dùng được. */
+    fun historySnapshot(): List<VideoItem> = history.toList()
+
+    /** Mở lại màn xem từ thẻ nổi: video + lịch sử "Trước" mà thẻ nổi đã giữ. */
+    fun restore(v: VideoItem, prevs: List<VideoItem>) {
+        history.clear()
+        history.addAll(prevs.filter { it.id != v.id })
         video = v
     }
 
@@ -566,6 +583,54 @@ private fun clock(ms: Long): String {
     return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
 }
 
+/**
+ * Mọi thứ đã tải của trang xem một video (thông tin, mô tả, bình luận, thích / không thích, danh sách đề xuất kèm chỗ đang cuộn, chip):
+ * thu video vào thẻ nổi thì [WatchMini] giữ lại, mở rộng lại là hiện đủ ngay, không tải lại.
+ */
+internal class WatchStash(
+    val videoId: String,
+    val info: ShortInfo?,
+    val desc: ShortDescription?,
+    val comments: CommentPage?,
+    val liked: Boolean,
+    val disliked: Boolean,
+    val chips: androidx.compose.runtime.MutableState<List<HistoryChip>>,
+    val related: PagedFeed<VideoItem>,
+    val chipFeed: PagedFeed<VideoItem>
+)
+
+/** Danh sách đề xuất bên dưới trình phát của [video]; chip lọc YouTube trả kèm được ghi vào [chips]. */
+internal fun makeRelatedFeed(video: VideoItem, chips: androidx.compose.runtime.MutableState<List<HistoryChip>>) =
+    PagedFeed<VideoItem>(
+        first = { acc, _ ->
+            val r = VideoRepository.watchRelatedWithChips(acc, video.id)
+            chips.value = r.chips
+            r.page
+        },
+        more = { acc, token -> VideoRepository.watchRelatedMore(acc, token, video.id) },
+        keyOf = { it.id },
+        prepare = { ChannelAvatars.prefetchFor(it) }
+    )
+
+/** Danh sách của chip đang chọn (khác "Tất cả") trong bảng "Video khác": token chip = trang đề xuất đã lọc; "c:" / "q:" / "h:" = nguồn dự phòng. */
+internal fun makeChipFeed(video: VideoItem) =
+    PagedFeed<VideoItem>(
+        first = { acc, arg ->
+            when {
+                arg.startsWith("c:") -> VideoRepository.channelVideosPage(acc, arg.removePrefix("c:"))
+                arg.startsWith("q:") -> VideoRepository.chipPage(acc, arg.removePrefix("q:"), null, false)
+                arg == "h:" -> VideoRepository.homePage(acc)
+                else -> VideoRepository.watchRelatedMore(acc, "w:$arg", video.id)
+            }
+        },
+        more = { acc, token ->
+            if (token.startsWith("b:")) VideoRepository.homeMore(acc, token)
+            else VideoRepository.watchRelatedMore(acc, token, video.id)
+        },
+        keyOf = { it.id },
+        prepare = { ChannelAvatars.prefetchFor(it) }
+    )
+
 @Composable
 private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem) -> Unit) {
     val context = LocalContext.current
@@ -577,6 +642,8 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
         // Bấm Hình trong hình: bộ phát đã giao cho thẻ nổi, không giải phóng.
         onDispose { if (WatchMini.pb !== pb) pb.release() }
     }
+    // Mở lại từ thẻ nổi: nhận lại dữ liệu trang đã tải (bình luận, thích, đề xuất...), khỏi tải lại.
+    val stash = remember { WatchMini.takeStash(video.id) }
     val captionText = WatchPlaybackEffects(pb, account)
 
     var sheet by remember { mutableStateOf<WatchSheetPage?>(null) }
@@ -588,11 +655,15 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
     // Chưa lấy xong danh sách phụ đề thì coi như đang bật nếu người dùng đã bật, để nút CC không nháy.
     val captionsOn = watchCaptionsOn(pb)
 
-    var info by remember { mutableStateOf<ShortInfo?>(null) }
-    var desc by remember { mutableStateOf<ShortDescription?>(ShortsPlayback.cachedDescription(video.id)) }
-    var comments by remember { mutableStateOf<CommentPage?>(null) }
-    var liked by remember { mutableStateOf(false) }
-    var disliked by remember { mutableStateOf(false) }
+    var info by remember { mutableStateOf<ShortInfo?>(stash?.info) }
+    var desc by remember { mutableStateOf<ShortDescription?>(stash?.desc ?: ShortsPlayback.cachedDescription(video.id)) }
+    var comments by remember { mutableStateOf<CommentPage?>(stash?.comments) }
+    var liked by remember { mutableStateOf(stash?.liked ?: false) }
+    var disliked by remember { mutableStateOf(stash?.disliked ?: false) }
+    // Phần nào đã có sẵn từ thẻ nổi thì lần chạy đầu của hiệu ứng nạp bỏ qua (đổi tài khoản về sau vẫn nạp lại).
+    var infoReady by remember { mutableStateOf(stash?.info != null) }
+    var descReady by remember { mutableStateOf(stash?.desc != null) }
+    var commentsReady by remember { mutableStateOf(stash?.comments != null) }
     var subBusy by remember { mutableStateOf(false) }
     val likeEffect = rememberTapEffect()
     val subEffect = rememberTapEffect()
@@ -610,6 +681,7 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
     fun closePanel() = panelSheet.close { panel = null }
 
     LaunchedEffect(video.id, account?.id) {
+        if (infoReady) { infoReady = false; return@LaunchedEffect }
         val i = try {
             ShortsPlayback.info(context, account, video).await()
         } catch (e: CancellationException) {
@@ -623,6 +695,7 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
         LikeCounts.noteState(video.id, liked)
     }
     LaunchedEffect(video.id) {
+        if (descReady) { descReady = false; return@LaunchedEffect }
         desc = try {
             ShortsPlayback.description(video.id).await()
         } catch (e: CancellationException) {
@@ -632,6 +705,7 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
         }
     }
     LaunchedEffect(video.id, account?.id) {
+        if (commentsReady) { commentsReady = false; return@LaunchedEffect }
         comments = try {
             CommentsRepository.first(video.id, account)
         } catch (e: CancellationException) {
@@ -643,39 +717,14 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
 
 
     // Chip lọc của bảng "Video khác" (toàn màn hình) do chính YouTube trả cùng trang đề xuất: "Của <kênh>", "Video có liên quan", "Dành cho bạn".
-    var relatedChips by remember { mutableStateOf<List<HistoryChip>>(emptyList()) }
-    val related = remember {
-        PagedFeed<VideoItem>(
-            first = { acc, _ ->
-                val r = VideoRepository.watchRelatedWithChips(acc, video.id)
-                relatedChips = r.chips
-                r.page
-            },
-            more = { acc, token -> VideoRepository.watchRelatedMore(acc, token, video.id) },
-            keyOf = { it.id },
-            prepare = { ChannelAvatars.prefetchFor(it) }
-        )
-    }
+    val relatedChipsState = remember { stash?.chips ?: androidx.compose.runtime.mutableStateOf<List<HistoryChip>>(emptyList()) }
+    val relatedChips by relatedChipsState
+    val related = remember { stash?.related ?: makeRelatedFeed(video, relatedChipsState) }
     LaunchedEffect(account?.id) { related.load(account) }
     // Danh sách của chip đang chọn (khác "Tất cả"): token chip = trang đề xuất đã lọc; "c:<id kênh>" = video của kênh (khi server không trả chip).
-    val chipFeed = remember {
-        PagedFeed<VideoItem>(
-            first = { acc, arg ->
-                when {
-                    arg.startsWith("c:") -> VideoRepository.channelVideosPage(acc, arg.removePrefix("c:"))
-                    arg.startsWith("q:") -> VideoRepository.chipPage(acc, arg.removePrefix("q:"), null, false)
-                    arg == "h:" -> VideoRepository.homePage(acc)
-                    else -> VideoRepository.watchRelatedMore(acc, "w:$arg", video.id)
-                }
-            },
-            more = { acc, token ->
-                if (token.startsWith("b:")) VideoRepository.homeMore(acc, token)
-                else VideoRepository.watchRelatedMore(acc, token, video.id)
-            },
-            keyOf = { it.id },
-            prepare = { ChannelAvatars.prefetchFor(it) }
-        )
-    }
+    val chipFeed = remember { stash?.chipFeed ?: makeChipFeed(video) }
+    /** Gói dữ liệu trang này để giao cho thẻ nổi khi thu nhỏ. */
+    fun makeStash() = WatchStash(video.id, info, desc, comments, liked, disliked, relatedChipsState, related, chipFeed)
 
     // Video kế tiếp = đề xuất đầu tiên (nút "Sau" và tự phát).
     val next = related.items.firstOrNull { it.id != video.id }
@@ -733,6 +782,83 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
     // Bảng "Video khác" (toàn màn hình): trượt từ đáy lên, kéo lên xuống được, 0 = ẩn hẳn, 1 = mở hết.
     val moreAnim = remember { Animatable(0f) }
     var rootHeight by remember { mutableIntStateOf(1) }
+    var rootWidth by remember { mutableIntStateOf(1) }
+
+    // Kéo KHUNG VIDEO xuống để thu nhỏ thành thẻ nổi (logic của meetube: MobilePlaybackActivity.applyMorph / onDismissDrag / MagneticDrag):
+    // chỉ khung video co + dời về đúng chỗ thẻ nổi sẽ hiện, phần còn lại của trang mờ rất nhanh, nền mờ dần để lộ màn hình bên dưới.
+    // Cú kéo "dính" như nam châm: tới khi ngón đi được 72dp thì video chỉ theo 75% quãng ngón tay, rồi bật "tách" (rung nhẹ) và theo sát 1:1;
+    // thả tay lúc đã tách thì thu nhỏ, chưa tách thì chỉ vuốt nhanh xuống mới thu nhỏ, còn lại bật về.
+    val minimize = remember { Animatable(0f) }
+    val minGap = remember { Animatable(0f) }                       // khoảng lệch lò xo khép lại sau cú "tách" / "dính"
+    var minDragging by remember { mutableStateOf(false) }
+    var minGoalPx by remember { mutableFloatStateOf(0f) }          // nơi video "thuộc về" theo ngón tay (px)
+    val minRun = remember { floatArrayOf(0f, 0f, 1f, 0f) }         // [0]=quãng ngón tay, [1]=1 nếu đã tách, [2]=quãng kéo tối đa, [3]=điểm cầm (0..1 theo chiều cao video)
+    val dens = LocalDensity.current
+    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
+    val minStatusPx = WindowInsets.statusBars.getTop(dens).toFloat()
+    val minNavPx = WindowInsets.navigationBars.getBottom(dens).toFloat()
+    val miniWPx = with(dens) { WATCH_MINI_WIDTH.toPx() }
+    val miniMarginPx = with(dens) { 12.dp.toPx() }
+    val miniBarPx = with(dens) { 64.dp.toPx() }
+    val rootW = rootWidth.coerceAtLeast(1).toFloat()
+    val miniScale = (miniWPx / rootW).coerceIn(0.2f, 1f)
+    val videoHPx = rootW * 9f / 16f
+    // Đích: khung video (cao 16:9, nằm dưới thanh trạng thái) đáp đúng lên thẻ nổi (góc dưới phải, trên thanh đáy) nên chuyển sang thẻ không giật.
+    val minTx = rootW - miniWPx - miniMarginPx
+    val minTy = rootHeight - miniWPx * 9f / 16f - minNavPx - miniBarPx - miniMarginPx - minStatusPx
+    val pageBg = NanColors.Background
+    /** Mức thu nhỏ 0..1: đang kéo thì theo ngón tay + lò xo, còn lại theo [minimize]. */
+    fun minF(): Float = if (minDragging) ((minGoalPx + minGap.value) / minRun[2]).coerceIn(0f, 1f) else minimize.value
+    fun minPlace() = minGoalPx + minGap.value
+    fun minGoal() = if (minRun[1] > 0.5f) minRun[0] else minRun[0] * 0.75f
+    val detachPx = with(dens) { 72.dp.toPx() }
+    val attachPx = with(dens) { 56.dp.toPx() }
+    fun minClick(detach: Boolean) {
+        scope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+            val from = minPlace()
+            minRun[1] = if (detach) 1f else 0f
+            minGap.snapTo(from - minGoal())
+            minGoalPx = minGoal()
+            minGap.animateTo(0f, spring(dampingRatio = 0.95f, stiffness = if (detach) 800f else 850f))
+        }
+        haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+    }
+    val minimizeDrag = rememberDraggableState { d ->
+        if (!minDragging) {
+            minDragging = true
+            minRun[0] = 0f; minRun[1] = 0f
+            // Quãng ngón tay đi để điểm đang cầm vẫn nằm dưới ngón khi video co về thẻ (meetube dragTravelFor).
+            minRun[2] = (minTy + minRun[3] * videoHPx * (miniScale - 1f)).coerceAtLeast(rootHeight * 0.33f)
+            minGoalPx = 0f
+            controlsShown = false
+        }
+        minRun[0] = (minRun[0] + d).coerceAtLeast(0f)
+        if (minRun[1] < 0.5f && minRun[0] >= detachPx) minClick(true)
+        else if (minRun[1] > 0.5f && minRun[0] <= attachPx) minClick(false)
+        minGoalPx = minGoal()
+    }
+    fun minRelease(v: Float) {
+        if (!minDragging) return
+        val density = dens.density
+        val dismiss = if (minRun[1] > 0.5f) v >= -1200f else v > 800f * density
+        val travel = minRun[2]
+        val cur = minF()
+        scope.launch {
+            minimize.snapTo(cur)
+            minDragging = false
+            minGap.snapTo(0f)
+            if (!dismiss) {
+                val ms = (60f + 150f * cur).toInt().coerceIn(90, 280)
+                minimize.animateTo(0f, tween(ms, easing = androidx.compose.animation.core.LinearOutSlowInEasing))
+            } else {
+                // Rơi lên thẻ bằng lò xo (như meetube SETTLE_LAND_*): hạ cánh nhẹ, có chút nảy.
+                minimize.animateTo(1f, spring(dampingRatio = 0.85f, stiffness = 800f), initialVelocity = (v / travel).coerceIn(0f, 8f))
+                WatchMini.instantEnter = true
+                WatchMini.start(pb, makeStash(), WatchViewer.historySnapshot())
+                WatchViewer.close()
+            }
+        }
+    }
     LaunchedEffect(fullscreen) { if (!fullscreen) moreAnim.snapTo(0f) }
     // Toàn màn hình: ẩn thanh trạng thái + thanh điều hướng (vuốt từ mép để hiện tạm); thoát thì hiện lại.
     DisposableEffect(fullscreen) {
@@ -790,21 +916,22 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
     }
 
     val moreChips = remember(relatedChips, info) {
-        val author = info?.author ?: video.channel
+        val author = (info?.author ?: video.channel)?.trim()?.replace(Regex("\\s+"), " ")
         val chId = info?.channelId ?: video.channelId
+        val q = (info?.title ?: video.title).trim()
+        fun clean(t: String) = t.replace(Regex("[\\s\\u00A0\\u2000-\\u200B\\u202F\\u3000]+"), " ").trim()
         buildList<Pair<String, String?>> {
             add("Tất cả" to null)
-            relatedChips.forEach { add(it.label to it.token) }
-            // Chip lấy từ server theo thứ tự YouTube trả (không đoán theo tên, nên đúng mọi ngôn ngữ). YouTube luôn có 3 chip sau "Tất cả"
-            // theo thứ tự: video của kênh, video liên quan, gợi ý cho bạn. Server trả thiếu chip nào (hoặc không trả gì) thì dựng chip ở đúng vị trí đó:
-            // kênh = tab Video của kênh, liên quan = tìm theo tiêu đề, gợi ý = trang chủ của tài khoản.
-            val q = (info?.title ?: video.title).trim()
-            val slots = listOf<Pair<String, String>?>(
-                if (!chId.isNullOrBlank() && !author.isNullOrBlank()) "Của $author" to "c:$chId" else null,
-                if (q.isNotEmpty()) "Video có liên quan" to "q:$q" else null,
-                "Dành cho bạn" to "h:"
-            )
-            for (i in relatedChips.size until slots.size) slots[i]?.let { add(it) }
+            if (relatedChips.size >= 3) {
+                // Server trả đủ bộ chip: YouTube luôn xếp theo thứ tự kênh, liên quan, gợi ý cho bạn -> dùng nguyên nhãn + token của server
+                // (đúng mọi ngôn ngữ, không đoán theo tên).
+                relatedChips.take(3).forEach { add(clean(it.label) to it.token) }
+            } else {
+                // Server trả thiếu / không trả (không thể biết chip nào là chip nào) -> dùng đủ 3 chip dự phòng, không trộn với chip server để khỏi lệch vị trí / trùng.
+                if (!chId.isNullOrBlank()) add((if (author.isNullOrBlank()) "Của kênh" else "Của $author") to "c:$chId")
+                if (q.isNotEmpty()) add("Video có liên quan" to "q:$q")
+                add("Dành cho bạn" to "h:")
+            }
         }
     }
     var moreChip by remember { mutableIntStateOf(0) }
@@ -894,10 +1021,52 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
     val likeText = LikeCounts.show(video.id, liked) ?: info?.likes ?: desc?.likesText
     val title = video.title.ifBlank { info?.title ?: ShortsPlayback.meta(video.id)?.title.orEmpty() }
 
-    Box(Modifier.fillMaxSize().background(NanColors.Background).onSizeChanged { rootHeight = it.height.coerceAtLeast(1) }) {
-        if (WatchPrefs.ambient && !fullscreen) AmbientGlowBackground(ambientFrame)
+    Box(
+        Modifier
+            .fillMaxSize()
+            .drawBehind { drawRect(pageBg.copy(alpha = (1f - minF()).coerceIn(0f, 1f))) }
+            .onSizeChanged { rootHeight = it.height.coerceAtLeast(1); rootWidth = it.width.coerceAtLeast(1) }
+    ) {
+        if (WatchPrefs.ambient && !fullscreen) Box(Modifier.fillMaxSize().graphicsLayer { alpha = (1f - minF() * 5f).coerceIn(0f, 1f) }) { AmbientGlowBackground(ambientFrame) }
         Column(Modifier.fillMaxSize()) {
-            Box((if (fullscreen) Modifier.fillMaxSize().padding(end = fsPanelWidth * fsPanelFraction) else Modifier.fillMaxWidth()).background(Color.Black).then(if (PipState.inPip || fullscreen) Modifier else Modifier.statusBarsPadding())) {
+            Box(
+                (if (fullscreen) Modifier.fillMaxSize().padding(end = fsPanelWidth * fsPanelFraction) else Modifier.fillMaxWidth())
+                    // Dải thanh trạng thái phía trên video: đen, mờ cùng nền khi thu nhỏ. Nằm trên danh sách bên dưới để video bay qua không bị che.
+                    .drawBehind { drawRect(Color.Black.copy(alpha = (1f - minF() * 3f).coerceIn(0f, 1f))) }
+                    .zIndex(1f)
+                    .draggable(
+                        state = minimizeDrag,
+                        orientation = Orientation.Vertical,
+                        enabled = !fullscreen && !PipState.inPip && PipPrefs.popup,
+                        onDragStarted = { pos ->
+                            // Điểm ngón tay chạm trên khung video (0 = mép trên, 1 = mép dưới) để video co về mà không trượt khỏi ngón tay.
+                            minRun[3] = ((pos.y - minStatusPx) / videoHPx).coerceIn(0f, 1f)
+                        },
+                        onDragStopped = { v -> minRelease(v) }
+                    )
+            ) {
+              // Khung video: chỉ phần này co / dời / bo góc khi thu nhỏ (gốc xoay ở góc trên trái, như meetube).
+              Box(
+                Modifier
+                    .then(if (fullscreen) Modifier.fillMaxSize() else Modifier.fillMaxWidth())
+                    .then(if (PipState.inPip || fullscreen) Modifier else Modifier.statusBarsPadding())
+                    .graphicsLayer {
+                        val f = minF()
+                        if (f > 0f) {
+                            transformOrigin = TransformOrigin(0f, 0f)
+                            val sc = 1f + (miniScale - 1f) * f
+                            scaleX = sc
+                            scaleY = sc
+                            translationX = minTx * f
+                            translationY = minTy * f
+                            val fc = f.coerceAtMost(1f)
+                            shadowElevation = 8.dp.toPx() * fc
+                            shape = RoundedCornerShape((12.dp.toPx() * fc / sc.coerceAtLeast(0.01f)))
+                            clip = true
+                        }
+                    }
+                    .background(Color.Black)
+              ) {
                 WatchPlayerArea(
                     pb = pb,
                     video = video,
@@ -955,11 +1124,13 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
                     onSeek = { pb.seekTo(it) },
                     active = controlsShown,
                     modifier = Modifier.align(Alignment.BottomCenter)
+                        .graphicsLayer { alpha = (1f - minF() * 5f).coerceIn(0f, 1f) }
                         .then(if (fullscreen) Modifier.displayCutoutPadding().padding(start = 12.dp, end = 12.dp, bottom = 56.dp) else Modifier)
                 )
+              }
             }
             LoadMoreEffect(related.listState, related.items.size) { related.loadMore(account) }
-            if (!fullscreen) Box(Modifier.weight(1f).fillMaxWidth().onSizeChanged { panelAreaHeight = it.height }) {
+            if (!fullscreen) Box(Modifier.weight(1f).fillMaxWidth().graphicsLayer { alpha = (1f - minF() * 5f).coerceIn(0f, 1f) }.onSizeChanged { panelAreaHeight = it.height }) {
                 LazyColumn(Modifier.fillMaxSize(), state = related.listState, contentPadding = PaddingValues(bottom = 24.dp)) {
                     item(key = "head") {
                         Column(
@@ -1160,7 +1331,7 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
                 // Hình trong hình: thu video vào thẻ nổi trong app, màn xem đóng, app về tab đang mở trước đó.
                 onPip = {
                     if (PipPrefs.popup) {
-                        WatchMini.start(pb)
+                        WatchMini.start(pb, makeStash(), WatchViewer.historySnapshot())
                         WatchViewer.close()
                     } else {
                         // Popup đang tắt: mở trang cài đặt để bật lại (AppRoot đóng màn xem).
@@ -1506,6 +1677,8 @@ private fun FullscreenMorePanel(
                 Text("Video khác", fontSize = 16.sp, fontWeight = FontWeight.Medium, color = Color.White, modifier = Modifier.weight(1f))
                 ControlIcon(Lucide.X, "Đóng", 26.dp) { onClose() }
             }
+            // Khoảng trống giữa tiêu đề và chip: đẩy chip + hàng video xuống sát đáy (như YouTube), cũng kéo xuống được.
+            Spacer(Modifier.weight(1f).fillMaxWidth())
             LazyRow(
                 contentPadding = PaddingValues(horizontal = 18.dp, vertical = 10.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1545,8 +1718,7 @@ private fun FullscreenMorePanel(
                     }
                 }
             }
-            // Khoảng trống bên dưới cũng kéo xuống được (nền của Column nhận cử chỉ kéo dọc).
-            Spacer(Modifier.weight(1f).fillMaxWidth())
+            Spacer(Modifier.height(10.dp).fillMaxWidth())
         }
     }
 }

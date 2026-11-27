@@ -21,6 +21,14 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.platform.LocalContext
+import android.content.Context
+import androidx.compose.foundation.layout.Arrangement
+import com.nan.nantube.data.HistoryChip
+import com.nan.nantube.data.SleepTimer
+import com.nan.nantube.data.WatchPrefs
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -54,10 +62,26 @@ internal object WatchMini {
 
     val open: Boolean get() = pb != null
 
+    /** Thẻ vừa nhận video từ cú kéo-xuống thu nhỏ: hiện luôn (không nở / hiện dần) vì khung video vừa đáp đúng chỗ đó. */
+    var instantEnter = false
+
+    /** Dữ liệu trang xem (bình luận, thích, đề xuất...) của video đang ở thẻ nổi: mở rộng lại thì trả nguyên, khỏi tải lại. */
+    private var stash: WatchStash? = null
+
+    /** Các video đã xem trước video này (cũ nhất ở đầu): nút Trước của thẻ. */
+    val history = mutableStateListOf<VideoItem>()
+
+    /** Vị trí thẻ trên màn hình, giữ ở đây để đổi sang video khác ngay trong thẻ không làm thẻ nhảy về góc. */
+    val cardPos = mutableStateOf(Offset.Unspecified)
+
     /** Giao [playback] cho thẻ nổi; Short đang ở thẻ nổi (nếu có) thì tắt để hai bên không giành âm thanh. */
-    fun start(playback: WatchPlayback) {
+    fun start(playback: WatchPlayback, data: WatchStash? = null, prevs: List<VideoItem> = emptyList()) {
         if (pb !== playback) pb?.release()
         if (ShortsMini.open && !ShortsMini.background) ShortsMini.close()
+        stash = data
+        history.clear()
+        history.addAll(prevs)
+        cardPos.value = Offset.Unspecified
         pb = playback
         // Thẻ nổi vừa mở khi app còn hiện: bật thẻ media (nếu có phát nền) ngay, không đợi rời app.
         ShortsBackground.onPopupOpened()
@@ -68,25 +92,70 @@ internal object WatchMini {
         val have = pb ?: return null
         if (have.video.id != video.id || have.released) return null
         pb = null
+        history.clear()
         ShortsBackground.onPopupClosed()
         return have
+    }
+
+    /** Màn xem nhận lại dữ liệu trang đã tải (chỉ khi đúng video này). */
+    fun takeStash(videoId: String): WatchStash? {
+        val have = stash
+        stash = null
+        return have?.takeIf { it.videoId == videoId }
     }
 
     /** Tắt thẻ và dừng hẳn video. */
     fun close() {
         val have = pb ?: return
         pb = null
+        stash = null
+        history.clear()
         have.release()
         ShortsBackground.onPopupClosed()
     }
 
-    /** Nút mở rộng: mở lại màn xem đúng video này, bộ phát chạy liền mạch. */
+    /** Nút mở rộng: mở lại màn xem đúng video này (kèm lịch sử Trước), bộ phát chạy liền mạch. */
     fun expand() {
-        pb?.video?.let { WatchViewer.open(it) }
+        val v = pb?.video ?: return
+        WatchViewer.restore(v, history.toList())
+    }
+
+    /** Video đề xuất đầu tiên của video đang ở thẻ (null nếu danh sách chưa tải xong): nút Sau và tự phát. */
+    fun nextVideo(): VideoItem? {
+        val id = pb?.video?.id
+        return stash?.related?.items?.firstOrNull { it.id != id }
+    }
+
+    /** Đổi sang [v] ngay trong thẻ: bộ phát mới, danh sách đề xuất mới, thẻ giữ nguyên chỗ. */
+    private fun go(context: Context, account: Account?, v: VideoItem, pushCurrent: Boolean) {
+        val cur = pb ?: return
+        if (pushCurrent) {
+            history.removeAll { it.id == cur.video.id }
+            history.add(cur.video)
+            if (history.size > 50) history.removeAt(0)
+        }
+        val np = WatchPlayback(context, v, account)
+        np.start(0L)
+        val chips = mutableStateOf<List<HistoryChip>>(emptyList())
+        val related = makeRelatedFeed(v, chips)
+        related.load(account)
+        stash = WatchStash(v.id, null, null, null, false, false, chips, related, makeChipFeed(v))
+        instantEnter = true
+        pb = np
+        cur.release()
+    }
+
+    fun next(context: Context, account: Account?) {
+        nextVideo()?.let { go(context, account, it, true) }
+    }
+
+    fun prev(context: Context, account: Account?) {
+        val v = history.removeLastOrNull() ?: return
+        go(context, account, v, false)
     }
 }
 
-private val WATCH_MINI_WIDTH = 240.dp
+internal val WATCH_MINI_WIDTH = 240.dp
 private val WATCH_MINI_HEIGHT = WATCH_MINI_WIDTH * 9 / 16
 private val MiniRed = Color(0xFFFF0000)
 private const val SKIP_MS = 10_000L
@@ -102,9 +171,22 @@ internal fun WatchMiniWindow(account: Account?) {
 private fun WatchMiniContent(pb: WatchPlayback, account: Account?) {
     val video = pb.video
     val inPip = PipState.inPip
+    val instant = remember { WatchMini.instantEnter.also { WatchMini.instantEnter = false } }
     // Phụ đề, cài đặt theo tài khoản, hẹn giờ ngủ, âm lượng ổn định, lịch sử xem: y như ở màn xem.
     val captionText = WatchPlaybackEffects(pb, account)
     var sheet by remember { mutableStateOf<WatchSheetPage?>(null) }
+    val context = LocalContext.current
+
+    // Hết video: hẹn giờ "Cuối video" thì dừng hẳn, không thì tự phát video kế nếu công tắc tự phát đang bật (như ở màn xem).
+    val nextVideo = WatchMini.nextVideo()
+    LaunchedEffect(pb.ended, WatchPrefs.autoplay, nextVideo?.id) {
+        if (!pb.ended) return@LaunchedEffect
+        if (SleepTimer.endOfVideo) {
+            SleepTimer.expire()
+            return@LaunchedEffect
+        }
+        if (WatchPrefs.autoplay && nextVideo != null) WatchMini.next(context, account)
+    }
 
     // Báo cho MainActivity: rời app lúc đang phát thì vào PiP; hai nút bên của cửa sổ PiP lùi / tua 10 giây.
     LaunchedEffect(video.id, pb.wantPlay) {
@@ -136,6 +218,8 @@ private fun WatchMiniContent(pb: WatchPlayback, account: Account?) {
         height = WATCH_MINI_HEIGHT,
         paused = !pb.wantPlay,
         changeKey = video.id,
+        instantEnter = instant,
+        posState = WatchMini.cardPos,
         onSilence = { pb.player.playWhenReady = false }, // tiếng tắt ngay, thẻ bay đi rồi mới đóng hẳn
         onClosed = { WatchMini.close() }
     ) { f ->
@@ -193,18 +277,32 @@ private fun WatchMiniContent(pb: WatchPlayback, account: Account?) {
                     MiniButton(Modifier, 36.dp, f.controlsEnabled, { sheet = WatchSheetPage.Main }) { MiniIcon(Lucide.Settings, 22.dp) }
                     MiniButton(Modifier, 36.dp, f.controlsEnabled, { WatchMini.expand() }) { MiniIcon(MiniExpand, 22.dp) }
                 }
-                MiniButton(
-                    Modifier.align(Alignment.Center).graphicsLayer {
-                        scaleX = f.pop
-                        scaleY = f.pop
-                    },
-                    48.dp, f.controlsEnabled, { pb.toggle() }
-                ) {
-                    Crossfade(targetState = !pb.wantPlay || pb.ended, animationSpec = tween(MINI_FADE_IN_MS), label = "watchPlayPause") { paused ->
-                        Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
-                            MiniIcon(if (paused) MiniPlay else MiniPause, 34.dp)
+                // Hàng giữa như YouTube: Trước | Phát / Tạm dừng | Sau. Trước chỉ bấm được khi đã chuyển video trong phiên;
+                // Sau chỉ bấm được khi đã có video đề xuất.
+                val canPrev = WatchMini.history.isNotEmpty()
+                val canNext = nextVideo != null
+                Row(Modifier.align(Alignment.Center), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    MiniButton(
+                        Modifier.graphicsLayer { alpha = if (canPrev) 1f else 0.38f },
+                        40.dp, f.controlsEnabled && canPrev, { WatchMini.prev(context, account) }
+                    ) { MiniIcon(MiniPrev, 26.dp) }
+                    MiniButton(
+                        Modifier.graphicsLayer {
+                            scaleX = f.pop
+                            scaleY = f.pop
+                        },
+                        48.dp, f.controlsEnabled, { pb.toggle() }
+                    ) {
+                        Crossfade(targetState = !pb.wantPlay || pb.ended, animationSpec = tween(MINI_FADE_IN_MS), label = "watchPlayPause") { paused ->
+                            Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+                                MiniIcon(if (paused) MiniPlay else MiniPause, 34.dp)
+                            }
                         }
                     }
+                    MiniButton(
+                        Modifier.graphicsLayer { alpha = if (canNext) 1f else 0.38f },
+                        40.dp, f.controlsEnabled && canNext, { WatchMini.next(context, account) }
+                    ) { MiniIcon(MiniNext, 26.dp) }
                 }
             }
         }
