@@ -172,6 +172,9 @@ object WatchViewer {
     /** Các video đã xem trong phiên mở màn xem này (cũ nhất ở đầu): nút "Trước" quay lại video ngay trước đó. */
     private val history = mutableStateListOf<VideoItem>()
 
+    /** Giữ chế độ chỉ âm thanh khi sang video khác trong cùng phiên xem. */
+    internal var onTheGo = false
+
     /** Có video trước đó để quay lại hay chưa (nút "Trước" chỉ bấm được khi đã đổi sang video khác). */
     val canGoBack: Boolean get() = history.isNotEmpty()
 
@@ -189,7 +192,8 @@ object WatchViewer {
     fun historySnapshot(): List<VideoItem> = history.toList()
 
     /** Mở lại màn xem từ thẻ nổi: video + lịch sử "Trước" mà thẻ nổi đã giữ. */
-    fun restore(v: VideoItem, prevs: List<VideoItem>) {
+    fun restore(v: VideoItem, prevs: List<VideoItem>, listenOnly: Boolean) {
+        onTheGo = listenOnly
         history.clear()
         history.addAll(prevs.filter { it.id != v.id })
         video = v
@@ -212,6 +216,7 @@ object WatchViewer {
     fun close() {
         video = null
         fullscreen = false
+        onTheGo = false
         history.clear()
     }
 
@@ -233,7 +238,12 @@ private val AUDIO_REP = Regex("aud(\\d+)_")
  * VISIONOS → TV_TIZEN → WEB_EMBED → ANDROID_VR và cùng bản kê DASH của Short), nhưng đệm dài hơn vì video dài.
  * Link bị từ chối giữa chừng thì đổi client rồi phát tiếp từ chỗ đang xem.
  */
-internal class WatchPlayback(private val context: Context, val video: VideoItem, private val account: Account?) {
+internal class WatchPlayback(
+    private val context: Context,
+    val video: VideoItem,
+    private val account: Account?,
+    initialOnTheGo: Boolean = false
+) {
     val player: ExoPlayer = ExoPlayer.Builder(context)
         .setLoadControl(DefaultLoadControl.Builder().setBufferDurationsMs(20_000, 60_000, 1_000, 2_500).build())
         .build().apply {
@@ -245,11 +255,16 @@ internal class WatchPlayback(private val context: Context, val video: VideoItem,
             )
         }
 
+    var onTheGo by mutableStateOf(initialOnTheGo)
+        private set
+    private var backgroundAudioOnly = false
+
     var wantPlay by mutableStateOf(true)
     var buffering by mutableStateOf(true)
     var ended by mutableStateOf(false)
     var failed by mutableStateOf(false)
     var firstFrame by mutableStateOf(false)
+        private set
     var positionMs by mutableLongStateOf(0L)
     var bufferedMs by mutableLongStateOf(0L)
     var durationMs by mutableLongStateOf(0L)
@@ -289,6 +304,7 @@ internal class WatchPlayback(private val context: Context, val video: VideoItem,
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     init {
+        applyAudioOnly()
         player.addListener(object : Player.Listener {
             override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
                 // App ẩn mà không được phát nền (xem ShortsBackground.mayPlay): không để video tự phát lại nốt phần đã tải.
@@ -493,15 +509,27 @@ internal class WatchPlayback(private val context: Context, val video: VideoItem,
         if (d > 0) durationMs = d
     }
 
-    /**
-     * Video dài còn phát mà app không còn hiện (phát nền): chỉ phát âm thanh, tắt giải mã + tải luồng hình cho nhẹ mạng và pin, như
-     * [ShortsPool.enterAudioOnly]. Hiện lại app thì bật hình trở lại.
-     */
-    fun setAudioOnly(on: Boolean) {
-        if (released) return
+    /** Công tắc chủ động, độc lập với chế độ chỉ âm thanh tạm thời khi app ẩn. */
+    fun setOnTheGo(on: Boolean) {
+        if (released || onTheGo == on) return
+        onTheGo = on
+        if (WatchMini.pb !== this && WatchViewer.video?.id == video.id) WatchViewer.onTheGo = on
+        if (!on) firstFrame = false
+        applyAudioOnly()
+    }
+
+    fun setBackgroundAudioOnly(on: Boolean) {
+        if (released || backgroundAudioOnly == on) return
+        backgroundAudioOnly = on
+        applyAudioOnly()
+    }
+
+    private fun applyAudioOnly() {
+        val disableVideo = onTheGo || backgroundAudioOnly
         val params = player.trackSelectionParameters
-        if (params.disabledTrackTypes.contains(C.TRACK_TYPE_VIDEO) == on) return
-        player.trackSelectionParameters = params.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, on).build()
+        if (params.disabledTrackTypes.contains(C.TRACK_TYPE_VIDEO) == disableVideo) return
+        // Cập nhật tham số hiện có, không nạp lại nguồn và không xoá chất lượng / bản âm thanh đã chọn.
+        player.trackSelectionParameters = params.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, disableVideo).build()
     }
 
     fun release() {
@@ -551,7 +579,7 @@ internal fun WatchPlaybackEffects(pb: WatchPlayback, account: Account?): String?
     LaunchedEffect(WatchPrefs.stableVolume, pb.tracksReady) { pb.applyStableVolume(WatchPrefs.stableVolume) }
     LaunchedEffect(pb, account?.id) {
         WatchHistory.track(account, pb.video) {
-            if (!pb.released && pb.firstFrame && (pb.player.isPlaying || pb.ended)) {
+            if (!pb.released && (pb.firstFrame || pb.onTheGo) && (pb.player.isPlaying || pb.ended)) {
                 WatchHistory.Playback(pb.player.currentPosition / 1000f, pb.durationMs.takeIf { it > 0 }?.let { it / 1000f })
             } else null
         }
@@ -636,7 +664,7 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     // Mở lại đúng video đang ở thẻ nổi thì nhận lại bộ phát đang chạy (không nạp lại); mở video khác thì thẻ nổi tắt.
-    val pb = remember { WatchMini.take(video) ?: run { WatchMini.close(); WatchPlayback(context, video, account) } }
+    val pb = remember { WatchMini.take(video) ?: run { WatchMini.close(); WatchPlayback(context, video, account, initialOnTheGo = WatchViewer.onTheGo) } }
     DisposableEffect(pb) {
         if (!pb.started) pb.start(0L)
         // Bấm Hình trong hình: bộ phát đã giao cho thẻ nổi, không giải phóng.
@@ -1069,7 +1097,7 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
             .drawBehind { drawRect(pageBg.copy(alpha = (1f - minF()).coerceIn(0f, 1f))) }
             .onSizeChanged { rootHeight = it.height.coerceAtLeast(1); rootWidth = it.width.coerceAtLeast(1) }
     ) {
-        if (WatchPrefs.ambient && !fullscreen) Box(Modifier.fillMaxSize().graphicsLayer { alpha = (1f - minF() * 5f).coerceIn(0f, 1f) }) { AmbientGlowBackground(ambientFrame) }
+        if (WatchPrefs.ambient && !fullscreen && !pb.onTheGo) Box(Modifier.fillMaxSize().graphicsLayer { alpha = (1f - minF() * 5f).coerceIn(0f, 1f) }) { AmbientGlowBackground(ambientFrame) }
         Column(Modifier.fillMaxSize()) {
             Box(
                 (if (fullscreen) Modifier.fillMaxSize().padding(end = fsPanelWidth * fsPanelFraction) else Modifier.fillMaxWidth())
@@ -1487,8 +1515,8 @@ private fun WatchPlayerArea(
     DisposableEffect(Unit) { onDispose { holder[0]?.player = null } }
 
     // Chế độ môi trường xung quanh (theo AmbientGlow của meetube): vài giây đọc một khung nhỏ 48x27 từ video, nền trang tô theo khung đó.
-    LaunchedEffect(ambient, pb.firstFrame) {
-        if (!ambient || !pb.firstFrame) return@LaunchedEffect
+    LaunchedEffect(ambient, pb.firstFrame, pb.onTheGo) {
+        if (!ambient || !pb.firstFrame || pb.onTheGo) return@LaunchedEffect
         while (true) {
             val view = holder[0]?.videoSurfaceView as? TextureView
             if (view != null && view.isAvailable) {
@@ -1519,15 +1547,18 @@ private fun WatchPlayerArea(
                     it.player = pb.player
                 }
             },
-            update = { it.player = pb.player },
+            update = {
+                it.player = pb.player
+                it.keepScreenOn = !pb.onTheGo
+            },
             modifier = Modifier.fillMaxSize()
         )
-        if (!pb.firstFrame) {
+        if (!pb.firstFrame || pb.onTheGo) {
             AsyncImage(
                 model = video.hqThumbnail,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier.fillMaxSize().then(if (pb.onTheGo) Modifier.background(Color.Black) else Modifier)
             )
         }
         when {

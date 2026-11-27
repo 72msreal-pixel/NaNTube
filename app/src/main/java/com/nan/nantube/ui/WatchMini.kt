@@ -134,8 +134,8 @@ internal object WatchMini {
 
     /** Nút mở rộng: mở lại màn xem đúng video này (kèm lịch sử Trước), bộ phát chạy liền mạch. */
     fun expand() {
-        val v = pb?.video ?: return
-        WatchViewer.restore(v, history.toList())
+        val playback = pb ?: return
+        WatchViewer.restore(playback.video, history.toList(), playback.onTheGo)
     }
 
     /** Video đề xuất đầu tiên của video đang ở thẻ (null nếu danh sách chưa tải xong): nút Sau và tự phát. */
@@ -152,7 +152,7 @@ internal object WatchMini {
             history.add(cur.video)
             if (history.size > 50) history.removeAt(0)
         }
-        val np = WatchPlayback(context, v, account)
+        val np = WatchPlayback(context, v, account, initialOnTheGo = cur.onTheGo)
         np.start(0L)
         val chips = mutableStateOf<List<HistoryChip>>(emptyList())
         val related = makeRelatedFeed(v, chips)
@@ -262,16 +262,17 @@ private fun WatchMiniContent(pb: WatchPlayback, account: Account?) {
             },
             update = {
                 it.rebind(pb.player)
+                it.keepScreenOn = !pb.onTheGo
                 it.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
             },
             modifier = Modifier.fillMaxSize()
         )
-        if (!pb.firstFrame) {
+        if (!pb.firstFrame || pb.onTheGo) {
             AsyncImage(
                 model = video.hqThumbnail,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier.fillMaxSize().then(if (pb.onTheGo) Modifier.background(Color.Black) else Modifier)
             )
         }
         if (pb.failed) {

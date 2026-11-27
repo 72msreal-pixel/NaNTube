@@ -136,6 +136,17 @@ private val CaptionsIcon: ImageVector by lazy {
         "M16.5 10a2 2 0 1 0 0 4"
     )
 }
+// Biểu tượng Material headphones của MeeTube; hàng cài đặt vẫn dùng UI NaNTube.
+private val OnTheGoIcon: ImageVector by lazy {
+    ImageVector.Builder("WatchSheetOnTheGo", 24.dp, 24.dp, 24f, 24f).apply {
+        addPath(
+            pathData = PathParser().parsePathString(
+                "M12,3c-4.97,0 -9,4.03 -9,9v7c0,1.1 0.9,2 2,2h4v-8H5v-1c0,-3.87 3.13,-7 7,-7s7,3.13 7,7v1h-4v8h4c1.1,0 2,-0.9 2,-2v-7c0,-4.97 -4.03,-9 -9,-9z"
+            ).toNodes(),
+            fill = SolidColor(Color.Black)
+        )
+    }.build()
+}
 private val LoopIcon: ImageVector by lazy {
     lucide("WatchSheetLoop", "m17 2 4 4-4 4", "M3 11v-1a4 4 0 0 1 4-4h14", "m7 22-4-4 4-4", "M21 13v1a4 4 0 0 1-4 4H3", "M11 10h1v4")
 }
@@ -169,10 +180,9 @@ private class SheetEntry(
 private class SheetChoice(val label: String, val selected: Boolean, val onPick: () -> Unit)
 
 /**
- * Bảng cài đặt của trình phát video dài, trượt từ đáy như app YouTube: trang chính gồm Chất lượng, Tốc độ phát, Bản âm thanh, Phụ đề, Tuỳ chọn khác;
+ * Bảng cài đặt của trình phát video dài, trượt từ đáy như app YouTube: trang chính gồm Chất lượng, Tốc độ phát, Bản âm thanh, Phụ đề, trên đường đi, Tuỳ chọn khác;
  * "Tuỳ chọn khác" có Cho video lặp lại, Chế độ môi trường xung quanh, Âm lượng ổn định, Hẹn giờ ngủ.
- * (Khóa màn hình, Trên đường đi, Xem ở chế độ thực tế ảo, Trợ giúp và phản hồi không làm: không có trong app này.)
- * Nội dung đọc / ghi thẳng vào [WatchPlayback]; công tắc lưu theo tài khoản ở [WatchPrefs].
+ * Nội dung đọc / ghi vào [WatchPlayback]; "trên đường đi" giữ theo phiên phát, các cài đặt theo tài khoản nằm ở [WatchPrefs].
  */
 @Composable
 internal fun WatchSettingsSheet(
@@ -201,6 +211,7 @@ internal fun WatchSettingsSheet(
                 SheetEntry(SpeedIcon, "Tốc độ phát", speedShort(pb.speed), chevron = true) { onPage(WatchSheetPage.Speed) },
                 SheetEntry(AudioLinesIcon, "Bản âm thanh", pickedAudio?.label ?: "Mặc định", chevron = true) { onPage(WatchSheetPage.Audio) },
                 SheetEntry(CaptionsIcon, "Phụ đề", activeTrack?.label) { onPage(WatchSheetPage.Captions) },
+                SheetEntry(OnTheGoIcon, "trên đường đi", toggle = pb.onTheGo) { pb.setOnTheGo(!pb.onTheGo) },
                 SheetEntry(Lucide.Settings, "Tuỳ chọn khác", chevron = true) { onPage(WatchSheetPage.More) }
             )
             WatchSheetPage.More -> listOf(

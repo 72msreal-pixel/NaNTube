@@ -32,9 +32,9 @@ import kotlinx.coroutines.launch
  *  5. Cửa sổ PiP bị đóng (X) hoặc bấm Đóng ở thông báo / thoát app bằng Back: [stopAll] dừng hẳn, như meetube đóng video khi tắt PiP.
  *
  * Video dài (màn xem [WatchScreen] hoặc thẻ nổi [WatchMini]) dùng chung đường này: cùng dịch vụ [ShortsPlaybackService], cùng hai công tắc
- * popup / phát nền, nhưng bộ phát là [WatchPlayback] (không phải [ShortsPool]); app ẩn thì chỉ phát âm thanh ([WatchPlayback.setAudioOnly]),
+ * popup / phát nền, nhưng bộ phát là [WatchPlayback] (không phải [ShortsPool]); app ẩn thì chỉ phát âm thanh ([WatchPlayback.setBackgroundAudioOnly]),
  * hai nút Trước / Tiếp của thẻ media là lùi / tua 10 giây. Công tắc "Chỉ phát nền khi có popup" ([PipPrefs.onlyWithPopup]) áp cho cả Short
- * lẫn video: không có popup thì rời app là dừng.
+ * lẫn video thông thường; riêng phiên "trên đường đi" tiếp tục phát tiếng mà không cần popup.
  */
 object ShortsBackground {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -80,8 +80,11 @@ object ShortsBackground {
     /** Có popup đang mở trong app: thẻ nổi của Short (không tính phiên nền) hoặc của video dài. */
     private val popupOpen: Boolean get() = (ShortsMini.open && !ShortsMini.background) || WatchMini.open
 
-    /** Phát nền được phép lúc này: công tắc phát nền bật, và nếu bật "chỉ khi có popup" thì phải đang có popup. */
-    private fun backgroundAllowed(): Boolean = PipPrefs.background && (!PipPrefs.onlyWithPopup || popupOpen)
+    /** "trên đường đi" cho phép phát nền riêng phiên video dài, không đổi cài đặt phát nền chung. */
+    private val onTheGoSession: Boolean get() = isWatchSession && watchPb?.onTheGo == true
+
+    private fun backgroundAllowed(): Boolean =
+        onTheGoSession || (PipPrefs.background && (!PipPrefs.onlyWithPopup || popupOpen))
 
     /** Video đang phát: của phiên (thẻ mini / phiên nền) nếu có, rồi video dài, không thì Short đang hiện. */
     val currentVideo: VideoItem?
@@ -140,8 +143,8 @@ object ShortsBackground {
     }
 
     fun toggle() {
-        // Bấm Phát ở thẻ media lúc app ẩn: thẻ chỉ có khi phát nền được bật, nên cho phát.
-        if (!appVisible && PipPrefs.background) hiddenPlayAllowed = true
+        // Bấm Phát ở thẻ media lúc app ẩn, kể cả phiên "trên đường đi".
+        if (!appVisible && backgroundAllowed()) hiddenPlayAllowed = true
         when {
             ShortsMini.open -> ShortsMini.toggle()
             isWatchSession -> watchPb?.toggle()
@@ -163,9 +166,8 @@ object ShortsBackground {
     /** Short đang phát mà app sắp rời: bật dịch vụ nền khi app còn hiện. An toàn khi gọi nhiều lần. */
     fun keepAlive() {
         val context = appContext ?: return
-        if (!PipPrefs.background) return
-        // "Chỉ khi có popup": đang ở thẻ nổi thì được; xem toàn màn hình thì chỉ khi sắp vào PiP (PiP cũng là popup).
-        if (PipPrefs.onlyWithPopup && !popupOpen && !(PipPrefs.popup && PipState.armed)) return
+        // PiP sắp mở cũng tính là popup. Phiên "trên đường đi" không cần PiP.
+        if (!backgroundAllowed() && !(PipPrefs.background && PipPrefs.popup && PipState.armed)) return
         if (isPlaying && currentVideo != null) ShortsPlaybackService.ensure(context)
     }
 
@@ -177,7 +179,7 @@ object ShortsBackground {
         appVisible = false
         hiddenPlayAllowed = backgroundAllowed()
         val context = appContext ?: return
-        if (!backgroundAllowed()) {
+        if (!hiddenPlayAllowed) {
             // Tắt "Hỗ trợ phát nền video", hoặc bật "Chỉ phát nền khi có popup" mà không có popup: ẩn app là dừng, không phiên nền, không thẻ media.
             if (ShortsMini.open) ShortsMini.paused = true
             ShortsPool.pauseAll()
@@ -190,7 +192,7 @@ object ShortsBackground {
             val pb = watchPb ?: return
             if (!pb.wantPlay) return
             BackgroundPlay.played = true
-            pb.setAudioOnly(true)
+            pb.setBackgroundAudioOnly(true)
             audioOnlyWatch = pb
             ShortsPlaybackService.ensure(context)
             return
@@ -218,13 +220,13 @@ object ShortsBackground {
         ShortsPlaybackService.ensure(context)
     }
 
-    /** onStart: app hiện lại. Bật lại luồng hình; phiên nền (nếu có) trả về bộ phát toàn màn hình. */
+    /** onStart: gỡ chế độ chỉ âm thanh tạm thời; "trên đường đi" vẫn giữ. Trả phiên Short nền về màn hình. */
     fun onAppShown() {
         appVisible = true
         hiddenPlayAllowed = false
         endJob?.cancel()
         ShortsPool.enterAudioOnly(false)
-        audioOnlyWatch?.setAudioOnly(false)
+        audioOnlyWatch?.setBackgroundAudioOnly(false)
         audioOnlyWatch = null
         if (ShortsMini.background) {
             val id = ShortsMini.current?.id
@@ -247,7 +249,7 @@ object ShortsBackground {
         ShortsPool.enterAudioOnly(false)
         // Video dài: thẻ nổi thì đóng hẳn (WatchMini.close giải phóng bộ phát); ở màn xem thì watchStop ở trên đã dừng tiếng.
         WatchMini.close()
-        audioOnlyWatch?.setAudioOnly(false)
+        audioOnlyWatch?.setBackgroundAudioOnly(false)
         audioOnlyWatch = null
         appContext?.let { ShortsPlaybackService.stop(it) }
     }

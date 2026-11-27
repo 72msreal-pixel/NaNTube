@@ -46,13 +46,14 @@ object PipState {
     var watchStop: (() -> Unit)? = null
 
     /** Bộ phát của video dài đang ở màn xem (thẻ nổi thì [WatchMini.pb]): dịch vụ phát nền đọc video / vị trí / trạng thái từ đây. */
-    internal var watchPb: WatchPlayback? = null
+    internal var watchPb by mutableStateOf<WatchPlayback?>(null)
 
     /** Thẻ nổi của video dài đang giữ cửa sổ PiP: hai nút bên là lùi / tua 10 giây (màn xem thì là video trước / sau). */
     var watchSeek by mutableStateOf(false)
 
     /** Rời app lúc này thì vào PiP: có Short hoặc video dài đang phát (như YouTube, tạm dừng rồi thì không vào). */
-    val armed: Boolean get() = supported && (playingShort || (watchId != null && watchPlaying))
+    val armed: Boolean
+        get() = supported && (playingShort || (watchId != null && watchPlaying && (WatchMini.pb ?: watchPb)?.onTheGo != true))
 
     var controls: PipControls? = null
 
