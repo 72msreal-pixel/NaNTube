@@ -326,7 +326,8 @@ object ShortsPool {
     /** Chỉ ô của [id] được phát (và chỉ khi [playing]); các ô còn lại đứng yên ở khung đầu. */
     fun setActive(id: String?, playing: Boolean) {
         for ((videoId, slot) in slots) {
-            val want = videoId == id && playing
+            // App ẩn mà không được phát nền thì không ô nào được phát, dù ai gọi (xem ShortsBackground.mayPlay).
+            val want = videoId == id && playing && ShortsBackground.mayPlay()
             slot.wantPlay = want
             if (want && slot.ended) slot.player.seekTo(0L)
             if (slot.player.playWhenReady != want) slot.player.playWhenReady = want
@@ -474,6 +475,12 @@ object ShortsPool {
             }
 
             override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                // ExoPlayer tự phát lại (vd. lấy lại âm thanh sau cuộc gọi) lúc app ẩn mà không được phát nền: dừng ngay.
+                if (playWhenReady && !ShortsBackground.mayPlay()) {
+                    slot.wantPlay = false
+                    player.playWhenReady = false
+                    return
+                }
                 // Đổi do chính app ([setActive]) là USER_REQUEST; còn lại (mất / lấy lại âm thanh, rút tai nghe...) là bên ngoài.
                 if (reason == Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST) return
                 slot.externalPaused = slot.wantPlay && !playWhenReady

@@ -45,6 +45,9 @@ object PipState {
     /** Tạm dừng video dài khi cửa sổ PiP bị đóng. */
     var watchStop: (() -> Unit)? = null
 
+    /** Bộ phát của video dài đang ở màn xem (thẻ nổi thì [WatchMini.pb]): dịch vụ phát nền đọc video / vị trí / trạng thái từ đây. */
+    internal var watchPb: WatchPlayback? = null
+
     /** Thẻ nổi của video dài đang giữ cửa sổ PiP: hai nút bên là lùi / tua 10 giây (màn xem thì là video trước / sau). */
     var watchSeek by mutableStateOf(false)
 

@@ -62,6 +62,7 @@ import androidx.compose.ui.graphics.Brush
 import android.view.TextureView
 import com.nan.nantube.data.CaptionCue
 import com.nan.nantube.data.CaptionTrack
+import com.nan.nantube.data.PipPrefs
 import com.nan.nantube.data.ShortsCaptions
 import com.nan.nantube.data.SleepTimer
 import com.nan.nantube.data.WatchPrefs
@@ -244,12 +245,20 @@ internal class WatchPlayback(private val context: Context, val video: VideoItem,
     init {
         player.addListener(object : Player.Listener {
             override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                // App ẩn mà không được phát nền (xem ShortsBackground.mayPlay): không để video tự phát lại nốt phần đã tải.
+                if (playWhenReady && !ShortsBackground.mayPlay()) {
+                    player.playWhenReady = false
+                    return
+                }
                 wantPlay = playWhenReady
+                // Thẻ media (phát nền) phải theo đúng trạng thái, kể cả khi bị dừng từ ngoài (app khác giành âm thanh, hẹn giờ ngủ).
+                ShortsBackground.onSessionChanged()
             }
 
             override fun onPlaybackStateChanged(state: Int) {
                 buffering = state == Player.STATE_BUFFERING
                 ended = state == Player.STATE_ENDED
+                ShortsBackground.onSessionChanged()
                 if (state == Player.STATE_READY) {
                     tries = 0
                     val d = player.duration
@@ -438,12 +447,24 @@ internal class WatchPlayback(private val context: Context, val video: VideoItem,
         if (d > 0) durationMs = d
     }
 
+    /**
+     * Video dài còn phát mà app không còn hiện (phát nền): chỉ phát âm thanh, tắt giải mã + tải luồng hình cho nhẹ mạng và pin, như
+     * [ShortsPool.enterAudioOnly]. Hiện lại app thì bật hình trở lại.
+     */
+    fun setAudioOnly(on: Boolean) {
+        if (released) return
+        val params = player.trackSelectionParameters
+        if (params.disabledTrackTypes.contains(C.TRACK_TYPE_VIDEO) == on) return
+        player.trackSelectionParameters = params.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, on).build()
+    }
+
     fun release() {
         if (released) return
         released = true
         job?.cancel()
         scope.cancel()
         player.release()
+        if (PipState.watchPb === this) PipState.watchPb = null
     }
 }
 
@@ -613,11 +634,13 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
         )
         PipState.controls = controls
         PipState.watchStop = { pb.player.playWhenReady = false }
+        PipState.watchPb = pb
         onDispose {
             if (PipState.controls === controls) PipState.controls = null
             PipState.watchStop = null
             PipState.watchId = null
             PipState.watchPlaying = false
+            if (PipState.watchPb === pb) PipState.watchPb = null
         }
     }
     LaunchedEffect(video.id, pb.wantPlay) {
@@ -894,7 +917,15 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
         if (moreOpen && !PipState.inPip) {
             WatchMoreSheet(
                 // Hình trong hình: thu video vào thẻ nổi trong app, màn xem đóng, app về tab đang mở trước đó.
-                onPip = { WatchMini.start(pb); WatchViewer.close() },
+                onPip = {
+                    if (PipPrefs.popup) {
+                        WatchMini.start(pb)
+                        WatchViewer.close()
+                    } else {
+                        // Popup đang tắt: mở trang cài đặt để bật lại (AppRoot đóng màn xem).
+                        PipState.openExperiments = true
+                    }
+                },
                 onSave = { onSave(video) },
                 onDownload = { DownloadPanel.open(video, account) },
                 onClose = { moreOpen = false }
