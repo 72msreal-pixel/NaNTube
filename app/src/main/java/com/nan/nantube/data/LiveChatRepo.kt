@@ -14,6 +14,7 @@ private const val NO_WEB_SESSION =
 private val SUBSCRIBER_ONLY_EN = Regex("(?i)subscribers?[- ]?only")
 private val MEMBER_ONLY_EN = Regex("(?i)members?[- ]?only")
 private val MEMBER_TEXT = Regex("(?i)member|thành viên")
+private val SUBSCRIBER_TEXT = Regex("(?i)subscriber|đăng ký")
 
 /**
  * YouTube trả dòng thông báo theo ngôn ngữ của phiên đọc: đọc ẩn danh / tài khoản mã hay ra tiếng Anh ("Subscribers-only mode").
@@ -27,6 +28,9 @@ internal fun localizeRestriction(text: String): String = when {
 
 /** Chế độ hạn chế dành riêng cho thành viên (đăng ký kênh không đủ để chat). */
 internal fun isMemberOnlyRestriction(text: String): Boolean = MEMBER_TEXT.containsMatchIn(text)
+
+/** Chế độ chỉ dành cho người đăng ký (đăng ký kênh là đủ để chat). */
+internal fun isSubscriberOnlyRestriction(text: String): Boolean = SUBSCRIBER_TEXT.containsMatchIn(text) && !isMemberOnlyRestriction(text)
 
 /** Một biểu tượng cảm xúc của YouTube hoặc của chủ kênh (ảnh + mã gõ như ":ten:"). */
 data class ChatEmoji(val id: String, val shortcut: String, val url: String, val custom: Boolean)
@@ -96,8 +100,8 @@ sealed class ChatPanelEvent {
     class ClosePanel(val panelId: String?) : ChatPanelEvent()
     /** Người xem không được chat (vd "Chế độ chỉ dành cho người đăng ký"): thay ô nhập bằng dòng [text]. */
     class Restricted(val text: String) : ChatPanelEvent()
-    /** Ô nhập chat bình thường; [sendParams] có khi YouTube cho phép tài khoản này gửi. */
-    class Input(val sendParams: String?) : ChatPanelEvent()
+    /** Ô nhập chat bình thường; [sendParams] có khi YouTube cho phép tài khoản này gửi. [subscriberOnly] = YouTube báo đang chat với tư cách người đăng ký. */
+    class Input(val sendParams: String?, val subscriberOnly: Boolean = false) : ChatPanelEvent()
 }
 
 /** Kết quả một lượt đọc chat: hành động mới + mã để đọc lượt kế + thời gian chờ. */
@@ -404,7 +408,11 @@ object LiveChatRepo {
         }
         if (findKey(panel, "liveChatMessageInputRenderer") != null) {
             // Có mã gửi (sendLiveChatMessageEndpoint) = tài khoản này chat được; ẩn danh thì không có (lúc gửi sẽ tự dựng mã như meetube).
-            return ChatPanelEvent.Input(findKey(panel, "sendLiveChatMessageEndpoint")?.optString("params")?.ifBlank { null })
+            val hint = findKey(panel, "liveChatTextInputFieldRenderer")?.opt("placeholder")?.let { ytText(it) }
+            return ChatPanelEvent.Input(
+                findKey(panel, "sendLiveChatMessageEndpoint")?.optString("params")?.ifBlank { null },
+                subscriberOnly = hint != null && isSubscriberOnlyRestriction(hint)
+            )
         }
         return null
     }

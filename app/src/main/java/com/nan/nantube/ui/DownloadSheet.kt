@@ -26,7 +26,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -374,7 +378,9 @@ private fun DownloadSheetContent(video: VideoItem, account: Account?, onDismiss:
                             startText = startText,
                             endText = endText,
                             onStart = { startText = it },
-                            onEnd = { endText = it }
+                            onEnd = { endText = it },
+                            onFixStart = { startText = fixedStart(startText, endText, lengthMs) },
+                            onFixEnd = { endText = fixedEnd(startText, endText, lengthMs) }
                         )
                     }
                 }
@@ -385,10 +391,11 @@ private fun DownloadSheetContent(video: VideoItem, account: Account?, onDismiss:
                         var error by remember { mutableStateOf(false) }
                         if (error) PanelNote("Thời gian không hợp lệ: kết thúc phải sau bắt đầu và nằm trong video.")
                         WhiteButton("Tiếp theo", icon = false) {
+                            startText = fixedStart(startText, endText, lengthMs)
+                            endText = fixedEnd(startText, endText, lengthMs)
                             val from = DownloadText.parseTime(startText)
-                            var to = DownloadText.parseTime(endText)
-                            if (lengthMs > 0 && to > lengthMs) to = lengthMs
-                            if (from < 0 || to <= from || (lengthMs > 0 && from >= lengthMs)) {
+                            val to = DownloadText.parseTime(endText)
+                            if (from < 0 || to <= from) {
                                 error = true
                             } else {
                                 error = false
@@ -500,7 +507,9 @@ private fun ClipPage(
     startText: String,
     endText: String,
     onStart: (String) -> Unit,
-    onEnd: (String) -> Unit
+    onEnd: (String) -> Unit,
+    onFixStart: () -> Unit,
+    onFixEnd: () -> Unit
 ) {
     val from = DownloadText.parseTime(startText)
     val to = DownloadText.parseTime(endText)
@@ -535,13 +544,34 @@ private fun ClipPage(
         )
     }
     Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        TimeField("Bắt đầu", startText, onStart, Modifier.weight(1f))
-        TimeField("Kết thúc", endText, onEnd, Modifier.weight(1f))
+        TimeField("Bắt đầu", startText, onStart, onFixStart, Modifier.weight(1f))
+        TimeField("Kết thúc", endText, onEnd, onFixEnd, Modifier.weight(1f))
     }
 }
 
+private const val MIN_CLIP_MS = 1000L
+
+/** Sửa ô Bắt đầu cho nằm trong video và cách mốc kết thúc ít nhất 1 giây; ô trống hoặc sai định dạng thì về 0:00. */
+private fun fixedStart(startText: String, endText: String, lengthMs: Long): String {
+    val start = DownloadText.parseTime(startText)
+    val end = DownloadText.parseTime(endText).takeIf { it > 0 } ?: lengthMs
+    val top = if (lengthMs > 0) minOf(end, lengthMs) else end
+    if (top <= 0) return DownloadText.duration(start.coerceAtLeast(0L))
+    return DownloadText.duration(start.coerceIn(0L, (top - MIN_CLIP_MS).coerceAtLeast(0L)))
+}
+
+/** Sửa ô Kết thúc cho sau mốc bắt đầu ít nhất 1 giây và không vượt quá hết video; ô trống hoặc sai định dạng thì về hết video. */
+private fun fixedEnd(startText: String, endText: String, lengthMs: Long): String {
+    val earliest = DownloadText.parseTime(startText).coerceAtLeast(0L) + MIN_CLIP_MS
+    val latest = if (lengthMs > 0) maxOf(lengthMs, earliest) else Long.MAX_VALUE
+    val end = DownloadText.parseTime(endText).takeIf { it >= 0 } ?: if (lengthMs > 0) lengthMs else earliest
+    return DownloadText.duration(end.coerceIn(earliest, latest))
+}
+
 @Composable
-private fun TimeField(label: String, value: String, onChange: (String) -> Unit, modifier: Modifier = Modifier) {
+private fun TimeField(label: String, value: String, onChange: (String) -> Unit, onFix: () -> Unit, modifier: Modifier = Modifier) {
+    val focus = LocalFocusManager.current
+    var hadFocus by remember { mutableStateOf(false) }
     Column(modifier) {
         Text(label, fontSize = 13.sp, color = NanColors.TextSecondary, modifier = Modifier.padding(bottom = 4.dp))
         BasicTextField(
@@ -550,9 +580,14 @@ private fun TimeField(label: String, value: String, onChange: (String) -> Unit, 
             singleLine = true,
             textStyle = TextStyle(color = Color.White, fontSize = 18.sp),
             cursorBrush = SolidColor(Color.White),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = { focus.clearFocus() }),
             modifier = Modifier
                 .fillMaxWidth()
+                .onFocusChanged {
+                    if (hadFocus && !it.isFocused) onFix()
+                    hadFocus = it.isFocused
+                }
                 .clip(RoundedCornerShape(12.dp))
                 .background(NanColors.Surface)
                 .padding(horizontal = 14.dp, vertical = 12.dp)

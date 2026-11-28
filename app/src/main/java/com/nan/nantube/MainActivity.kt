@@ -85,6 +85,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         NanStorage.init(this)
+        NanStorage.removeAccountBackup()
         AccountStore.init(this)
         ChannelAvatars.init(this)
         ShortsSeen.init(this)

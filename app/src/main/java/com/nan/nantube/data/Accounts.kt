@@ -35,6 +35,9 @@ data class Account(
 ) {
     /** Dòng phụ dưới tên: ưu tiên email, không có thì handle. */
     val secondary: String? get() = email ?: handle
+
+    /** Nhãn hiện cạnh tên để phân biệt hai tài khoản cùng Gmail. */
+    val tag: String get() = if (kind == LoginKind.CODE) "code" else "web"
 }
 
 /** Kho tài khoản (SharedPreferences riêng của app) + trạng thái Compose để UI tự cập nhật. */
@@ -85,12 +88,14 @@ object AccountStore {
 
     private fun isSignedIn(email: String) = accounts.any { it.email?.let { e -> norm(e) } == norm(email) }
 
-    /** Thêm mới hoặc cập nhật (theo id) rồi chọn luôn tài khoản đó. */
-    fun upsert(account: Account) {
+    /** Thêm mới hoặc cập nhật (theo id). [select] = false thì giữ nguyên tài khoản đang dùng. */
+    fun upsert(account: Account, select: Boolean = true) {
         val i = accounts.indexOfFirst { it.id == account.id }
         if (i >= 0) accounts[i] = account else accounts.add(account)
-        selectedId = account.id
-        guest = false
+        if (select) {
+            selectedId = account.id
+            guest = false
+        }
         account.email?.let { e -> pending.removeAll { norm(it) == norm(e) } }
         persist()
     }
@@ -193,18 +198,20 @@ object AccountStore {
         persist()
     }
 
+    private fun accountsJson() = JSONArray().also { arr -> accounts.forEach { arr.put(toJson(it)) } }
+
     private fun persist() {
         val ctx = appContext ?: return
-        val arr = JSONArray()
-        accounts.forEach { arr.put(toJson(it)) }
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putString("accounts", arr.toString())
+            .putString("accounts", accountsJson().toString())
             .putString("selected", selectedId)
             .putBoolean("guest", guest)
             .putString("pending", JSONArray(pending.toList()).toString())
             .putString("hidden", JSONArray(hidden.toList()).toString())
             .apply()
     }
+
+    private fun JSONObject.optText(key: String): String? = optString(key).takeIf { it.isNotBlank() && it != "null" }
 
     private fun toJson(a: Account) = JSONObject()
         .put("id", a.id).put("kind", a.kind.name).put("name", a.name)
@@ -219,14 +226,14 @@ object AccountStore {
         id = o.getString("id"),
         kind = LoginKind.valueOf(o.getString("kind")),
         name = o.getString("name"),
-        handle = o.optString("handle").takeIf { it.isNotBlank() && it != "null" },
-        email = o.optString("email").takeIf { it.isNotBlank() && it != "null" },
-        photo = o.optString("photo").takeIf { it.isNotBlank() && it != "null" },
+        handle = o.optText("handle"),
+        email = o.optText("email"),
+        photo = o.optText("photo"),
         authUser = o.optInt("authUser", 0),
-        googleName = o.optString("googleName").takeIf { it.isNotBlank() && it != "null" },
-        subs = o.optString("subs").takeIf { it.isNotBlank() && it != "null" },
-        accessToken = o.optString("accessToken").takeIf { it.isNotBlank() && it != "null" },
-        refreshToken = o.optString("refreshToken").takeIf { it.isNotBlank() && it != "null" },
+        googleName = o.optText("googleName"),
+        subs = o.optText("subs"),
+        accessToken = o.optText("accessToken"),
+        refreshToken = o.optText("refreshToken"),
         expiresAt = o.optLong("expiresAt", 0L)
     )
 }

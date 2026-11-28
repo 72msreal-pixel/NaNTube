@@ -26,7 +26,13 @@ import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -108,6 +114,7 @@ import com.nan.nantube.data.ChatRole
 import com.nan.nantube.data.ChatRun
 import com.nan.nantube.data.ChatSendException
 import com.nan.nantube.data.isMemberOnlyRestriction
+import com.nan.nantube.data.isSubscriberOnlyRestriction
 import com.nan.nantube.data.LiveChatRepo
 import com.nan.nantube.data.LoginKind
 import com.nan.nantube.data.AccountStore
@@ -180,6 +187,8 @@ internal fun LiveChatContent(video: VideoItem, account: Account?, channelId: Str
     var reloadKey by remember(video.id) { mutableIntStateOf(0) }
     // Gửi thử mà YouTube vẫn từ chối vì hạn chế (vd kênh đòi đăng ký đủ lâu): thôi tự mở khóa, tin YouTube.
     var serverLocked by remember(video.id, account?.id) { mutableStateOf(false) }
+    // Kênh bật "chỉ người đăng ký" và tài khoản này đã đăng ký: ô nhập hiện "Trò chuyện với tư cách người đăng ký…" như YouTube.
+    var subscriberMode by remember(video.id, account?.id) { mutableStateOf(false) }
 
     var sendParams by remember(video.id, account?.id) { mutableStateOf<String?>(null) }
     var sending by remember(video.id) { mutableStateOf(false) }
@@ -201,10 +210,14 @@ internal fun LiveChatContent(video: VideoItem, account: Account?, channelId: Str
             is ChatPanelEvent.ClosePanel -> poll?.let { p -> if (e.panelId == null || p.panelId == null || p.panelId == e.panelId) poll = null }
             // Tự kiểm tra thay YouTube: kênh đòi "chỉ người đăng ký" mà tài khoản này đã đăng ký kênh thì mở khóa luôn.
             // Chỉ chế độ dành riêng cho thành viên (hoặc lần gửi trước bị YouTube từ chối) mới giữ khóa.
-            is ChatPanelEvent.Restricted ->
-                restricted = if (account != null && subscribed && !serverLocked && !isMemberOnlyRestriction(e.text)) null else e.text
+            is ChatPanelEvent.Restricted -> {
+                val unlocked = account != null && subscribed && !serverLocked && !isMemberOnlyRestriction(e.text)
+                restricted = if (unlocked) null else e.text
+                subscriberMode = unlocked && isSubscriberOnlyRestriction(e.text)
+            }
             is ChatPanelEvent.Input -> {
                 restricted = null
+                subscriberMode = e.subscriberOnly
                 if (e.sendParams != null) sendParams = e.sendParams
             }
         }
@@ -267,6 +280,9 @@ internal fun LiveChatContent(video: VideoItem, account: Account?, channelId: Str
     }
 
     var text by remember { mutableStateOf("") }
+    val inputScroll = rememberScrollState()
+    LaunchedEffect(text) { inputScroll.scrollTo(inputScroll.maxValue) }
+    var field by remember { mutableStateOf(anchored("")) }
     var focused by remember { mutableStateOf(false) }
     var emojiOpen by remember { mutableStateOf(false) }
     val focus = remember { FocusRequester() }
@@ -321,7 +337,7 @@ internal fun LiveChatContent(video: VideoItem, account: Account?, channelId: Str
                         if (sent.messages.isEmpty()) {
                             val echo = ChatMessage(
                                 id = "local-" + InnerTube.randomId(12), author = me.name, photo = me.photo,
-                                runs = listOf(ChatRun.Text(message)), role = ChatRole.NORMAL, verified = false, badgeUrl = null
+                                runs = splitInput(message, emojiByShortcut).runs, role = ChatRole.NORMAL, verified = false, badgeUrl = null
                             )
                             echoIds += echo.id
                             messages.add(echo)
@@ -541,18 +557,46 @@ internal fun LiveChatContent(video: VideoItem, account: Account?, channelId: Str
                     contentAlignment = Alignment.CenterStart
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.weight(1f)) {
+                        val input = splitInput(text, emojiByShortcut)
+                        LaunchedEffect(input.draft, field.text) {
+                            if (field.text != INPUT_ANCHOR + input.draft) field = anchored(input.draft)
+                        }
+                        Row(
+                            Modifier.weight(1f).horizontalScroll(inputScroll).plainClickable { focus.requestFocus() },
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            input.head.forEach { run ->
+                                when (run) {
+                                    is ChatRun.Text -> Text(run.text, fontSize = 14.sp, maxLines = 1, softWrap = false)
+                                    is ChatRun.Emoji -> AsyncImage(run.emoji.url, run.emoji.shortcut, Modifier.padding(horizontal = 1.dp).size(20.dp))
+                                }
+                            }
                             BasicTextField(
-                                value = text,
-                                onValueChange = { text = it },
+                                value = field,
+                                onValueChange = {
+                                    field = it
+                                    text = typedText(text, input, it.text, emojiByShortcut)
+                                },
                                 textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
                                 cursorBrush = SolidColor(Color.White),
                                 singleLine = true,
                                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                                 keyboardActions = KeyboardActions(onSend = { trySend() }),
-                                modifier = Modifier.fillMaxWidth().focusRequester(focus).onFocusChanged { focused = it.isFocused },
+                                modifier = Modifier
+                                    .width(IntrinsicSize.Min)
+                                    .widthIn(min = 8.dp)
+                                    .focusRequester(focus)
+                                    .onFocusChanged { focused = it.isFocused },
                                 decorationBox = { inner ->
-                                    if (text.isEmpty()) Text(if (typing) "Trò chuyện…" else "Nhập tin nhắn…", fontSize = 14.sp, color = NanColors.TextSecondary)
+                                    if (text.isEmpty()) {
+                                        Text(
+                                            when {
+                                                subscriberMode -> "Trò chuyện với tư cách người đăng ký…"
+                                                typing -> "Trò chuyện…"
+                                                else -> "Nhập tin nhắn…"
+                                            },
+                                            fontSize = 14.sp, color = NanColors.TextSecondary, maxLines = 1, softWrap = false)
+                                    }
                                     inner()
                                 }
                             )
@@ -584,8 +628,11 @@ internal fun LiveChatContent(video: VideoItem, account: Account?, channelId: Str
                                     Text(title, fontSize = 13.sp, color = NanColors.TextSecondary, modifier = Modifier.padding(start = 4.dp, top = 8.dp, bottom = 4.dp))
                                 }
                                 items(list) { e ->
-                                    Box(Modifier.aspectRatio(1f).clip(CircleShape).clickable { text += e.shortcut + " " }.padding(8.dp)) {
-                                        AsyncImage(e.url, e.shortcut, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+                                    Box(
+                                        Modifier.height(EMOJI_CELL_HEIGHT).clip(CircleShape).clickable { text += e.shortcut + " " },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        AsyncImage(e.url, e.shortcut, Modifier.size(EMOJI_ICON_SIZE), contentScale = ContentScale.Fit)
                                     }
                                 }
                             }
@@ -598,11 +645,7 @@ internal fun LiveChatContent(video: VideoItem, account: Account?, channelId: Str
                         }
                         Spacer(Modifier.weight(1f))
                         Box(
-                            Modifier.size(44.dp).clip(CircleShape).clickable {
-                                // Xoá nguyên mã emoji (":ten:") đứng cuối, không có thì xoá một ký tự.
-                                val tail = Regex(":[^:\\s]+: ?$").find(text)
-                                text = if (tail != null) text.removeRange(tail.range) else text.dropLast(1)
-                            },
+                            Modifier.size(44.dp).clip(CircleShape).clickable { text = deleteLast(text, emojiByShortcut) },
                             contentAlignment = Alignment.Center
                         ) { Icon(ChatBackspaceIcon, "Xoá", Modifier.size(28.dp), tint = Color.White) }
                     }
@@ -611,6 +654,49 @@ internal fun LiveChatContent(video: VideoItem, account: Account?, channelId: Str
         }
     }
     }
+}
+
+private val EMOJI_CELL_HEIGHT = 44.dp
+private val EMOJI_ICON_SIZE = 28.dp
+
+/** Ký tự rộng 0 đứng đầu ô gõ: bị xoá nghĩa là người dùng bấm xoá khi ô gõ đã trống, lúc đó xoá luôn emoji đứng trước. */
+private const val INPUT_ANCHOR = "\u200B"
+
+private fun anchored(draft: String) = TextFieldValue(INPUT_ANCHOR + draft, TextRange(INPUT_ANCHOR.length + draft.length))
+
+private val EMOJI_TOKEN = Regex(":[^:\\s]+: ?")
+
+/** Nội dung ô nhập tách làm hai: [head] là phần tới hết emoji cuối (hiện thành hình), [draft] là chữ đang gõ phía sau. */
+private class InputSplit(val head: List<ChatRun>, val draft: String, val lastToken: IntRange?) {
+    val runs: List<ChatRun> get() = if (draft.isEmpty()) head else head + ChatRun.Text(draft)
+}
+
+private fun splitInput(text: String, emojis: Map<String, ChatEmoji>): InputSplit {
+    val head = ArrayList<ChatRun>()
+    var cursor = 0
+    var lastToken: IntRange? = null
+    for (match in EMOJI_TOKEN.findAll(text)) {
+        val emoji = emojis[match.value.trim()] ?: continue
+        if (match.range.first > cursor) head.add(ChatRun.Text(text.substring(cursor, match.range.first)))
+        head.add(ChatRun.Emoji(emoji))
+        cursor = match.range.last + 1
+        lastToken = match.range
+    }
+    return InputSplit(head, text.substring(cursor), lastToken)
+}
+
+/** Xoá nguyên emoji đứng cuối khi chưa gõ chữ sau nó, không thì xoá một ký tự. */
+private fun deleteLast(text: String, emojis: Map<String, ChatEmoji>): String {
+    val input = splitInput(text, emojis)
+    val token = input.lastToken
+    return if (input.draft.isEmpty() && token != null) text.removeRange(token) else text.dropLast(1)
+}
+
+/** Nhận chữ người dùng vừa gõ vào ô (đã kèm [INPUT_ANCHOR]) và trả về toàn bộ nội dung mới của tin nhắn. */
+private fun typedText(text: String, input: InputSplit, typed: String, emojis: Map<String, ChatEmoji>): String = when {
+    INPUT_ANCHOR in typed -> text.removeSuffix(input.draft) + typed.replace(INPUT_ANCHOR, "")
+    input.draft.isEmpty() -> deleteLast(text, emojis)
+    else -> text
 }
 
 /** Thẻ bảng chọn như YouTube: người đăng + "x phút trước • N lượt bình chọn", câu hỏi, các lựa chọn (có kết quả thì hiện thanh % tô nền). */

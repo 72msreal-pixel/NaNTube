@@ -58,6 +58,25 @@ private enum class Tab(val label: String) {
 
 private enum class AddStep { None, Chooser, Code, Web }
 
+/** Trạng thái luồng thêm tài khoản. */
+private class AddFlow {
+    var step by mutableStateOf(AddStep.None)
+    var hint by mutableStateOf<String?>(null)
+    var keepSelected = false
+
+    fun web(hint: String? = null, keepSelected: Boolean = false) {
+        this.hint = hint
+        this.keepSelected = keepSelected
+        step = AddStep.Web
+    }
+
+    fun close() {
+        step = AddStep.None
+        hint = null
+        keepSelected = false
+    }
+}
+
 /** Rời app lâu hơn mức này rồi quay lại thì tab Short lấy bộ video mới (như YouTube). */
 private const val SHORTS_STALE_MS = 10 * 60 * 1000L
 
@@ -75,14 +94,13 @@ fun AppRoot() {
     LaunchedEffect(WatchMini.pb) { if (WatchMini.pb != null) saveVideo = null }
     var showAccounts by remember { mutableStateOf(false) }
     var showNotifications by remember { mutableStateOf(false) }
-    var addStep by remember { mutableStateOf(AddStep.None) }
+    val add = remember { AddFlow() }
     var homeChip by remember { mutableStateOf(0) }
-    var webHint by remember { mutableStateOf<String?>(null) }
-    // Nơi khác (khung chat live của tài khoản mã) xin mở đăng nhập web: mở thẳng bước tự nhập Gmail, gợi ý email của tài khoản mã.
+    // Nơi khác (khung chat live của tài khoản mã) xin mở đăng nhập web: mở thẳng bước tự nhập Gmail, gợi ý email của tài khoản mã
+    // và giữ nguyên tài khoản mã đang dùng sau khi đăng nhập xong.
     LaunchedEffect(WebSignInRequest.requested) {
         if (WebSignInRequest.requested) {
-            webHint = WebSignInRequest.hint
-            addStep = AddStep.Web
+            add.web(WebSignInRequest.hint, keepSelected = true)
             WebSignInRequest.requested = false
         }
     }
@@ -274,7 +292,7 @@ fun AppRoot() {
                             onSettingsClick = { showSettings = true },
                             onSearchClick = { searchUi.startNew(); tab = Tab.Search },
                             onBellClick = { showNotifications = true },
-                            onSignIn = { showAccounts = true; addStep = AddStep.Chooser }
+                            onSignIn = { showAccounts = true; add.step = AddStep.Chooser }
                         )
                         tab == Tab.Main -> MainFeedScreen(
                             feed = mainFeed,
@@ -322,7 +340,7 @@ fun AppRoot() {
                 NotificationsScreen(
                     account = account,
                     onBack = { showNotifications = false },
-                    onSignIn = { showNotifications = false; showAccounts = true; addStep = AddStep.Chooser }
+                    onSignIn = { showNotifications = false; showAccounts = true; add.step = AddStep.Chooser }
                 )
             }
             if (ShortsViewer.items != null) {
@@ -350,21 +368,22 @@ fun AppRoot() {
             if (showAccounts) {
                 AccountPopup(
                     onDismiss = { showAccounts = false },
-                    onAdd = { addStep = AddStep.Chooser }
+                    onAdd = { add.step = AddStep.Chooser }
                 )
             }
-            when (addStep) {
+            when (add.step) {
                 AddStep.None -> Unit
                 AddStep.Chooser -> AddAccountChooser(
-                    onDismiss = { addStep = AddStep.None },
-                    onManual = { webHint = null; addStep = AddStep.Web },
-                    onCode = { addStep = AddStep.Code }
+                    onDismiss = add::close,
+                    onManual = { add.web() },
+                    onCode = { add.step = AddStep.Code }
                 )
-                AddStep.Code -> CodeSignInScreen(onSuccess = { addStep = AddStep.None }, onClose = { addStep = AddStep.None })
+                AddStep.Code -> CodeSignInScreen(onSuccess = add::close, onClose = add::close)
                 AddStep.Web -> WebSignInScreen(
-                    loginHint = webHint,
-                    onSuccess = { addStep = AddStep.None; webHint = null },
-                    onClose = { addStep = AddStep.None; webHint = null }
+                    loginHint = add.hint,
+                    keepSelected = add.keepSelected,
+                    onSuccess = add::close,
+                    onClose = add::close
                 )
             }
             // Cửa sổ Short nhỏ nổi (hoặc cả cửa sổ PiP khi rời app): trên cùng mọi lớp.

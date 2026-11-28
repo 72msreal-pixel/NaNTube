@@ -34,6 +34,7 @@ object NanStorage {
     const val FOLDER = "NaNTube"
     private const val GUEST = "guest"
     private const val ACCOUNTS = "accounts"
+    private const val LEGACY_BACKUP = "shared"
     private const val MIRROR = "nantube-data"
 
     private var appContext: Context? = null
@@ -84,32 +85,36 @@ object NanStorage {
 
     private fun featureFile(feature: String) = feature.map { if (it.isLetterOrDigit() || it in "._-") it else '_' }.joinToString("") + ".json"
 
-    private fun external(feature: String, account: Account?) = File(File(root, ownerDir(account)), featureFile(feature))
+    private fun external(feature: String, dir: String) = File(File(root, dir), featureFile(feature))
 
-    private fun mirror(feature: String, account: Account?): File? {
+    private fun mirror(feature: String, dir: String): File? {
         val ctx = appContext ?: return null
-        return File(File(File(ctx.filesDir, MIRROR), ownerDir(account)), featureFile(feature))
+        return File(File(File(ctx.filesDir, MIRROR), dir), featureFile(feature))
     }
 
     // ---------- Đọc / ghi ----------
 
     /** Đọc dữ liệu của [feature] cho [account] (null = khách). Ưu tiên thư mục NaNTube, không có thì bản dự phòng. */
+    fun read(feature: String, account: Account?): String? = readAt(feature, ownerDir(account))
+
     @Synchronized
-    fun read(feature: String, account: Account?): String? {
+    private fun readAt(feature: String, dir: String): String? {
         if (hasAccess()) {
-            val file = external(feature, account)
+            val file = external(feature, dir)
             val text = runCatching { if (file.isFile) file.readText() else null }.getOrNull()
             if (text != null) return text
         }
-        return runCatching { mirror(feature, account)?.takeIf { it.isFile }?.readText() }.getOrNull()
+        return runCatching { mirror(feature, dir)?.takeIf { it.isFile }?.readText() }.getOrNull()
     }
 
     /** Ghi dữ liệu: luôn ghi bản dự phòng trong app, và ghi vào thư mục NaNTube nếu đã có quyền. Trả true nếu đã ra thư mục NaNTube. */
+    fun write(feature: String, account: Account?, text: String): Boolean = writeAt(feature, ownerDir(account), text)
+
     @Synchronized
-    fun write(feature: String, account: Account?, text: String): Boolean {
-        mirror(feature, account)?.let { runCatching { atomicWrite(it, text) } }
+    private fun writeAt(feature: String, dir: String, text: String): Boolean {
+        mirror(feature, dir)?.let { runCatching { atomicWrite(it, text) } }
         if (!hasAccess()) return false
-        return runCatching { atomicWrite(external(feature, account), text) }.isSuccess
+        return runCatching { atomicWrite(external(feature, dir), text) }.isSuccess
     }
 
     fun readJson(feature: String, account: Account?): Any? {
@@ -122,8 +127,16 @@ object NanStorage {
     /** Xoá dữ liệu một tính năng của một tài khoản (cả bản dự phòng lẫn thư mục NaNTube). */
     @Synchronized
     fun delete(feature: String, account: Account?) {
-        mirror(feature, account)?.delete()
-        if (hasAccess()) runCatching { external(feature, account).delete() }
+        val dir = ownerDir(account)
+        mirror(feature, dir)?.delete()
+        if (hasAccess()) runCatching { external(feature, dir).delete() }
+    }
+
+    /** Xoá bản sao lưu tài khoản (có chứa token) mà các bản trước từng ghi ra thư mục NaNTube, nếu còn. */
+    @Synchronized
+    fun removeAccountBackup() {
+        mirror("accounts", LEGACY_BACKUP)?.delete()
+        if (hasAccess()) runCatching { external("accounts", LEGACY_BACKUP).delete() }
     }
 
     /** Ghi qua tệp tạm rồi đổi tên: mất điện / app bị tắt giữa chừng cũng không làm hỏng tệp cũ. */

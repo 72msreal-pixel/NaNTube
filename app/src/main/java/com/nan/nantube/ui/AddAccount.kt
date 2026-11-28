@@ -339,7 +339,7 @@ private const val MAX_SLOTS = 10
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-fun WebSignInScreen(loginHint: String?, onSuccess: () -> Unit, onClose: () -> Unit) {
+fun WebSignInScreen(loginHint: String?, keepSelected: Boolean = false, onSuccess: () -> Unit, onClose: () -> Unit) {
     val scope = rememberCoroutineScope()
     // Đã có tài khoản web thì thêm vào cùng phiên (giữ cookie cũ), chưa có thì làm sạch rồi đăng nhập mới.
     val adding = remember { AccountStore.accounts.any { it.kind == LoginKind.WEB } }
@@ -391,7 +391,7 @@ fun WebSignInScreen(loginHint: String?, onSuccess: () -> Unit, onClose: () -> Un
         scope.launch {
             try {
                 val account = findNewWebAccount() ?: throw IllegalStateException()
-                AccountStore.upsert(account)
+                AccountStore.upsert(account, select = !keepSelected)
                 loginHint?.let { AccountStore.dropPending(it) }
                 onSuccess()
             } catch (e: CancellationException) {

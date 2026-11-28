@@ -126,7 +126,7 @@ fun AccountPopup(onDismiss: () -> Unit, onAdd: () -> Unit) {
                             Avatar(current.name.take(1).uppercase(), 44.dp, photoUrl = current.photo)
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f)) {
-                                Text(current.name, fontSize = 14.sp)
+                                NameWithTag(current)
                                 current.handle?.let { Text(it, fontSize = 12.sp, color = NanColors.TextSecondary) }
                                 current.subs?.let { Text(it, fontSize = 12.sp, color = NanColors.TextSecondary) }
                                 Text(
@@ -201,7 +201,7 @@ fun AccountPopup(onDismiss: () -> Unit, onAdd: () -> Unit) {
                                 Avatar(acc.name.take(1).uppercase(), 36.dp, photoUrl = acc.photo)
                                 Spacer(Modifier.width(12.dp))
                                 Column(Modifier.weight(1f)) {
-                                    Text(acc.name, fontSize = 14.sp)
+                                    NameWithTag(acc)
                                     Text(
                                         acc.subs ?: acc.handle ?: "",
                                         fontSize = 12.sp,
@@ -304,6 +304,24 @@ fun AccountPopup(onDismiss: () -> Unit, onAdd: () -> Unit) {
     }
 }
 
+/** Tên kênh kèm nhãn code / web, để phân biệt hai tài khoản cùng Gmail. */
+@Composable
+private fun NameWithTag(account: Account) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(account.name, fontSize = 14.sp, maxLines = 1, modifier = Modifier.weight(1f, fill = false))
+        Spacer(Modifier.width(6.dp))
+        Text(
+            account.tag,
+            fontSize = 11.sp,
+            color = NanColors.TextSoft,
+            modifier = Modifier
+                .clip(RoundedCornerShape(4.dp))
+                .background(NanColors.Surface)
+                .padding(horizontal = 5.dp, vertical = 1.dp)
+        )
+    }
+}
+
 @Composable
 private fun PopupAction(label: String, onClick: () -> Unit) {
     Text(
@@ -352,7 +370,7 @@ private fun AccountMenu(
     onSignIn: () -> Unit,
     onSignOut: () -> Unit
 ) {
-    val title = account.email ?: account.handle ?: account.name
+    val title = (account.email ?: account.handle ?: account.name) + " · " + account.tag
     Box(
         Modifier.fillMaxSize().background(Color(0x66000000)).plainClickable(onDismiss),
         contentAlignment = Alignment.Center
