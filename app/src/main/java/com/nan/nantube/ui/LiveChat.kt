@@ -38,7 +38,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -96,7 +95,10 @@ import com.nan.nantube.data.ChatPollChoice
 import com.nan.nantube.data.ChatRole
 import com.nan.nantube.data.ChatRun
 import com.nan.nantube.data.LiveChatRepo
+import com.nan.nantube.data.InnerTube
 import com.nan.nantube.data.VideoItem
+import com.composables.icons.lucide.Check
+import com.composables.icons.lucide.Lucide
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -144,7 +146,7 @@ internal fun LiveChatCard(account: Account?, onClick: () -> Unit) {
  * tin nhắn ghim, nút cuộn xuống, ô nhập kèm bộ chọn emoji, bảng chọn. Đọc / gửi / bình chọn theo tài khoản đang chọn (chưa đăng nhập thì chỉ đọc).
  */
 @Composable
-internal fun LiveChatContent(video: VideoItem, account: Account?, onClose: () -> Unit) {
+internal fun LiveChatContent(video: VideoItem, account: Account?, channelId: String? = video.channelId, onClose: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val messages = remember(video.id) { mutableStateListOf<ChatMessage>() }
@@ -158,17 +160,23 @@ internal fun LiveChatContent(video: VideoItem, account: Account?, onClose: () ->
     var sending by remember(video.id) { mutableStateOf(false) }
     var voting by remember(video.id) { mutableStateOf(false) }
     val seen = remember(video.id) { HashSet<String>() }
+    // Tin của mình tự dựng lúc gửi (YouTube không echo lại): bản thật về qua lượt đọc thì thay vào, không hiện đôi.
+    val echoIds = remember(video.id) { HashSet<String>() }
     fun apply(batch: ChatBatch) {
         if (batch.removedIds.isNotEmpty()) messages.removeAll { it.id in batch.removedIds }
-        for (m in batch.messages) if (seen.add(m.id)) messages.add(m)
+        for (m in batch.messages) if (seen.add(m.id)) {
+            messages.removeAll { it.id in echoIds && it.author == m.author && it.text == m.text }
+            messages.add(m)
+        }
         while (messages.size > MAX_MESSAGES) messages.removeAt(0)
         batch.pinned?.let { pinned = it }
         // Khung hành động theo đúng thứ tự YouTube gửi: bảng chọn mở / cập nhật / đóng, ô nhập đổi chế độ giữa chừng.
         for (e in batch.panelEvents) when (e) {
-            is ChatPanelEvent.ShowPoll -> poll = e.poll
+            is ChatPanelEvent.ShowPoll -> poll = e.poll.after(poll)
             is ChatPanelEvent.ClosePanel -> poll?.let { p -> if (e.panelId == null || p.panelId == null || p.panelId == e.panelId) poll = null }
-            is ChatPanelEvent.Restricted -> {
-                restricted = e.text
+            is ChatPanelEvent.Restricted -> restricted = e.text
+            is ChatPanelEvent.Input -> {
+                restricted = null
                 if (e.sendParams != null) sendParams = e.sendParams
             }
         }
@@ -179,7 +187,6 @@ internal fun LiveChatContent(video: VideoItem, account: Account?, onClose: () ->
         try {
             val start = LiveChatRepo.start(video.id, account)
             groups = start.emojiGroups
-            restricted = start.restricted
             apply(start.batch)
             // Đã đọc theo tài khoản thì các lượt sau cũng theo tài khoản; bị từ chối (hết phiên) thì rơi về ẩn danh.
             var authed = start.authed
@@ -234,15 +241,6 @@ internal fun LiveChatContent(video: VideoItem, account: Account?, onClose: () ->
     val keyboard = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
     val view = LocalView.current
-    // Cửa sổ mặc định (adjustUnspecified) tự "pan" cả màn hình lên khi bàn phím che ô nhập, làm cả khung chat bay lên
-    // và lệch với số đo bên dưới. Trong lúc mở chat live thì đặt adjustResize để hệ thống không pan nữa (trả lại như cũ khi đóng).
-    DisposableEffect(view) {
-        val window = generateSequence(context) { (it as? android.content.ContextWrapper)?.baseContext }
-            .filterIsInstance<android.app.Activity>().firstOrNull()?.window
-        val old = window?.attributes?.softInputMode
-        window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
-        onDispose { if (window != null && old != null) window.setSoftInputMode(old) }
-    }
     val density = LocalDensity.current
     val imeBottom = WindowInsets.ime.getBottom(density)
     // Như VideoChat/ShortChat: khung giữ nguyên chỗ, tự đo phần bàn phím che đáy khung rồi chỉ chừa đúng phần đó,
@@ -269,15 +267,25 @@ internal fun LiveChatContent(video: VideoItem, account: Account?, onClose: () ->
         val message = text.trim()
         if (message.isEmpty() || sending) return
         val me = account
-        val params = sendParams
+        // Như meetube: khung chat không kèm mã gửi (đọc ẩn danh) thì tự dựng từ kênh + video; YouTube cho hay không sẽ báo lỗi lúc gửi.
+        val params = sendParams ?: channelId?.let { LiveChatRepo.localSendParams(it, video.id) }
         when {
             me == null -> toast("Đăng nhập để trò chuyện")
-            params == null -> toast("Tài khoản này không thể trò chuyện ở buổi phát này")
+            params == null -> toast("Chưa biết kênh của buổi phát này nên chưa gửi được")
             else -> {
                 sending = true
                 scope.launch {
                     try {
-                        apply(LiveChatRepo.send(me, params, message, emojiByShortcut))
+                        val sent = LiveChatRepo.send(me, params, message, emojiByShortcut)
+                        apply(sent)
+                        if (sent.messages.isEmpty()) {
+                            val echo = ChatMessage(
+                                id = "local-" + InnerTube.randomId(12), author = me.name, photo = me.photo,
+                                runs = listOf(ChatRun.Text(message)), role = ChatRole.NORMAL, verified = false, badgeUrl = null
+                            )
+                            echoIds += echo.id
+                            messages.add(echo)
+                        }
                         text = ""
                         follow = true
                     } catch (e: CancellationException) {
@@ -293,19 +301,23 @@ internal fun LiveChatContent(video: VideoItem, account: Account?, onClose: () ->
     }
     fun vote(choice: ChatPollChoice) {
         val me = account
+        val current = poll ?: return
         val params = choice.voteParams
         when {
-            voting -> Unit
+            voting || current.voted -> Unit
             me == null -> toast("Đăng nhập để bình chọn")
             params == null -> toast("Không bình chọn được (cần đăng nhập hoặc bảng chọn đã đóng)")
             else -> {
                 voting = true
+                // Hiện lựa chọn ngay như YouTube (YouTube không luôn echo lại); lỗi thì trả bảng về như cũ.
+                poll = current.copy(choices = current.choices.map { it.copy(selected = it.voteParams == params) })
                 scope.launch {
                     try {
                         apply(LiveChatRepo.vote(me, params))
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
+                        if (poll?.id == current.id) poll = current
                         toast(e.message ?: "Không bình chọn được")
                     } finally {
                         voting = false
@@ -533,7 +545,8 @@ private fun ChatPollCard(poll: ChatPoll, onChoose: (ChatPollChoice) -> Unit) {
         }
         Text(poll.question, fontSize = 17.sp, lineHeight = 23.sp, modifier = Modifier.padding(top = 14.dp, bottom = 12.dp))
         poll.choices.forEach { c ->
-            val showResult = c.percent != null && c.ratio >= 0f
+            // YouTube chỉ cho xem kết quả sau khi người xem đã chọn: chưa chọn thì bản cập nhật kết quả gửi chung cũng không được lộ ra.
+            val showResult = poll.voted && c.percent != null && c.ratio >= 0f
             Box(
                 Modifier.padding(bottom = 8.dp).fillMaxWidth().height(46.dp).clip(RoundedCornerShape(50))
                     .background(NanColors.Surface).clickable { onChoose(c) }
@@ -545,7 +558,9 @@ private fun ChatPollCard(poll: ChatPoll, onChoose: (ChatPollChoice) -> Unit) {
                 Row(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(c.text, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                     if (showResult) Text(c.percent ?: "", fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                    else Box(Modifier.size(24.dp).border(BorderStroke(1.5.dp, NanColors.TextSecondary), CircleShape))
+                    else if (c.selected) Box(Modifier.size(24.dp).clip(CircleShape).background(Color(0xFF3EA6FF)), contentAlignment = Alignment.Center) {
+                        Icon(Lucide.Check, null, Modifier.size(16.dp), tint = Color.Black)
+                    } else Box(Modifier.size(24.dp).border(BorderStroke(1.5.dp, NanColors.TextSecondary), CircleShape))
                 }
             }
         }

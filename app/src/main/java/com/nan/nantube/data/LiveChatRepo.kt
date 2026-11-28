@@ -1,5 +1,6 @@
 package com.nan.nantube.data
 
+import android.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
@@ -28,13 +29,16 @@ class ChatMessage(
     val amount: String? = null,
     /** Mã kênh người viết (UC...), để tra dấu tích xác minh như bình luận. */
     val channelId: String? = null
-)
+) {
+    /** Nội dung chữ thuần (emoji thành mã gõ), để so tin tự dựng với bản thật YouTube gửi về. */
+    val text: String get() = runs.joinToString("") { if (it is ChatRun.Text) it.text else (it as ChatRun.Emoji).emoji.shortcut }
+}
 
 /** Một lựa chọn của bảng chọn; [percent] (vd "50%") và [ratio] chỉ có khi YouTube cho xem kết quả (ratio < 0 = chưa hiện). */
-class ChatPollChoice(val text: String, val percent: String?, val ratio: Float, val selected: Boolean, val voteParams: String? = null)
+data class ChatPollChoice(val text: String, val percent: String?, val ratio: Float, val selected: Boolean, val voteParams: String? = null)
 
 /** Bảng chọn (poll) của chủ kênh: câu hỏi, dòng "@kênh • 2 phút trước • 252 lượt bình chọn" và các lựa chọn. */
-class ChatPoll(
+data class ChatPoll(
     val id: String,
     /** Mã khung hành động YouTube gắn cho bảng chọn (để biết lệnh đóng khung nào). */
     val panelId: String?,
@@ -42,14 +46,35 @@ class ChatPoll(
     val meta: String?,
     val avatar: String?,
     val choices: List<ChatPollChoice>
-)
+) {
+    /** Đã bình chọn rồi (YouTube chỉ cho xem kết quả sau khi người xem chọn). */
+    val voted get() = choices.any { it.selected }
+
+    /**
+     * Bản cập nhật kết quả (updateLiveChatPollAction) gửi chung cho mọi người xem: không biết mình đã chọn gì và có thể thiếu mã bình chọn,
+     * nên giữ lại lựa chọn + mã từ bản trước của cùng bảng chọn.
+     */
+    fun after(old: ChatPoll?): ChatPoll {
+        if (old == null || old.id != id) return this
+        return copy(
+            panelId = panelId ?: old.panelId,
+            avatar = avatar ?: old.avatar,
+            choices = choices.mapIndexed { i, c ->
+                val prev = old.choices.getOrNull(i)?.takeIf { it.text == c.text } ?: return@mapIndexed c
+                c.copy(selected = c.selected || prev.selected, voteParams = c.voteParams ?: prev.voteParams)
+            }
+        )
+    }
+}
 
 /** Thay đổi của khung hành động (phía trên ô nhập), theo đúng thứ tự YouTube gửi. */
 sealed class ChatPanelEvent {
     class ShowPoll(val poll: ChatPoll) : ChatPanelEvent()
     class ClosePanel(val panelId: String?) : ChatPanelEvent()
-    /** Ô nhập đổi chế độ: [text] != null = người xem không được chat (vd "Chế độ chỉ dành cho người đăng ký"), null = chat bình thường. */
-    class Restricted(val text: String?, val sendParams: String? = null) : ChatPanelEvent()
+    /** Người xem không được chat (vd "Chế độ chỉ dành cho người đăng ký"): thay ô nhập bằng dòng [text]. */
+    class Restricted(val text: String) : ChatPanelEvent()
+    /** Ô nhập chat bình thường; [sendParams] có khi YouTube cho phép tài khoản này gửi. */
+    class Input(val sendParams: String?) : ChatPanelEvent()
 }
 
 /** Kết quả một lượt đọc chat: hành động mới + mã để đọc lượt kế + thời gian chờ. */
@@ -62,13 +87,11 @@ class ChatBatch(
     val panelEvents: List<ChatPanelEvent> = emptyList()
 )
 
-/** Dữ liệu khởi tạo của khung chat: lượt đầu + danh sách emoji + chế độ chỉ-thành-viên. */
+/** Dữ liệu khởi tạo của khung chat: lượt đầu (kèm khung hành động) + danh sách emoji. */
 class ChatStart(
     val batch: ChatBatch,
     /** Emoji theo nhóm (tên nhóm → emoji); rỗng nếu trang không trả. */
     val emojiGroups: List<Pair<String, List<ChatEmoji>>>,
-    /** Có chữ này = người xem không được chat (vd "Chế độ chỉ dành cho người đăng ký"). */
-    val restricted: String?,
     /** Đã đọc bằng phiên đăng nhập của tài khoản (nên ô nhập / chế độ hạn chế / bảng chọn đúng theo tài khoản). */
     val authed: Boolean = false
 )
@@ -142,8 +165,7 @@ object LiveChatRepo {
     private fun startFrom(chat: JSONObject, authed: Boolean): ChatStart {
         val emojis = parseEmojis(chat)
         val batch = parseBatch(chat.optJSONArray("actions"), chat.optJSONArray("continuations"), chat.optJSONObject("actionPanel"))
-        val restricted = chat.dig("actionPanel", "liveChatRestrictedParticipationRenderer", "message")?.let { ytText(it) }
-        return ChatStart(batch, emojiGroups(chat, emojis), restricted, authed)
+        return ChatStart(batch, emojiGroups(chat, emojis), authed)
     }
 
     /** Gọi endpoint ghi / đọc của chat bằng phiên tài khoản: web = cookie + SAPISIDHASH; mã = WEB+Bearer rồi TV+Bearer. */
@@ -189,7 +211,7 @@ object LiveChatRepo {
     /**
      * Gửi tin nhắn (live_chat/send_message). [sendParams] lấy từ ô nhập của khung chat (sendLiveChatMessageEndpoint.params).
      * Mã emoji dạng ":ten:" được đổi thành đoạn emoji thật nếu có trong [emojis] (theo mã gõ), còn lại là chữ.
-     * Trả về hành động YouTube echo lại (tin nhắn của mình) để hiện ngay.
+     * Trả về hành động YouTube echo lại (tin nhắn của mình) để hiện ngay; YouTube từ chối (vd chỉ dành cho người đăng ký) thì ném lỗi kèm lý do.
      */
     suspend fun send(account: Account, sendParams: String, text: String, emojis: Map<String, ChatEmoji>): ChatBatch {
         val segments = JSONArray()
@@ -206,12 +228,29 @@ object LiveChatRepo {
             .put("clientMessageId", InnerTube.randomId(26))
             .put("webClientInfo", JSONObject().put("isDocumentHidden", false))
         val json = accountCall("live_chat/send_message", body, account)
+        actionError(json)?.let { throw Exception(it) }
         return parseBatch(json.optJSONArray("actions"), null)
     }
+
+    /**
+     * Mã gửi tự dựng từ kênh + video khi khung chat không kèm sẵn (đọc ẩn danh / mã chưa về), đúng như `LiveChatMessageSender.params` của meetube:
+     * protobuf {1: {5: {1: kênh, 2: video}}, 2: 1, 3: 4}, base64 + mã hoá URL, rồi base64 lần nữa. YouTube cho phép hay không thì tự báo lỗi khi gửi.
+     */
+    fun localSendParams(channelId: String, videoId: String): String {
+        val ids = CommentsRepository.Proto().string(1, channelId).string(2, videoId)
+        val inner = CommentsRepository.encode(CommentsRepository.Proto().message(1, CommentsRepository.Proto().message(5, ids)).varint(2, 1).varint(3, 4))
+        return Base64.encodeToString(inner.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+    }
+
+    /** Lý do YouTube từ chối một hành động chat (200 OK nhưng kèm liveChatActionErrorRenderer), null nếu không có lỗi. */
+    private fun actionError(json: JSONObject): String? =
+        (findKey(json, "liveChatActionErrorRenderer") ?: findKey(json, "showLiveChatActionErrorAction"))
+            ?.let { ytText(it.opt("errorText")) ?: "YouTube không nhận yêu cầu này" }
 
     /** Bình chọn (live_chat/send_live_chat_vote) bằng mã [voteParams] của lựa chọn; trả về cập nhật kết quả nếu YouTube echo. */
     suspend fun vote(account: Account, voteParams: String): ChatBatch {
         val json = accountCall("live_chat/send_live_chat_vote", JSONObject().put("params", voteParams), account)
+        actionError(json)?.let { throw Exception(it) }
         val actions = json.optJSONArray("actions")
             ?: (json.dig("continuationContents", "liveChatContinuation") as? JSONObject)?.optJSONArray("actions")
         return parseBatch(actions, null)
@@ -228,8 +267,8 @@ object LiveChatRepo {
             return ChatPanelEvent.Restricted(ytText(r.opt("message")) ?: "Bạn không thể trò chuyện lúc này")
         }
         if (findKey(panel, "liveChatMessageInputRenderer") != null) {
-            // Có mã gửi (sendLiveChatMessageEndpoint) = tài khoản này chat được; ẩn danh / không đủ điều kiện thì không có.
-            return ChatPanelEvent.Restricted(null, findKey(panel, "sendLiveChatMessageEndpoint")?.optString("params")?.ifBlank { null })
+            // Có mã gửi (sendLiveChatMessageEndpoint) = tài khoản này chat được; ẩn danh thì không có (lúc gửi sẽ tự dựng mã như meetube).
+            return ChatPanelEvent.Input(findKey(panel, "sendLiveChatMessageEndpoint")?.optString("params")?.ifBlank { null })
         }
         return null
     }

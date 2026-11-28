@@ -1389,7 +1389,7 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
                                 onClose = ::closePanel
                             )
                             WatchPanel.Comments ->
-                                if (pb.live) LiveChatContent(video = video, account = account, onClose = ::closePanel)
+                                if (pb.live) LiveChatContent(video = video, account = account, channelId = info?.channelId ?: video.channelId, onClose = ::closePanel)
                                 else VideoChatContent(video = video, account = account, onSave = onSave, onClose = ::closePanel)
                         }
                     }
@@ -1424,7 +1424,7 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
                     .then(if (pb.live) Modifier else Modifier.imePadding())
             ) {
                 Column(Modifier.fillMaxSize()) {
-                    if (pb.live) LiveChatContent(video = video, account = account, onClose = { fsComments = false })
+                    if (pb.live) LiveChatContent(video = video, account = account, channelId = info?.channelId ?: video.channelId, onClose = { fsComments = false })
                     else VideoChatContent(video = video, account = account, onSave = onSave, onClose = { fsComments = false })
                 }
                 Box(

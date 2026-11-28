@@ -700,11 +700,11 @@ object CommentsRepository {
         encode(Proto().string(2, videoId).string(4, parentId).message(5, Proto().varint(1, 0)).varint(10, 7))
 
     /** Base64 chuẩn có đệm, rồi mã hoá URL, như client web của YouTube gửi. */
-    private fun encode(proto: Proto): String =
+    internal fun encode(proto: Proto): String =
         URLEncoder.encode(Base64.encodeToString(proto.bytes.toByteArray(), Base64.NO_WRAP), "UTF-8")
 
     /** Protobuf vừa đủ: số nguyên, chuỗi và message lồng, theo thứ tự ghi. */
-    private class Proto {
+    internal class Proto {
         val bytes = ByteArrayOutputStream()
 
         fun varint(field: Int, value: Int): Proto = apply { tag(field, 0); writeVarint(value.toLong()) }
