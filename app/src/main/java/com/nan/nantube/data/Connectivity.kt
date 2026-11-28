@@ -3,6 +3,7 @@ package com.nan.nantube.data
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
+import android.net.NetworkCapabilities
 import android.os.Handler
 import android.os.Looper
 import androidx.compose.runtime.getValue
@@ -13,6 +14,12 @@ import androidx.compose.runtime.setValue
 object Connectivity {
     var tick by mutableIntStateOf(0)
         private set
+
+    fun onWifi(context: Context): Boolean {
+        val manager = context.applicationContext.getSystemService(ConnectivityManager::class.java) ?: return true
+        val caps = manager.getNetworkCapabilities(manager.activeNetwork) ?: return false
+        return caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+    }
 
     private var started = false
 

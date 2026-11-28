@@ -71,6 +71,7 @@ import com.composables.icons.lucide.Clock
 import com.composables.icons.lucide.Download
 import com.composables.icons.lucide.Lucide
 import com.nan.nantube.data.Account
+import com.nan.nantube.data.MusicDetector
 import com.nan.nantube.data.PlaylistOption
 import com.nan.nantube.data.PlaylistRepository
 import com.nan.nantube.data.VideoItem
@@ -172,6 +173,12 @@ fun VideoMoreButton(
 ) {
     val context = LocalContext.current
     var open by remember { mutableStateOf(false) }
+    var isMusic by remember(video.id) { mutableStateOf(MusicDetector.applyCached(video).isMusic) }
+    LaunchedEffect(open) {
+        if (open && !isMusic && MusicDetector.needsCheck(video)) {
+            isMusic = runCatching { MusicDetector.check(listOf(video.id))[video.id] == true }.getOrDefault(false)
+        }
+    }
 
     Box(modifier) {
         MoreButton(width = 32.dp) { open = true }
@@ -182,6 +189,12 @@ fun VideoMoreButton(
             containerColor = NanColors.Surface,
             tonalElevation = 0.dp
         ) {
+            if (isMusic) {
+                MenuRow(MusicBadgeIcon, "Mở dạng nhạc") {
+                    open = false
+                    openVideo(context, video, asMusic = true)
+                }
+            }
             MenuRow(CastIcon, "Phát trên thiết bị khác") {
                 open = false
                 TvScreen.show(video)

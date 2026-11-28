@@ -64,6 +64,7 @@ import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.util.Locale
@@ -89,10 +90,12 @@ internal enum class WatchSheetPage(val title: String) {
     Audio("Bản âm thanh"),
     Captions("Phụ đề"),
     More("Tuỳ chọn khác"),
-    Sleep("Hẹn giờ ngủ")
+    Sleep("Hẹn giờ ngủ"),
+    Seek("Bước tua khi nhấn đúp")
 }
 
-private fun parentOf(page: WatchSheetPage) = if (page == WatchSheetPage.Sleep) WatchSheetPage.More else WatchSheetPage.Main
+private fun parentOf(page: WatchSheetPage) =
+    if (page == WatchSheetPage.Sleep || page == WatchSheetPage.Seek) WatchSheetPage.More else WatchSheetPage.Main
 
 private fun lucide(name: String, vararg paths: String): ImageVector =
     ImageVector.Builder(name, 24.dp, 24.dp, 24f, 24f).apply {
@@ -137,7 +140,7 @@ private val CaptionsIcon: ImageVector by lazy {
     )
 }
 // Biểu tượng Material headphones của MeeTube; hàng cài đặt vẫn dùng UI NaNTube.
-private val OnTheGoIcon: ImageVector by lazy {
+internal val OnTheGoIcon: ImageVector by lazy {
     ImageVector.Builder("WatchSheetOnTheGo", 24.dp, 24.dp, 24f, 24f).apply {
         addPath(
             pathData = PathParser().parsePathString(
@@ -174,6 +177,7 @@ private class SheetEntry(
     val chevron: Boolean = false,
     /** Không null = dòng có công tắc. */
     val toggle: Boolean? = null,
+    val iconSize: Dp = 26.dp,
     val onClick: () -> Unit
 )
 
@@ -206,18 +210,20 @@ internal fun WatchSettingsSheet(
             ?: audios.firstOrNull()
 
         val entries: List<SheetEntry>? = when (page) {
-            WatchSheetPage.Main -> listOf(
+            WatchSheetPage.Main -> listOfNotNull(
                 SheetEntry(QualityIcon, "Chất lượng", pb.quality?.let { "${it}p" } ?: auto, chevron = true) { onPage(WatchSheetPage.Quality) },
                 SheetEntry(SpeedIcon, "Tốc độ phát", speedShort(pb.speed), chevron = true) { onPage(WatchSheetPage.Speed) },
                 SheetEntry(AudioLinesIcon, "Bản âm thanh", pickedAudio?.label ?: "Mặc định", chevron = true) { onPage(WatchSheetPage.Audio) },
                 SheetEntry(CaptionsIcon, "Phụ đề", activeTrack?.label) { onPage(WatchSheetPage.Captions) },
-                SheetEntry(OnTheGoIcon, "trên đường đi", toggle = pb.onTheGo) { pb.updateOnTheGo(!pb.onTheGo) },
+                SheetEntry(LockIcon, "Khóa màn hình", iconSize = 21.dp) { pb.locked = true; onClose() }.takeIf { WatchViewer.fullscreen },
+                SheetEntry(OnTheGoIcon, "trên đường đi") { pb.updateOnTheGo(!pb.onTheGo); onClose() },
                 SheetEntry(Lucide.Settings, "Tuỳ chọn khác", chevron = true) { onPage(WatchSheetPage.More) }
             )
             WatchSheetPage.More -> listOf(
                 SheetEntry(LoopIcon, "Cho video lặp lại", toggle = pb.loop) { pb.setLooping(!pb.loop) },
                 SheetEntry(AmbientIcon, "Chế độ môi trường xung quanh", toggle = WatchPrefs.ambient) { WatchPrefs.updateAmbient(!WatchPrefs.ambient) },
                 SheetEntry(AudioLinesIcon, "Âm lượng ổn định", toggle = WatchPrefs.stableVolume) { WatchPrefs.updateStableVolume(!WatchPrefs.stableVolume) },
+                SheetEntry(IconFastForward, "Bước tua khi nhấn đúp", "${WatchPrefs.seekSeconds} giây", chevron = true) { onPage(WatchSheetPage.Seek) },
                 SheetEntry(SleepIcon, "Hẹn giờ ngủ", SleepTimer.label(SleepTimer.picked), chevron = true) { onPage(WatchSheetPage.Sleep) }
             )
             else -> null
@@ -244,6 +250,9 @@ internal fun WatchSettingsSheet(
             }
             WatchSheetPage.Sleep -> SleepTimer.PRESETS.map { m ->
                 SheetChoice(SleepTimer.label(m), SleepTimer.picked == m) { SleepTimer.set(m); onClose() }
+            }
+            WatchSheetPage.Seek -> WatchPrefs.SEEK_STEPS.map { s ->
+                SheetChoice("$s giây", WatchPrefs.seekSeconds == s) { WatchPrefs.updateSeekSeconds(s); onClose() }
             }
             else -> emptyList()
         }
@@ -402,7 +411,9 @@ private fun SheetRow(entry: SheetEntry) {
         Modifier.fillMaxWidth().clickable(onClick = entry.onClick).padding(horizontal = 16.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(entry.icon, null, Modifier.size(26.dp), tint = Color.White)
+        Box(Modifier.size(26.dp), contentAlignment = Alignment.Center) {
+            Icon(entry.icon, null, Modifier.size(entry.iconSize), tint = Color.White)
+        }
         Spacer(Modifier.width(10.dp))
         Text(entry.label, fontSize = 15.5.sp, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
         if (entry.value != null) {

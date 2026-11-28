@@ -58,6 +58,8 @@ import com.nan.nantube.BuildConfig
 import com.nan.nantube.R
 
 private const val EXPERIMENTS = "Thử nghiệm các tính năng mới"
+private const val QUALITY = "Chất lượng"
+private val OPENABLE_PAGES = setOf(EXPERIMENTS, QUALITY)
 
 private data class SettingItem(val icon: ImageVector, val title: String)
 
@@ -101,6 +103,10 @@ fun SettingsScreen(onBack: () -> Unit) {
         ExperimentsScreen(onBack = { page = null })
         return
     }
+    if (page == QUALITY) {
+        QualitySettingsScreen(onBack = { page = null })
+        return
+    }
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 8.dp, vertical = 8.dp),
@@ -117,12 +123,12 @@ fun SettingsScreen(onBack: () -> Unit) {
         LazyColumn(Modifier.fillMaxSize()) {
             item { SectionHeader("Tài khoản") }
             items(accountItems) { item ->
-                SettingRow(item.title, onClick = { if (item.title == EXPERIMENTS) page = EXPERIMENTS }) { Icon(item.icon, null, Modifier.size(24.dp)) }
+                SettingRow(item.title, onClick = { if (item.title in OPENABLE_PAGES) page = item.title }) { Icon(item.icon, null, Modifier.size(24.dp)) }
             }
             item { HorizontalDivider(color = NanColors.Surface) }
             item { SectionHeader("Lựa chọn ưu tiên về video và âm thanh") }
             items(videoItems) { item ->
-                SettingRow(item.title) { Icon(item.icon, null, Modifier.size(24.dp)) }
+                SettingRow(item.title, onClick = { if (item.title in OPENABLE_PAGES) page = item.title }) { Icon(item.icon, null, Modifier.size(24.dp)) }
             }
             item { HorizontalDivider(color = NanColors.Surface) }
             item { SectionHeader("Giới thiệu") }

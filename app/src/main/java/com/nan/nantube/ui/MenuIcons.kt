@@ -96,6 +96,14 @@ val LockIcon: ImageVector by lazy {
     )
 }
 
+val LockOpenIcon: ImageVector by lazy {
+    lucide(
+        "LockOpenIcon",
+        "M5 11h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2z",
+        "M7 11V7a5 5 0 0 1 9.9-1"
+    )
+}
+
 /** Ba chấm đặc và đậm như nút "..." của bình luận trên YouTube; [vertical] cho nút "⋮". */
 private fun moreDots(name: String, vertical: Boolean): ImageVector =
     ImageVector.Builder(name, 24.dp, 24.dp, 24f, 24f).apply {

@@ -32,6 +32,17 @@ data class NotificationItem(
     val hideToken: String?
 )
 
+/** Video của thông báo để mở ngay trong app; null nếu thông báo không trỏ tới video. */
+fun NotificationItem.toVideo(): VideoItem? {
+    val id = videoId?.takeIf { it.length == 11 } ?: return null
+    val live = kind == NotificationKind.LIVE
+    val title = if (kind == NotificationKind.UPLOAD || live) body.substringAfter(": ", body) else body
+    return VideoItem(
+        id = id, title = title, channel = channel, duration = null, views = null,
+        isShort = isShort, avatar = avatar, channelId = channelId, live = live
+    )
+}
+
 /** [fromInbox] = true khi đọc được hộp thư thông báo thật của YouTube; false khi phải dựng từ video mới của kênh đã đăng ký. */
 class NotificationResult(val items: List<NotificationItem>, val fromInbox: Boolean)
 

@@ -25,6 +25,7 @@ import coil.request.ImageRequest
 import com.nan.nantube.data.AccountStore
 import com.nan.nantube.data.ChannelNotify
 import com.nan.nantube.data.NotificationRepository
+import com.nan.nantube.data.toVideo
 import java.util.concurrent.TimeUnit
 
 /**
@@ -64,7 +65,7 @@ class NewUploadsWorker(context: Context, params: WorkerParameters) : CoroutineWo
 
     /**
      * Một thông báo lẻ cho mỗi video, dáng như thông báo của YouTube: tên kênh ở dòng đậm, tên video bên dưới, avatar kênh, ảnh bìa lớn
-     * và 3 nút Phát (mở video) / Tắt (tắt thông báo kênh này) / Xem sau (lưu vào Xem sau). Bấm vào thông báo vẫn mở video.
+     * và 3 nút Phát (mở video) / Tắt (tắt thông báo kênh này) / Xem sau (lưu vào Xem sau). Bấm vào thông báo hay nút Phát đều mở video ngay trong app.
      * Mỗi thông báo có nhóm riêng nên hệ thống không gộp chúng thành một cụm.
      */
     private suspend fun post(ctx: Context, account: com.nan.nantube.data.Account, n: com.nan.nantube.data.NotificationItem) {
@@ -77,8 +78,8 @@ class NewUploadsWorker(context: Context, params: WorkerParameters) : CoroutineWo
                 .createNotificationChannel(NotificationChannel(CHANNEL_ID, "Video mới", NotificationManager.IMPORTANCE_DEFAULT))
         }
         val notifId = videoId.hashCode()
-        val open = Intent(Intent.ACTION_VIEW, Uri.parse(n.url ?: "https://www.youtube.com/watch?v=$videoId"))
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val open = n.toVideo()?.let { MainActivity.openVideoIntent(ctx, it) }
+            ?: Intent(Intent.ACTION_VIEW, Uri.parse(n.url ?: "https://www.youtube.com/watch?v=$videoId")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         val tap = PendingIntent.getActivity(ctx, notifId, open, flags)
         val play = PendingIntent.getActivity(ctx, notifId * 3 + 1, Intent(open), flags)

@@ -40,6 +40,7 @@ import com.nan.nantube.data.MusicDetector
 import com.nan.nantube.data.ShortDetector
 import com.nan.nantube.data.ShortsSeen
 import com.nan.nantube.data.TvStore
+import com.nan.nantube.data.VideoItem
 import com.nan.nantube.ui.AppRoot
 import com.nan.nantube.ui.NaNTubeTheme
 import com.nan.nantube.ui.BackgroundPlay
@@ -48,6 +49,7 @@ import com.nan.nantube.ui.ShortsBackground
 import com.nan.nantube.ui.ShortsMini
 import com.nan.nantube.ui.SplashIntro
 import com.nan.nantube.ui.StorageAccessPrompt
+import com.nan.nantube.ui.openVideo
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -116,6 +118,28 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        if (savedInstanceState == null) openVideoFrom(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        openVideoFrom(intent)
+    }
+
+    private fun openVideoFrom(intent: Intent) {
+        val id = intent.getStringExtra(EXTRA_VIDEO_ID) ?: return
+        intent.removeExtra(EXTRA_VIDEO_ID)
+        val video = VideoItem(
+            id = id,
+            title = intent.getStringExtra(EXTRA_VIDEO_TITLE).orEmpty(),
+            channel = intent.getStringExtra(EXTRA_VIDEO_CHANNEL),
+            duration = null,
+            views = null,
+            isShort = intent.getBooleanExtra(EXTRA_VIDEO_SHORT, false),
+            live = intent.getBooleanExtra(EXTRA_VIDEO_LIVE, false)
+        )
+        openVideo(this, video)
     }
 
     @RequiresApi(Build.VERSION_CODES.O)
@@ -266,9 +290,23 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private companion object {
-        const val ACTION_PIP_PREV = "com.nan.nantube.action.PIP_PREV"
-        const val ACTION_PIP_NEXT = "com.nan.nantube.action.PIP_NEXT"
-        const val ACTION_PIP_TOGGLE = "com.nan.nantube.action.PIP_TOGGLE"
+    companion object {
+        private const val ACTION_PIP_PREV = "com.nan.nantube.action.PIP_PREV"
+        private const val ACTION_PIP_NEXT = "com.nan.nantube.action.PIP_NEXT"
+        private const val ACTION_PIP_TOGGLE = "com.nan.nantube.action.PIP_TOGGLE"
+        private const val EXTRA_VIDEO_ID = "open_video_id"
+        private const val EXTRA_VIDEO_TITLE = "open_video_title"
+        private const val EXTRA_VIDEO_CHANNEL = "open_video_channel"
+        private const val EXTRA_VIDEO_SHORT = "open_video_short"
+        private const val EXTRA_VIDEO_LIVE = "open_video_live"
+
+        fun openVideoIntent(context: Context, video: VideoItem): Intent =
+            Intent(context, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                .putExtra(EXTRA_VIDEO_ID, video.id)
+                .putExtra(EXTRA_VIDEO_TITLE, video.title)
+                .putExtra(EXTRA_VIDEO_CHANNEL, video.channel)
+                .putExtra(EXTRA_VIDEO_SHORT, video.isShort)
+                .putExtra(EXTRA_VIDEO_LIVE, video.live)
     }
 }

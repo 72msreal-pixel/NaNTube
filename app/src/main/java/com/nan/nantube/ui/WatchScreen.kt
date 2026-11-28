@@ -129,7 +129,8 @@ import com.composables.icons.lucide.ChevronDown
 import com.composables.icons.lucide.Lucide
 import com.composables.icons.lucide.Settings
 import com.composables.icons.lucide.X
-import androidx.compose.foundation.layout.displayCutoutPadding
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.core.view.WindowCompat
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.IntOffset
@@ -152,7 +153,10 @@ import com.nan.nantube.data.ShortsMedia
 import com.nan.nantube.data.ShortsPlayback
 import com.nan.nantube.data.VideoItem
 import com.nan.nantube.data.VideoRepository
+import com.nan.nantube.data.QualityPrefs
+import com.nan.nantube.data.VideoQualityMode
 import com.nan.nantube.data.WatchHistory
+import com.nan.nantube.data.WatchPositions
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -234,6 +238,7 @@ private val NoRipple: androidx.compose.foundation.Indication? = null
 
 /** Số lần tự đổi client lấy link mới khi link bị từ chối / hết hạn trước khi báo "không phát được". */
 private const val MAX_RECOVERY = 4
+private const val HIGHEST_SIDE = 100_000
 private val AUDIO_REP = Regex("aud(\\d+)_")
 
 /**
@@ -263,6 +268,7 @@ internal class WatchPlayback(
     private var backgroundAudioOnly = false
 
     var wantPlay by mutableStateOf(true)
+    var locked by mutableStateOf(false)
     var buffering by mutableStateOf(true)
     var ended by mutableStateOf(false)
     var failed by mutableStateOf(false)
@@ -303,6 +309,7 @@ internal class WatchPlayback(
     private val refused = mutableSetOf<String>()
     private var source: String? = null
     private var tries = 0
+    private var defaultQuality = VideoQualityMode.AUTO
     private var job: Job? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -316,6 +323,7 @@ internal class WatchPlayback(
                     return
                 }
                 wantPlay = playWhenReady
+                if (!playWhenReady) rememberPosition()
                 // Thẻ media (phát nền) phải theo đúng trạng thái, kể cả khi bị dừng từ ngoài (app khác giành âm thanh, hẹn giờ ngủ).
                 ShortsBackground.onSessionChanged()
             }
@@ -323,6 +331,7 @@ internal class WatchPlayback(
             override fun onPlaybackStateChanged(state: Int) {
                 buffering = state == Player.STATE_BUFFERING
                 ended = state == Player.STATE_ENDED
+                if (ended) rememberPosition()
                 ShortsBackground.onSessionChanged()
                 if (state == Player.STATE_READY) {
                     tries = 0
@@ -386,22 +395,24 @@ internal class WatchPlayback(
             .build()
     }
 
-    /** Lấy link → dựng DASH → nạp vào ExoPlayer, bắt đầu từ [resumeMs]. */
-    fun start(resumeMs: Long = 0L) {
+    /** Lấy link → dựng DASH → nạp vào ExoPlayer, bắt đầu từ [resumeMs] (null = chỗ đã xem dở, hoặc từ đầu). */
+    fun start(resumeMs: Long? = null) {
         if (released) return
         started = true
         job?.cancel()
         failed = false
         job = scope.launch {
             try {
-                val plan = ShortsPlayback.plan(context, account, video, refused).await()
+                val picked = QualityPrefs.current(context, account)
+                defaultQuality = picked.video
+                val plan = ShortsPlayback.plan(context, account, video, refused, picked).await()
                 source = plan.source
                 if (plan.durationMs > 0) durationMs = plan.durationMs
                 tracks = ShortsPlayback.meta(video.id)?.captionTracks.orEmpty()
                 tracksReady = true
                 val media = withContext(Dispatchers.IO) { ShortsMedia.buildSource(context, plan) }
                 if (released) return@launch
-                player.setMediaSource(media, resumeMs)
+                player.setMediaSource(media, resumeMs ?: WatchPositions.resumeMs(context, video, plan.durationMs))
                 player.prepare()
             } catch (e: CancellationException) {
                 throw e
@@ -421,14 +432,14 @@ internal class WatchPlayback(
         val at = player.currentPosition.coerceAtLeast(positionMs)
         source?.let { refused.add(it) }
         ShortsPlayback.forget(video.id)
-        start(at)
+        start(at.takeIf { it > 0L })
     }
 
     fun retry() {
         tries = 0
         refused.clear()
         ShortsPlayback.forget(video.id)
-        start(positionMs)
+        start(positionMs.takeIf { it > 0L })
     }
 
     fun toggle() {
@@ -464,7 +475,11 @@ internal class WatchPlayback(
     private fun applyQuality() {
         if (released) return
         val params = player.trackSelectionParameters
-        val want = quality
+        val want = quality ?: when (defaultQuality) {
+            VideoQualityMode.HIGH -> HIGHEST_SIDE
+            VideoQualityMode.SAVER -> 0
+            VideoQualityMode.AUTO -> null
+        }
         if (want == null) {
             if (params.overrides.keys.any { it.type == C.TRACK_TYPE_VIDEO }) {
                 player.trackSelectionParameters = params.buildUpon().clearOverridesOfType(C.TRACK_TYPE_VIDEO).build()
@@ -535,8 +550,16 @@ internal class WatchPlayback(
         player.trackSelectionParameters = params.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, disableVideo).build()
     }
 
+    fun rememberPosition() {
+        if (released || !started || player.playbackState == Player.STATE_IDLE) return
+        val duration = player.duration
+        if (duration <= 0L) return
+        WatchPositions.save(context, video.id, player.currentPosition, duration)
+    }
+
     fun release() {
         if (released) return
+        rememberPosition()
         released = true
         job?.cancel()
         scope.cancel()
@@ -550,6 +573,17 @@ fun WatchScreen(account: Account?, onSave: (VideoItem) -> Unit) {
     val video = WatchViewer.video ?: return
     // Đổi video (bấm một video đề xuất) thì dựng lại hết: trình phát cũ được giải phóng, trang cuộn về đầu.
     key(video.id) { WatchContent(video, account, onSave) }
+}
+
+@Composable
+private fun Modifier.evenCutoutPadding(): Modifier {
+    val density = LocalDensity.current
+    val direction = LocalLayoutDirection.current
+    val cutout = WindowInsets.displayCutout
+    val side = with(density) { maxOf(cutout.getLeft(density, direction), cutout.getRight(density, direction)).toDp() }
+    val top = with(density) { cutout.getTop(density).toDp() }
+    val bottom = with(density) { cutout.getBottom(density).toDp() }
+    return padding(start = side, end = side, top = top, bottom = bottom)
 }
 
 private fun toast(context: Context, text: String) = Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
@@ -569,6 +603,12 @@ internal fun WatchPlaybackEffects(pb: WatchPlayback, account: Account?): String?
         while (true) {
             pb.poll()
             delay(250)
+        }
+    }
+    LaunchedEffect(pb) {
+        while (true) {
+            delay(5_000)
+            if (pb.player.isPlaying) pb.rememberPosition()
         }
     }
     // Cài đặt theo tài khoản (tự phát, môi trường xung quanh, âm lượng ổn định, phụ đề).
@@ -669,7 +709,7 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
     // Mở lại đúng video đang ở thẻ nổi thì nhận lại bộ phát đang chạy (không nạp lại); mở video khác thì thẻ nổi tắt.
     val pb = remember { WatchMini.take(video) ?: run { WatchMini.close(); WatchPlayback(context, video, account, initialOnTheGo = WatchViewer.onTheGo) } }
     DisposableEffect(pb) {
-        if (!pb.started) pb.start(0L)
+        if (!pb.started) pb.start()
         // Bấm Hình trong hình: bộ phát đã giao cho thẻ nổi, không giải phóng.
         onDispose { if (WatchMini.pb !== pb) pb.release() }
     }
@@ -804,6 +844,8 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
     // Toàn màn hình + bình luận: khung chat trượt vào từ mép phải, video thu hẹp lại bên trái (như YouTube ngang).
     var fsComments by remember { mutableStateOf(false) }
     LaunchedEffect(fullscreen) { if (!fullscreen) fsComments = false }
+    LaunchedEffect(fullscreen) { if (!fullscreen) pb.locked = false }
+    LaunchedEffect(pb.locked) { if (pb.locked) controlsShown = false }
     // Tỉ lệ mở của khung chat: kéo bằng ngón tay thì đi theo ngón tay, thả tay thì tự về mốc mở / đóng gần nhất.
     val fsAnim = remember { Animatable(0f) }
     val fsPanelFraction = fsAnim.value
@@ -1186,7 +1228,7 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
                 )
                 // Thanh tua nằm đè lên đáy video như YouTube, không chiếm thêm chiều cao bên dưới.
                 // Toàn màn hình: thanh tiến trình nằm trên hàng nút dưới và ẩn cùng lớp nút điều khiển.
-                if (!PipState.inPip && suggest == null && (!fullscreen || controlsShown)) WatchSeekBar(
+                if (!PipState.inPip && suggest == null && (!fullscreen || (controlsShown && !pb.locked))) WatchSeekBar(
                     positionMs = pb.positionMs,
                     durationMs = pb.durationMs,
                     bufferedMs = pb.bufferedMs,
@@ -1194,7 +1236,7 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
                     active = controlsShown,
                     modifier = Modifier.align(Alignment.BottomCenter)
                         .graphicsLayer { alpha = (1f - minF() * 5f).coerceIn(0f, 1f) }
-                        .then(if (fullscreen) Modifier.displayCutoutPadding().padding(start = 12.dp, end = 12.dp, bottom = 56.dp) else Modifier)
+                        .then(if (fullscreen) Modifier.evenCutoutPadding().padding(start = 12.dp, end = 12.dp, bottom = 56.dp) else Modifier)
                 )
               }
             }
@@ -1333,7 +1375,7 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
                     .align(Alignment.TopEnd)
                     .fillMaxHeight(0.7f)
                     .width(72.dp)
-                    .draggable(state = chatDragState, orientation = Orientation.Horizontal, onDragStopped = { chatSettle(it) })
+                    .draggable(state = chatDragState, orientation = Orientation.Horizontal, enabled = !pb.locked, onDragStopped = { chatSettle(it) })
                     .clickable(interactionSource = remember { MutableInteractionSource() }, indication = NoRipple) { controlsShown = true }
             )
         }
@@ -1512,6 +1554,7 @@ private fun WatchPlayerArea(
         }
     }
     DisposableEffect(Unit) { onDispose { holder[0]?.player = null } }
+    BackHandler(enabled = pb.locked) { onControls(true) }
 
     // Chế độ môi trường xung quanh (theo AmbientGlow của meetube): vài giây đọc một khung nhỏ 48x27 từ video, nền trang tô theo khung đó.
     LaunchedEffect(ambient, pb.firstFrame, pb.onTheGo) {
@@ -1532,12 +1575,12 @@ private fun WatchPlayerArea(
     val doubleTapSeek = remember { DoubleTapSeek(tapScope) }
     val onControlsNow by rememberUpdatedState(onControls)
     val controlsNow by rememberUpdatedState(controls)
-    val seekEnabledNow by rememberUpdatedState(!pb.failed && !PipState.inPip && suggest == null && !pb.ended)
+    val seekEnabledNow by rememberUpdatedState(!pb.failed && !PipState.inPip && suggest == null && !pb.ended && !pb.locked)
     Box(
         (if (fullscreen) Modifier.fillMaxSize() else Modifier.fillMaxWidth().aspectRatio(16f / 9f))
             .background(Color.Black)
             .pointerInput(pb) {
-                // Chạm đơn = hiện/ẩn nút; nhấn đúp nửa trái/phải = lùi/tiến 10s, nhấn tiếp thì cộng dồn.
+                // Chạm đơn = hiện/ẩn nút; nhấn đúp nửa trái/phải = lùi/tiến theo cài đặt, nhấn tiếp thì cộng dồn.
                 awaitEachGesture {
                     awaitFirstDown()
                     val up = waitForUpOrCancellation() ?: return@awaitEachGesture
@@ -1547,6 +1590,7 @@ private fun WatchPlayerArea(
                         enabled = seekEnabledNow,
                         positionMs = pb.positionMs,
                         durationMs = pb.durationMs,
+                        stepSeconds = WatchPrefs.seekSeconds,
                         seekTo = { pb.seekTo(it) },
                         hideControls = { onControlsNow(false) },
                         toggleControls = { onControlsNow(!controlsNow) }
@@ -1556,7 +1600,7 @@ private fun WatchPlayerArea(
             .draggable(
                 state = swipeUpState,
                 orientation = Orientation.Vertical,
-                enabled = fullscreen && !controls && fsInfo != null,
+                enabled = fullscreen && !controls && fsInfo != null && !pb.locked,
                 onDragStopped = { fsNow?.onSwipeUpEnd?.invoke(it) }
             )
     ) {
@@ -1574,12 +1618,18 @@ private fun WatchPlayerArea(
             modifier = Modifier.fillMaxSize()
         )
         if (!pb.firstFrame || pb.onTheGo) {
-            AsyncImage(
-                model = video.hqThumbnail,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize().then(if (pb.onTheGo) Modifier.background(Color.Black) else Modifier)
-            )
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Box(Modifier.aspectRatio(16f / 9f).background(Color.Black), contentAlignment = Alignment.Center) {
+                    AsyncImage(
+                        model = video.hqThumbnail,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        alpha = if (pb.onTheGo) 0.45f else 1f,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    if (pb.onTheGo && !controls) Icon(OnTheGoIcon, null, Modifier.size(44.dp), tint = Color.White)
+                }
+            }
         }
         when {
             pb.failed -> Box(
@@ -1603,8 +1653,16 @@ private fun WatchPlayerArea(
             )
         }
 
-        AnimatedVisibility(visible = controls && !pb.failed && !PipState.inPip && suggest == null, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.fillMaxSize()) {
-            Box(Modifier.fillMaxSize().background(Color(0x66000000)).then(if (fullscreen) Modifier.displayCutoutPadding() else Modifier)) {
+        AnimatedVisibility(visible = pb.locked && controls && !PipState.inPip, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.fillMaxSize()) {
+            Box(Modifier.fillMaxSize().then(if (fullscreen) Modifier.evenCutoutPadding() else Modifier)) {
+                Box(Modifier.align(Alignment.TopEnd).padding(end = 4.dp, top = if (fullscreen) 16.dp else 0.dp)) {
+                    CircleControl(LockOpenIcon, "Mở khóa", 40.dp) { pb.locked = false; touch++ }
+                }
+            }
+        }
+
+        AnimatedVisibility(visible = controls && !pb.locked && !pb.failed && !PipState.inPip && suggest == null, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.fillMaxSize()) {
+            Box(Modifier.fillMaxSize().background(Color(0x66000000)).then(if (fullscreen) Modifier.evenCutoutPadding() else Modifier)) {
                 // Hàng trên: thu nhỏ (đóng) | công tắc tự phát, truyền lên TV, phụ đề (CC), cài đặt.
                 // Toàn màn hình: mũi tên thoát toàn màn hình, kèm tiêu đề + tên kênh như YouTube.
                 Row(Modifier.align(Alignment.TopStart).fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = if (fullscreen) 16.dp else 0.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1768,7 +1826,7 @@ private fun FullscreenMorePanel(
                 .zIndex(1f)
                 .graphicsLayer { alpha = headerAlpha }
                 .draggable(state = dragState, orientation = Orientation.Vertical, onDragStopped = { releaseNow(it) })
-                .displayCutoutPadding()
+                .evenCutoutPadding()
                 .padding(start = 18.dp, end = 12.dp, top = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -1784,7 +1842,7 @@ private fun FullscreenMorePanel(
                     orientation = Orientation.Vertical,
                     onDragStopped = { releaseNow(it) }
                 )
-                .displayCutoutPadding()
+                .evenCutoutPadding()
         ) {
             // Khoảng trống giữa tiêu đề và chip: đẩy chip + hàng video xuống sát đáy (như YouTube), cũng kéo xuống được.
             Spacer(Modifier.weight(1f).fillMaxWidth())

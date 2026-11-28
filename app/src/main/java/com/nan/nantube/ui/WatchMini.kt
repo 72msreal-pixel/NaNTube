@@ -153,7 +153,7 @@ internal object WatchMini {
             if (history.size > 50) history.removeAt(0)
         }
         val np = WatchPlayback(context, v, account, initialOnTheGo = cur.onTheGo)
-        np.start(0L)
+        np.start()
         val chips = mutableStateOf<List<HistoryChip>>(emptyList())
         val related = makeRelatedFeed(v, chips)
         related.load(account)

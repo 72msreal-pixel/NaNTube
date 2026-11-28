@@ -130,7 +130,8 @@ class PlayPlan(
     val audios: List<MediaStream> = emptyList(),
     /** Thời lượng thật tính bằng mili giây (lấy lớn nhất của lengthSeconds và approxDurationMs): bản kê DASH dùng số này để không cắt đuôi video. */
     val durationMs: Long = durationSec * 1000L,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val quality: PlayQuality = PlayQuality()
 )
 
 /** Một dòng trong "Bản âm thanh": [index] là vị trí trong [PlayPlan.audios] (cũng là số thứ tự bộ AdaptationSet trong bản kê DASH). */
@@ -164,6 +165,10 @@ object ShortsPlayback {
     private const val PLAN_TTL_MS = 3L * 60 * 60 * 1000
     private const val MAX_SHORT_SIDE = 720
     private const val MAX_VIDEO_REPS = 4
+    private const val MAX_HIGH_REPS = 6
+    private const val MAX_SAVER_REPS = 2
+    private const val NORMAL_AUDIO_MAX_BITRATE = 140_000
+    private val CODEC_FAMILIES = listOf("avc1", "vp9", "av01")
 
     fun meta(videoId: String): ShortMeta? = metas[videoId]
 
@@ -221,18 +226,24 @@ object ShortsPlayback {
     }
 
     /** Kế hoạch phát của [video]; [exclude] là các client vừa bị từ chối (xếp cuối). */
-    fun plan(context: Context, account: Account?, video: VideoItem, exclude: Set<String> = emptySet()): Deferred<PlayPlan> {
+    fun plan(
+        context: Context,
+        account: Account?,
+        video: VideoItem,
+        exclude: Set<String> = emptySet(),
+        quality: PlayQuality = PlayQuality()
+    ): Deferred<PlayPlan> {
         val app = context.applicationContext
         synchronized(inflight) {
             val have = resolved[video.id]
-            if (have != null && System.currentTimeMillis() - have.createdAt < PLAN_TTL_MS && have.source !in exclude) {
+            if (have != null && System.currentTimeMillis() - have.createdAt < PLAN_TTL_MS && have.source !in exclude && have.quality == quality) {
                 return scope.async { have }
             }
             if (have != null) resolved.remove(video.id)
             inflight[video.id]?.let { return it }
             val job = scope.async {
                 try {
-                    resolve(app, account, video, exclude).also { resolved[video.id] = it }
+                    resolve(app, account, video, exclude, quality).also { resolved[video.id] = it }
                 } finally {
                     synchronized(inflight) { inflight.remove(video.id) }
                 }
@@ -269,11 +280,11 @@ object ShortsPlayback {
 
     // ---- Lấy link theo thứ tự của meetube (xem PlaybackSource) -------------------------------------
 
-    private suspend fun resolve(context: Context, account: Account?, video: VideoItem, exclude: Set<String>): PlayPlan {
+    private suspend fun resolve(context: Context, account: Account?, video: VideoItem, exclude: Set<String>, quality: PlayQuality): PlayPlan {
         val refusals = PlaybackRefusals()
         return PlaybackSource.walk(context, account, video.id, exclude, refusals) { answer ->
             val details = answer.json.optJSONObject("videoDetails")
-            val plan = buildPlan(video.id, answer.source.name, answer.streamingData, details)
+            val plan = buildPlan(video.id, answer.source.name, answer.streamingData, details, quality)
             if (plan == null) refusals.add(answer.source, "không có luồng phát trực tiếp") else rememberMeta(video.id, answer.json, details, answer.source.name)
             plan
         } ?: throw refusals.failure("phát")
@@ -321,23 +332,42 @@ object ShortsPlayback {
         }
     }
 
-    private fun buildPlan(videoId: String, source: String, data: JSONObject, details: JSONObject?): PlayPlan? {
-        val adaptive = streams(data.optJSONArray("adaptiveFormats"))
-        // Một họ codec cho cả bộ video (ExoPlayer chỉ đổi mức chất lượng trong cùng một AdaptationSet): H.264 trước vì máy nào cũng giải được.
-        val videoFamily = listOf("avc1", "vp9", "av01").firstNotNullOfOrNull { codec ->
-            adaptive.filter { it.isVideo && it.dashable && it.codecs.startsWith(codec) && it.shortSide <= MAX_SHORT_SIDE }
-                .takeIf { it.isNotEmpty() }
-        }.orEmpty()
-        val videos = videoFamily
-            .groupBy { it.shortSide }
+    private fun bestPerSize(streams: List<MediaStream>): List<MediaStream> =
+        streams.groupBy { it.shortSide }
             .map { (_, sameSize) -> sameSize.maxByOrNull { it.bitrate }!! }
             .sortedBy { it.shortSide }
-            .takeLast(MAX_VIDEO_REPS)
+
+    /** Một họ codec cho cả bộ video (ExoPlayer chỉ đổi mức chất lượng trong cùng một AdaptationSet). */
+    private fun pickVideos(adaptive: List<MediaStream>, mode: VideoQualityMode): List<MediaStream> {
+        val candidates = adaptive.filter { it.isVideo && it.dashable }
+        if (mode == VideoQualityMode.HIGH) {
+            val families = CODEC_FAMILIES.map { codec -> candidates.filter { it.codecs.startsWith(codec) && StreamSupport.canDecode(it) } }
+                .filter { it.isNotEmpty() }
+            val best = families.maxByOrNull { family -> family.maxOf { it.shortSide } }
+            if (best != null) return bestPerSize(best).takeLast(MAX_HIGH_REPS)
+        }
+        // H.264 trước vì máy nào cũng giải được.
+        val family = CODEC_FAMILIES.firstNotNullOfOrNull { codec ->
+            candidates.filter { it.codecs.startsWith(codec) && it.shortSide <= MAX_SHORT_SIDE }.takeIf { it.isNotEmpty() }
+        }.orEmpty()
+        val reps = bestPerSize(family)
+        return if (mode == VideoQualityMode.SAVER) reps.take(MAX_SAVER_REPS) else reps.takeLast(MAX_VIDEO_REPS)
+    }
+
+    /** Như MeeTube (AudioTrackChoices): mỗi ngôn ngữ một bản, ưu tiên bản không DRC; cao hơn = bitrate lớn nhất, bình thường = bản AAC vừa phải. */
+    private fun pickAudio(group: List<MediaStream>, mode: AudioQualityMode): MediaStream {
+        val pool = group.filter { !it.drc }.ifEmpty { group }
+        if (mode == AudioQualityMode.HIGH) return pool.maxByOrNull { it.bitrate }!!
+        return pool.filter { it.bitrate <= NORMAL_AUDIO_MAX_BITRATE }.maxByOrNull { it.bitrate } ?: pool.minByOrNull { it.bitrate }!!
+    }
+
+    private fun buildPlan(videoId: String, source: String, data: JSONObject, details: JSONObject?, quality: PlayQuality): PlayPlan? {
+        val adaptive = streams(data.optJSONArray("adaptiveFormats"))
+        val videos = pickVideos(adaptive, quality.video)
         val audioPool = adaptive.filter { !it.isVideo && it.dashable }
-        val audioPicked = audioPool.filter { it.mime == "audio/mp4" }.ifEmpty { audioPool }
-        // Như MeeTube (AudioTrackChoices): mỗi ngôn ngữ một bản, lấy luồng bitrate cao nhất và ưu tiên bản không DRC; bản gốc đứng đầu để làm mặc định.
+        val audioPicked = if (quality.audio == AudioQualityMode.HIGH) audioPool else audioPool.filter { it.mime == "audio/mp4" }.ifEmpty { audioPool }
         val audios = audioPicked.groupBy { it.variantKey }
-            .map { (_, group) -> group.filter { !it.drc }.ifEmpty { group }.maxByOrNull { it.bitrate }!! }
+            .map { (_, group) -> pickAudio(group, quality.audio) }
             .sortedWith(compareBy<MediaStream> { it.originalRank }.thenBy { audioLabel(it) })
         val audio = audios.firstOrNull()
 
@@ -357,7 +387,7 @@ object ShortsPlayback {
         val durationSec = ((durationMs + 999L) / 1000L).toInt()
         return PlayPlan(
             videoId, source, if (dash) videos else emptyList(), if (dash) audio else null, muxed, durationSec,
-            if (dash) audios else emptyList(), durationMs
+            if (dash) audios else emptyList(), durationMs, quality = quality
         )
     }
 

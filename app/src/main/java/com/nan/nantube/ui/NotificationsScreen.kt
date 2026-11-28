@@ -62,6 +62,7 @@ import com.nan.nantube.data.NotificationItem
 import com.nan.nantube.data.NotificationKind
 import com.nan.nantube.data.NotificationRepository
 import com.nan.nantube.data.PlaylistRepository
+import com.nan.nantube.data.toVideo
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
@@ -305,7 +306,7 @@ fun NotificationsScreen(account: Account?, onBack: () -> Unit, onSignIn: () -> U
                                 )
                                 is Entry.Item -> NotificationRow(
                                     n = e.n,
-                                    onOpen = { e.n.url?.let { openLink(context, it) } },
+                                    onOpen = { e.n.toVideo()?.let { openVideo(context, it) } ?: e.n.url?.let { openLink(context, it) } },
                                     onWatchLater = {
                                         e.n.videoId?.let { id ->
                                             scope.launch {

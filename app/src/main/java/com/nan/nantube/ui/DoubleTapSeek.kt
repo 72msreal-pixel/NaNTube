@@ -31,7 +31,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * Nhấn đúp nửa trái / phải video để lùi / tiến 10 giây; nhấn tiếp liên tục thì cộng dồn 10s, 20s, 30s…
+ * Nhấn đúp nửa trái / phải video để lùi / tiến theo số giây đã cài; nhấn tiếp liên tục thì cộng dồn
  * (giống YouTube). Một lần chạm đơn vẫn là hiện / ẩn nút điều khiển, nhưng chờ hết hạn nhấn đúp mới chạy.
  */
 class DoubleTapSeek(private val scope: CoroutineScope) {
@@ -39,8 +39,12 @@ class DoubleTapSeek(private val scope: CoroutineScope) {
     var dir by mutableIntStateOf(0)
         private set
 
-    /** Số lần 10 giây đã cộng dồn trong chuỗi hiện tại (giữ nguyên lúc đang mờ đi để chữ không nhảy về 0). */
+    /** Số lần đã cộng dồn trong chuỗi hiện tại (giữ nguyên lúc đang mờ đi để chữ không nhảy về 0). */
     var steps by mutableIntStateOf(0)
+        private set
+
+    /** Số giây của mỗi lần nhấn trong chuỗi hiện tại (theo cài đặt lúc bắt đầu chuỗi). */
+    var stepSeconds by mutableIntStateOf(10)
         private set
 
     private var base = 0L
@@ -53,6 +57,7 @@ class DoubleTapSeek(private val scope: CoroutineScope) {
         enabled: Boolean,
         positionMs: Long,
         durationMs: Long,
+        stepSeconds: Int,
         seekTo: (Long) -> Unit,
         hideControls: () -> Unit,
         toggleControls: () -> Unit
@@ -65,7 +70,7 @@ class DoubleTapSeek(private val scope: CoroutineScope) {
         pendingToggle?.cancel()
         pendingToggle = null
         if (dir != 0 || secondTap) {
-            step(side, positionMs, durationMs, seekTo, hideControls)
+            step(side, positionMs, durationMs, stepSeconds, seekTo, hideControls)
         } else {
             lastDir = side
             pendingToggle = scope.launch {
@@ -75,8 +80,9 @@ class DoubleTapSeek(private val scope: CoroutineScope) {
         }
     }
 
-    private fun step(side: Int, positionMs: Long, durationMs: Long, seekTo: (Long) -> Unit, hideControls: () -> Unit) {
+    private fun step(side: Int, positionMs: Long, durationMs: Long, seconds: Int, seekTo: (Long) -> Unit, hideControls: () -> Unit) {
         if (dir != side) {
+            stepSeconds = seconds
             // Chuỗi mới, hoặc đổi sang nửa bên kia: đếm lại từ vị trí đang phát.
             dir = side
             steps = 0
@@ -85,7 +91,7 @@ class DoubleTapSeek(private val scope: CoroutineScope) {
         }
         steps++
         val max = if (durationMs > 0) durationMs else Long.MAX_VALUE
-        seekTo((base + side * steps * STEP_MS).coerceIn(0L, max))
+        seekTo((base + side * steps * stepSeconds * 1000L).coerceIn(0L, max))
         hideJob?.cancel()
         hideJob = scope.launch {
             delay(COMBO_MS)
@@ -94,7 +100,6 @@ class DoubleTapSeek(private val scope: CoroutineScope) {
     }
 
     private companion object {
-        const val STEP_MS = 10_000L
         const val COMBO_MS = 800L
     }
 }
@@ -102,7 +107,7 @@ class DoubleTapSeek(private val scope: CoroutineScope) {
 /** Lớp phủ báo "⏪ -10s" ở nửa trái và "+10s ⏩" ở nửa phải. */
 @Composable
 fun DoubleTapSeekOverlay(state: DoubleTapSeek, modifier: Modifier = Modifier) {
-    val seconds = state.steps * 10
+    val seconds = state.steps * state.stepSeconds
     Row(modifier.fillMaxSize()) {
         SeekSide(visible = state.dir < 0, forward = false, seconds = seconds, modifier = Modifier.weight(1f))
         SeekSide(visible = state.dir > 0, forward = true, seconds = seconds, modifier = Modifier.weight(1f))

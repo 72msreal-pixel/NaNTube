@@ -25,12 +25,15 @@ import org.json.JSONObject
  */
 object WatchPrefs {
     private const val FEATURE = "watch_settings"
+    val SEEK_STEPS = listOf(10, 15, 20, 25, 30)
 
     var autoplay by mutableStateOf(true)
         private set
     var ambient by mutableStateOf(true)
         private set
     var stableVolume by mutableStateOf(true)
+        private set
+    var seekSeconds by mutableIntStateOf(SEEK_STEPS.first())
         private set
     var captionKey by mutableStateOf<String?>(null)
         private set
@@ -65,6 +68,7 @@ object WatchPrefs {
             autoplay = json?.optBoolean("autoplay", true) ?: true
             ambient = json?.optBoolean("ambient", true) ?: true
             stableVolume = json?.optBoolean("stableVolume", true) ?: true
+            seekSeconds = json?.optInt("seekSeconds", SEEK_STEPS.first())?.takeIf { it in SEEK_STEPS } ?: SEEK_STEPS.first()
             captionKey = json?.optString("captionKey")?.ifBlank { null }
             captionLast = json?.optString("captionLast")?.ifBlank { null } ?: captionKey
         }
@@ -85,6 +89,11 @@ object WatchPrefs {
         save()
     }
 
+    fun updateSeekSeconds(seconds: Int) {
+        seekSeconds = seconds
+        save()
+    }
+
     /** [key] null = tắt phụ đề; còn lại là bản được chọn (cũng thành bản "gần nhất"). */
     fun setCaption(key: String?) {
         captionKey = key
@@ -98,6 +107,7 @@ object WatchPrefs {
             .put("autoplay", autoplay)
             .put("ambient", ambient)
             .put("stableVolume", stableVolume)
+            .put("seekSeconds", seekSeconds)
             .put("captionKey", captionKey ?: "")
             .put("captionLast", captionLast ?: "")
         scope.launch(Dispatchers.IO) { NanStorage.writeJson(FEATURE, owner, json) }

@@ -78,31 +78,23 @@ fun openLink(context: android.content.Context, url: String) {
  * (như `queueShorts` / `queueHistoryShorts` của meetube) nên vuốt lên/xuống xem các Short khác của chính danh sách đó,
  * không chỉ một video rồi chuyển sang đề xuất.
  */
-fun openVideo(context: android.content.Context, video: VideoItem, queue: List<VideoItem> = emptyList()) {
-    // Thẻ TV của danh sách phát không đánh dấu Short dài (≤ 3 phút) cũng không đánh dấu nhạc. Chạm vào khi chưa kịp phân
-    // loại thì hỏi nhanh ngay lúc này (có hạn chờ) thay vì mở nhầm link ngoài. Hỏi hay hết hạn đều định tuyến đúng một lần ([routeVideo]).
-    val cached = ShortDetector.applyCached(video).let(MusicDetector::applyCached)
-    if (!cached.isShort && (ShortDetector.needsCheck(cached) || MusicDetector.needsCheck(cached))) {
+fun openVideo(context: android.content.Context, video: VideoItem, queue: List<VideoItem> = emptyList(), asMusic: Boolean = false) {
+    // Thẻ TV của danh sách phát không đánh dấu Short dài (≤ 3 phút). Chạm vào khi chưa kịp phân loại thì hỏi nhanh ngay lúc này
+    // (có hạn chờ) thay vì mở nhầm link ngoài. Hỏi hay hết hạn đều định tuyến đúng một lần ([routeVideo]).
+    val cached = ShortDetector.applyCached(video)
+    if (!cached.isShort && ShortDetector.needsCheck(cached)) {
         MainScope().launch {
-            var v = cached
-            if (ShortDetector.needsCheck(v)) {
-                val found = withTimeoutOrNull(3_000L) { ShortDetector.check(listOf(v.id)) }
-                if (found?.get(v.id) == true) v = v.copy(isShort = true)
-            }
-            if (!v.isShort && MusicDetector.needsCheck(v)) {
-                val found = withTimeoutOrNull(3_000L) { MusicDetector.check(listOf(v.id)) }
-                if (found?.get(v.id) == true) v = v.copy(music = true)
-            }
-            routeVideo(context, v, queue)
+            val found = withTimeoutOrNull(3_000L) { ShortDetector.check(listOf(cached.id)) }
+            routeVideo(context, if (found?.get(cached.id) == true) cached.copy(isShort = true) else cached, queue, asMusic)
         }
         return
     }
-    routeVideo(context, cached, queue)
+    routeVideo(context, cached, queue, asMusic)
 }
 
-private fun routeVideo(context: android.content.Context, video: VideoItem, queue: List<VideoItem>) {
-    // Nhạc: phát ngay trong trình phát nhạc của app, cả các bài nhạc của danh sách đang mở làm hàng đợi.
-    if (!video.isShort && video.isMusic) {
+private fun routeVideo(context: android.content.Context, video: VideoItem, queue: List<VideoItem>, asMusic: Boolean) {
+    // Nhạc chỉ phát trong trình phát nhạc khi người dùng chọn "Mở dạng nhạc"; còn lại mở như video thường.
+    if (!video.isShort && asMusic) {
         val songs = queue.map(ShortDetector::applyCached).map(MusicDetector::applyCached)
             .filter { !it.isShort && it.isMusic && it.id.length == 11 }
             .toMutableList()
