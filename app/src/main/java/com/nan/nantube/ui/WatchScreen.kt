@@ -1546,10 +1546,17 @@ private fun WatchPlayerArea(
         delay(1_500)
         hint = null
     }
-    // Đang phát thì lớp nút tự ẩn sau 3,5 giây không chạm.
-    LaunchedEffect(controls, pb.wantPlay, touch) {
+    // Trình phát hỗ trợ tiếp cận (Cài đặt → Hỗ trợ tiếp cận): tua bằng nút, chạm video không ẩn nút, chỉ nút X mới ẩn.
+    // Quá hạn "Tự động tắt" thì tắt trình phát hỗ trợ tiếp cận ngay khi trình phát dựng lên.
+    LaunchedEffect(Unit) { WatchPrefs.checkA11yExpiry() }
+    val a11y = WatchPrefs.a11yPlayer
+    val a11yHideMs = WatchPrefs.hideControlsSeconds * 1_000L
+    // Đang phát thì lớp nút tự ẩn sau 3,5 giây không chạm. Trình phát hỗ trợ tiếp cận: theo mức "Ẩn các nút điều khiển trình phát"
+    // (Không bao giờ = không tự ẩn).
+    LaunchedEffect(controls, pb.wantPlay, touch, a11y, a11yHideMs) {
         if (controls && pb.wantPlay && !pb.ended) {
-            delay(3_500)
+            if (a11y && a11yHideMs <= 0L) return@LaunchedEffect
+            delay(if (a11y) a11yHideMs else 3_500L)
             onControls(false)
         }
     }
@@ -1575,6 +1582,7 @@ private fun WatchPlayerArea(
     val doubleTapSeek = remember { DoubleTapSeek(tapScope) }
     val onControlsNow by rememberUpdatedState(onControls)
     val controlsNow by rememberUpdatedState(controls)
+    val a11yNow by rememberUpdatedState(a11y)
     val seekEnabledNow by rememberUpdatedState(!pb.failed && !PipState.inPip && suggest == null && !pb.ended && !pb.locked)
     Box(
         (if (fullscreen) Modifier.fillMaxSize() else Modifier.fillMaxWidth().aspectRatio(16f / 9f))
@@ -1585,6 +1593,12 @@ private fun WatchPlayerArea(
                     awaitFirstDown()
                     val up = waitForUpOrCancellation() ?: return@awaitEachGesture
                     up.consume()
+                    // Hỗ trợ tiếp cận: không nhấn đúp để tua, chạm khi nút đang hiện thì không làm gì (chỉ nút X mới ẩn);
+                    // nút đang ẩn thì chạm để hiện lại.
+                    if (a11yNow) {
+                        if (!controlsNow) onControlsNow(true)
+                        return@awaitEachGesture
+                    }
                     doubleTapSeek.tap(
                         side = if (up.position.x < size.width / 2f) -1 else 1,
                         enabled = seekEnabledNow,
@@ -1687,6 +1701,8 @@ private fun WatchPlayerArea(
                     ControlIcon(WatchCast, "Truyền", 24.dp) { onCast(); touch++ }
                     ControlIcon(if (captionsOn) WatchCcOn else WatchCc, "Phụ đề", 28.dp) { onCc(); touch++ }
                     ControlIcon(Lucide.Settings, "Cài đặt", 24.dp) { onSettings(); touch++ }
+                    // Hỗ trợ tiếp cận: nút X là cách duy nhất để ẩn các nút điều khiển.
+                    if (a11y) ControlIcon(Lucide.X, "Ẩn các nút điều khiển", 24.dp) { onControls(false) }
                 }
                 hint?.let {
                     Text(
@@ -1700,11 +1716,16 @@ private fun WatchPlayerArea(
                 // Giữa: trước (video vừa xem, chỉ bấm được sau khi đã đổi video) | phát / tạm dừng | sau (sang video đề xuất đầu tiên).
                 Row(
                     Modifier.align(Alignment.Center),
-                    horizontalArrangement = Arrangement.spacedBy(28.dp),
+                    horizontalArrangement = Arrangement.spacedBy(if (a11y && !fullscreen) 14.dp else 28.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Box(Modifier.alpha(if (hasPrev) 1f else 0.4f)) {
                         CircleControl(WatchSkipPrev, "Trước", 44.dp) { if (hasPrev) onPrev(); touch++ }
+                    }
+                    // Hỗ trợ tiếp cận: nút lùi N giây (N theo "Nhấn đúp để tua" trong Cài đặt → Phát).
+                    if (a11y) SeekControl(WatchReplay, "Lùi ${WatchPrefs.seekSeconds} giây", WatchPrefs.seekSeconds) {
+                        pb.seekTo((pb.positionMs - WatchPrefs.seekSeconds * 1_000L).coerceAtLeast(0L))
+                        touch++
                     }
                     CircleControl(
                         when {
@@ -1714,6 +1735,11 @@ private fun WatchPlayerArea(
                         },
                         "Phát / Tạm dừng", 58.dp
                     ) { pb.toggle(); touch++ }
+                    if (a11y) SeekControl(WatchForward, "Tiến ${WatchPrefs.seekSeconds} giây", WatchPrefs.seekSeconds) {
+                        val end = if (pb.durationMs > 0L) pb.durationMs else Long.MAX_VALUE
+                        pb.seekTo((pb.positionMs + WatchPrefs.seekSeconds * 1_000L).coerceAtMost(end))
+                        touch++
+                    }
                     Box(Modifier.alpha(if (hasNext) 1f else 0.4f)) {
                         CircleControl(WatchSkipNext, "Sau", 44.dp) { if (hasNext) onNext(); touch++ }
                     }
@@ -2082,6 +2108,24 @@ private fun CircleControl(icon: ImageVector, description: String, size: Dp, onCl
         contentAlignment = Alignment.Center
     ) {
         Icon(icon, description, Modifier.size(size * 0.6f), tint = Color.White)
+    }
+}
+
+/** Nút tua của trình phát hỗ trợ tiếp cận: vòng tròn mờ như [CircleControl], mũi tên quay tròn và số giây nằm giữa mũi tên. */
+@Composable
+private fun SeekControl(icon: ImageVector, description: String, seconds: Int, onClick: () -> Unit) {
+    Box(
+        Modifier.size(44.dp).clip(CircleShape).background(Color(0x55000000)).clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(icon, description, Modifier.size(30.dp), tint = Color.White)
+        Text(
+            "$seconds",
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color.White,
+            modifier = Modifier.offset(y = 1.5.dp)
+        )
     }
 }
 

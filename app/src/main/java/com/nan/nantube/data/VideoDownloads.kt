@@ -151,6 +151,72 @@ object VideoDownloads {
         revision.update { it + 1 }
     }
 
+    /** Tổng dung lượng (byte) các tệp video / âm thanh app đã tải, cùng điều kiện lọc với [page]. */
+    suspend fun usedBytes(context: Context): Long = withContext(Dispatchers.IO) {
+        if (Build.VERSION.SDK_INT >= 29) {
+            val columns = arrayOf(MediaStore.Downloads.DISPLAY_NAME, MediaStore.Downloads.SIZE)
+            val where = "${MediaStore.Downloads.OWNER_PACKAGE_NAME} = ? AND " +
+                "${MediaStore.Downloads.MIME_TYPE} IN (?, ?, ?) AND ${MediaStore.Downloads.IS_PENDING} = 0"
+            val args = arrayOf(context.packageName, "video/mp4", "audio/mp4", "audio/mpeg")
+            context.contentResolver.query(MediaStore.Downloads.EXTERNAL_CONTENT_URI, columns, where, args, null)?.use { c ->
+                var sum = 0L
+                while (c.moveToNext()) {
+                    if (savedName.matches(c.getString(0).orEmpty())) sum += c.getLong(1)
+                }
+                sum
+            } ?: 0L
+        } else {
+            context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)?.listFiles()
+                ?.filter { it.isFile && savedName.matches(it.name) }
+                ?.sumOf { it.length() } ?: 0L
+        }
+    }
+
+    /**
+     * Xóa mọi video / âm thanh app đã tải (cả bản khôi phục trong thư mục Tải xuống chung), xóa sổ ghi nhận của [account]
+     * và thông tin đi kèm, rồi báo cho danh sách "Nội dung đã tải" tự tải lại. Trả về số tệp đã xóa khỏi bộ nhớ.
+     */
+    suspend fun deleteAll(context: Context, account: Account?): Int = withContext(Dispatchers.IO) {
+        NanStorage.init(context)
+        var count = 0
+        if (Build.VERSION.SDK_INT >= 29) {
+            val resolver = context.contentResolver
+            val where = "${MediaStore.Downloads.OWNER_PACKAGE_NAME} = ? AND ${MediaStore.Downloads.MIME_TYPE} IN (?, ?, ?)"
+            val args = arrayOf(context.packageName, "video/mp4", "audio/mp4", "audio/mpeg")
+            val uris = resolver.query(
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                arrayOf(MediaStore.Downloads._ID, MediaStore.Downloads.DISPLAY_NAME),
+                where, args, null
+            )?.use { c ->
+                buildList {
+                    while (c.moveToNext()) {
+                        if (savedName.matches(c.getString(1).orEmpty())) {
+                            add(android.content.ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, c.getLong(0)))
+                        }
+                    }
+                }
+            }.orEmpty()
+            uris.forEach { count += runCatching { resolver.delete(it, null, null) }.getOrDefault(0) }
+        } else {
+            context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)?.listFiles()
+                ?.filter { it.isFile && savedName.matches(it.name) }
+                ?.forEach { if (it.delete()) count++ }
+        }
+        // Tệp khôi phục trong thư mục Tải xuống chung (sau khi cài lại app, Android không còn coi là của app): xóa nếu có quyền.
+        val records = readRecords(account)
+        if (NanStorage.hasAccess()) {
+            val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            records.keys().forEach { id ->
+                val name = records.optJSONObject(id)?.optString("file")?.takeIf { it.isNotBlank() } ?: return@forEach
+                if (runCatching { File(downloads, name).delete() }.getOrDefault(false)) count++
+            }
+        }
+        NanStorage.writeJson(RECORDS, account, JSONObject())
+        context.getSharedPreferences(METADATA_PREFS, Context.MODE_PRIVATE).edit().clear().apply()
+        revision.update { it + 1 }
+        count
+    }
+
     /** Địa chỉ file âm thanh (M4A/MP3) đã tải của video [id] trong thư mục Tải xuống, để trình phát nhạc mở. Null nếu không còn. */
     suspend fun audioUri(context: Context, id: String): android.net.Uri? = withContext(Dispatchers.IO) {
         if (Build.VERSION.SDK_INT >= 29) {

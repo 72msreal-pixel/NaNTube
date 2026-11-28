@@ -118,6 +118,14 @@ val WatchReplay: ImageVector by lazy {
     )
 }
 
+/** Mũi tên quay tròn theo chiều kim đồng hồ (bản lật ngang của [WatchReplay]): nền cho nút tiến N giây của trình phát hỗ trợ tiếp cận. */
+val WatchForward: ImageVector by lazy {
+    fill(
+        "WatchForward",
+        "M12,5V1L17,6l-5,5V7c-3.31,0 -6,2.69 -6,6s2.69,6 6,6 6,-2.69 6,-6h2c0,4.42 -3.58,8 -8,8s-8,-3.58 -8,-8 3.58,-8 8,-8z"
+    )
+}
+
 /** Phụ đề đang bật: nút CC tô đặc (ic_player_cc của meetube là bản đặc, ic_player_cc_off là bản viền như [WatchCc]). Hai chữ C khoét rỗng. */
 val WatchCcOn: ImageVector by lazy {
     ImageVector.Builder("WatchCcOn", 24.dp, 24.dp, 24f, 24f).apply {
