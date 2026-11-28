@@ -77,6 +77,7 @@ import com.nan.nantube.DownloadService
 import com.nan.nantube.data.Account
 import com.nan.nantube.data.AudioFormat
 import com.nan.nantube.data.DownloadInfo
+import com.nan.nantube.data.DownloadPrefs
 import com.nan.nantube.data.DownloadRequest
 import com.nan.nantube.data.DownloadText
 import com.nan.nantube.data.VideoDownloads
@@ -192,8 +193,11 @@ private fun DownloadSheetContent(video: VideoItem, account: Account?, onDismiss:
     val step = stack.last()
     var info by remember { mutableStateOf<DownloadInfo?>(null) }
     var failed by remember { mutableStateOf<String?>(null) }
-    // null = mức cao nhất tải được.
-    var height by remember { mutableStateOf<Int?>(null) }
+    // Mức đồ họa: người dùng chưa chọn ở bảng này thì theo "Chất lượng tải xuống" trong Cài đặt (null = mức cao nhất tải được).
+    var pickedHeight by remember { mutableStateOf<Int?>(null) }
+    var userPicked by remember { mutableStateOf(false) }
+    LaunchedEffect(account?.id) { DownloadPrefs.bind(account) }
+    val height: Int? = if (userPicked) pickedHeight else DownloadPrefs.presetHeight
     var audioFormat by remember { mutableStateOf(AudioFormat.M4A) }
     var startText by remember { mutableStateOf("0:00") }
     var endText by remember { mutableStateOf("") }
@@ -232,6 +236,14 @@ private fun DownloadSheetContent(video: VideoItem, account: Account?, onDismiss:
     }
 
     fun startDownload(audioOnly: Boolean) {
+        if (DownloadPrefs.blockedByWifiOnly(context)) {
+            Toast.makeText(
+                context.applicationContext,
+                "Đang bật \"Chỉ tải xuống qua Wi-Fi\". Hãy kết nối Wi-Fi hoặc tắt tùy chọn này trong Cài đặt.",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
         val request = DownloadRequest(
             audioOnly = audioOnly,
             height = if (audioOnly) null else height,
@@ -248,9 +260,15 @@ private fun DownloadSheetContent(video: VideoItem, account: Account?, onDismiss:
         onDismiss()
     }
 
-    val topQuality = info?.qualities?.firstOrNull()
-    val qualityLabel = height?.let { "${it}p" } ?: topQuality?.label ?: if (failed != null) "Không có" else "Đang tải…"
-    val qualityBytes = (info?.qualities?.firstOrNull { it.height == (height ?: topQuality?.height) })?.bytes ?: -1L
+    // Mức thực sự sẽ tải: đúng mức muốn chọn, video không có thì mức cao nhất không vượt quá (như VideoDownloads.pickHeight).
+    // Danh sách đã xếp từ cao xuống thấp.
+    val shown = info?.qualities?.let { list ->
+        val want = height
+        if (want == null) list.firstOrNull()
+        else list.firstOrNull { it.height == want } ?: list.firstOrNull { it.height <= want } ?: list.lastOrNull()
+    }
+    val qualityLabel = shown?.label ?: if (failed != null) "Không có" else height?.let { "${it}p" } ?: "Đang tải…"
+    val qualityBytes = shown?.bytes ?: -1L
 
     Box(Modifier.fillMaxSize()) {
         Box(Modifier.fillMaxSize().drawBehind { drawRect(Scrim, alpha = 1f - drag.pulled()) }.plainClickable(onDismiss)) {
@@ -316,9 +334,10 @@ private fun DownloadSheetContent(video: VideoItem, account: Account?, onDismiss:
                                 qualities.isNullOrEmpty() -> PanelNote(failed ?: "Video này không có mức đồ họa nào tải trực tiếp được.")
                                 else -> qualities.forEach { q ->
                                     ChoiceRow(
-                                        q.label, estimate(q.bytes), selected = q.height == (height ?: topQuality?.height)
+                                        q.label, estimate(q.bytes), selected = q.height == shown?.height
                                     ) {
-                                        height = q.height
+                                        pickedHeight = q.height
+                                        userPicked = true
                                         back()
                                     }
                                 }
@@ -572,7 +591,7 @@ object PlaylistDownloadPanel {
 private enum class ListStep { Root, All, AllVideo, AllAudio, Quality, AudioType }
 
 /** Mức đồ họa chọn sẵn khi tải cả danh sách (không hỏi từng video); null = cao nhất tải được. */
-private val ListQualities = listOf<Int?>(null, 1080, 720, 480, 360)
+private val ListQualities = listOf<Int?>(null, 1080, 720, 480, 360, 240, 144)
 
 @Composable
 fun PlaylistDownloadSheet() {
@@ -585,7 +604,11 @@ private fun PlaylistDownloadContent(target: PlaylistDownloadTarget, onDismiss: (
     val context = LocalContext.current
     val stack = remember { mutableStateListOf(if (target.picked) ListStep.All else ListStep.Root) }
     val step = stack.last()
-    var height by remember { mutableStateOf<Int?>(null) }
+    var pickedHeight by remember { mutableStateOf<Int?>(null) }
+    var userPicked by remember { mutableStateOf(false) }
+    LaunchedEffect(target.account?.id) { DownloadPrefs.bind(target.account) }
+    // Chưa chọn ở bảng này thì theo "Chất lượng tải xuống" trong Cài đặt.
+    val height: Int? = if (userPicked) pickedHeight else DownloadPrefs.presetHeight
     var audioFormat by remember { mutableStateOf(AudioFormat.M4A) }
     var preparing by remember { mutableStateOf(false) }
     var found by remember { mutableIntStateOf(0) }
@@ -600,6 +623,14 @@ private fun PlaylistDownloadContent(target: PlaylistDownloadTarget, onDismiss: (
     /** Lấy hết các trang của danh sách, bỏ video đã tải, rồi giao cho dịch vụ tải một lượt. */
     fun startAll(audio: Boolean) {
         if (preparing) return
+        if (DownloadPrefs.blockedByWifiOnly(context)) {
+            Toast.makeText(
+                context.applicationContext,
+                "Đang bật \"Chỉ tải xuống qua Wi-Fi\". Hãy kết nối Wi-Fi hoặc tắt tùy chọn này trong Cài đặt.",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
         preparing = true
         val app = context.applicationContext
         scope.launch {
@@ -697,7 +728,8 @@ private fun PlaylistDownloadContent(target: PlaylistDownloadTarget, onDismiss: (
                         ListStep.Quality -> {
                             ListQualities.forEach { q ->
                                 ChoiceRow(q?.let { "${it}p" } ?: "Cao nhất", if (q == null) "Mức cao nhất mỗi video có (tối đa 1080p)" else "Video không có mức này sẽ lấy mức gần nhất thấp hơn", q == height) {
-                                    height = q
+                                    pickedHeight = q
+                                    userPicked = true
                                     back()
                                 }
                             }
