@@ -94,6 +94,15 @@ internal fun YtThickDivider() {
     Box(Modifier.fillMaxWidth().height(6.dp).background(NanColors.Divider))
 }
 
+/** Hàng bấm được chỉ có tên (và mô tả nếu có): lề ngang 16dp, lề dọc 17,5dp. Không có [subtitle] thì cao 54dp. */
+@Composable
+internal fun YtClickRow(title: String, subtitle: String? = null, onClick: () -> Unit) {
+    Column(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 17.5.dp)) {
+        YtRowTitle(title)
+        if (subtitle != null) YtRowSub(subtitle)
+    }
+}
+
 /** Hàng có công tắc: lề trái 16dp, lề phải 24dp, lề dọc 17,5dp. Không có [subtitle] thì cao 54dp. */
 @Composable
 internal fun YtSwitchRow(title: String, subtitle: String? = null, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {

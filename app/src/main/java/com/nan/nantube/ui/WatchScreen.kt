@@ -721,6 +721,8 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
     var moreOpen by remember { mutableStateOf(false) }
     // Lớp nút của trình phát đang hiện hay ẩn: thanh tua theo (hiện: đỏ + chấm, ẩn: trắng xám, không chấm) như YouTube.
     var controlsShown by remember { mutableStateOf(true) }
+    // Đang kéo thanh tiến trình: lớp nút điều khiển không được tự ẩn.
+    var seekDragging by remember { mutableStateOf(false) }
     var ambientFrame by remember { mutableStateOf<ImageBitmap?>(null) }
 
     // Chưa lấy xong danh sách phụ đề thì coi như đang bật nếu người dùng đã bật, để nút CC không nháy.
@@ -1207,6 +1209,7 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
                     suggest = suggest,
                     onSuggestPlay = { next?.let { WatchViewer.open(it) } },
                     onSuggestClose = { suggestClosed = true; controlsShown = true },
+                    seeking = seekDragging,
                     fullscreen = fullscreen,
                     onFullscreen = { WatchViewer.updateFullscreen(!fullscreen); controlsShown = true },
                     fsInfo = if (!fullscreen) null else FullscreenInfo(
@@ -1234,6 +1237,7 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
                     bufferedMs = pb.bufferedMs,
                     onSeek = { pb.seekTo(it) },
                     active = controlsShown,
+                    onDragging = { seekDragging = it },
                     modifier = Modifier.align(Alignment.BottomCenter)
                         .graphicsLayer { alpha = (1f - minF() * 5f).coerceIn(0f, 1f) }
                         .then(if (fullscreen) Modifier.evenCutoutPadding().padding(start = 12.dp, end = 12.dp, bottom = 56.dp) else Modifier)
@@ -1535,7 +1539,9 @@ private fun WatchPlayerArea(
     onSuggestClose: () -> Unit = {},
     fullscreen: Boolean = false,
     onFullscreen: () -> Unit = {},
-    fsInfo: FullscreenInfo? = null
+    fsInfo: FullscreenInfo? = null,
+    /** Đang kéo thanh tiến trình: các nút không được tự ẩn. */
+    seeking: Boolean = false
 ) {
     var touch by remember { mutableStateOf(0) }
     // Dòng báo "Tự động phát đang bật / tắt" hiện giữa trên video ~1,5 giây sau khi gạt công tắc.
@@ -1546,10 +1552,18 @@ private fun WatchPlayerArea(
         delay(1_500)
         hint = null
     }
-    // Đang phát thì lớp nút tự ẩn sau 3,5 giây không chạm.
-    LaunchedEffect(controls, pb.wantPlay, touch) {
-        if (controls && pb.wantPlay && !pb.ended) {
-            delay(3_500)
+    // Trình phát hỗ trợ tiếp cận (Cài đặt → Hỗ trợ tiếp cận): tua bằng nút, chạm video không ẩn nút, chỉ nút X mới ẩn.
+    // Quá hạn "Tự động tắt" thì tắt trình phát hỗ trợ tiếp cận ngay khi trình phát dựng lên.
+    LaunchedEffect(Unit) { WatchPrefs.checkA11yExpiry() }
+    val a11y = WatchPrefs.a11yPlayer
+    val a11yHideMs = WatchPrefs.hideControlsSeconds * 1_000L
+    // Đang phát thì lớp nút tự ẩn sau 3,5 giây không chạm. Trình phát hỗ trợ tiếp cận: theo mức "Ẩn các nút điều khiển trình phát"
+    // (Không bao giờ = không tự ẩn).
+    LaunchedEffect(controls, pb.wantPlay, touch, a11y, a11yHideMs, seeking) {
+        // Đang kéo thanh tiến trình thì không đếm; thả tay xong đếm lại từ đầu (key seeking đổi).
+        if (controls && pb.wantPlay && !pb.ended && !seeking) {
+            if (a11y && a11yHideMs <= 0L) return@LaunchedEffect
+            delay(if (a11y) a11yHideMs else 3_500L)
             onControls(false)
         }
     }
@@ -1575,6 +1589,7 @@ private fun WatchPlayerArea(
     val doubleTapSeek = remember { DoubleTapSeek(tapScope) }
     val onControlsNow by rememberUpdatedState(onControls)
     val controlsNow by rememberUpdatedState(controls)
+    val a11yNow by rememberUpdatedState(a11y)
     val seekEnabledNow by rememberUpdatedState(!pb.failed && !PipState.inPip && suggest == null && !pb.ended && !pb.locked)
     Box(
         (if (fullscreen) Modifier.fillMaxSize() else Modifier.fillMaxWidth().aspectRatio(16f / 9f))
@@ -1585,6 +1600,12 @@ private fun WatchPlayerArea(
                     awaitFirstDown()
                     val up = waitForUpOrCancellation() ?: return@awaitEachGesture
                     up.consume()
+                    // Hỗ trợ tiếp cận: không nhấn đúp để tua, chạm khi nút đang hiện thì không làm gì (chỉ nút X mới ẩn);
+                    // nút đang ẩn thì chạm để hiện lại.
+                    if (a11yNow) {
+                        if (!controlsNow) onControlsNow(true)
+                        return@awaitEachGesture
+                    }
                     doubleTapSeek.tap(
                         side = if (up.position.x < size.width / 2f) -1 else 1,
                         enabled = seekEnabledNow,
@@ -1687,6 +1708,8 @@ private fun WatchPlayerArea(
                     ControlIcon(WatchCast, "Truyền", 24.dp) { onCast(); touch++ }
                     ControlIcon(if (captionsOn) WatchCcOn else WatchCc, "Phụ đề", 28.dp) { onCc(); touch++ }
                     ControlIcon(Lucide.Settings, "Cài đặt", 24.dp) { onSettings(); touch++ }
+                    // Hỗ trợ tiếp cận: nút X là cách duy nhất để ẩn các nút điều khiển.
+                    if (a11y) ControlIcon(Lucide.X, "Ẩn các nút điều khiển", 24.dp) { onControls(false) }
                 }
                 hint?.let {
                     Text(
@@ -1700,11 +1723,16 @@ private fun WatchPlayerArea(
                 // Giữa: trước (video vừa xem, chỉ bấm được sau khi đã đổi video) | phát / tạm dừng | sau (sang video đề xuất đầu tiên).
                 Row(
                     Modifier.align(Alignment.Center),
-                    horizontalArrangement = Arrangement.spacedBy(28.dp),
+                    horizontalArrangement = Arrangement.spacedBy(if (a11y && !fullscreen) 14.dp else 28.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Box(Modifier.alpha(if (hasPrev) 1f else 0.4f)) {
                         CircleControl(WatchSkipPrev, "Trước", 44.dp) { if (hasPrev) onPrev(); touch++ }
+                    }
+                    // Hỗ trợ tiếp cận: nút lùi N giây (N theo "Nhấn đúp để tua" trong Cài đặt → Phát).
+                    if (a11y) SeekControl(WatchReplay, "Lùi ${WatchPrefs.seekSeconds} giây", WatchPrefs.seekSeconds) {
+                        pb.seekTo((pb.positionMs - WatchPrefs.seekSeconds * 1_000L).coerceAtLeast(0L))
+                        touch++
                     }
                     CircleControl(
                         when {
@@ -1714,6 +1742,11 @@ private fun WatchPlayerArea(
                         },
                         "Phát / Tạm dừng", 58.dp
                     ) { pb.toggle(); touch++ }
+                    if (a11y) SeekControl(WatchForward, "Tiến ${WatchPrefs.seekSeconds} giây", WatchPrefs.seekSeconds) {
+                        val end = if (pb.durationMs > 0L) pb.durationMs else Long.MAX_VALUE
+                        pb.seekTo((pb.positionMs + WatchPrefs.seekSeconds * 1_000L).coerceAtMost(end))
+                        touch++
+                    }
                     Box(Modifier.alpha(if (hasNext) 1f else 0.4f)) {
                         CircleControl(WatchSkipNext, "Sau", 44.dp) { if (hasNext) onNext(); touch++ }
                     }
@@ -2085,6 +2118,24 @@ private fun CircleControl(icon: ImageVector, description: String, size: Dp, onCl
     }
 }
 
+/** Nút tua của trình phát hỗ trợ tiếp cận: vòng tròn mờ như [CircleControl], mũi tên quay tròn và số giây nằm giữa mũi tên. */
+@Composable
+private fun SeekControl(icon: ImageVector, description: String, seconds: Int, onClick: () -> Unit) {
+    Box(
+        Modifier.size(44.dp).clip(CircleShape).background(Color(0x55000000)).clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(icon, description, Modifier.size(30.dp), tint = Color.White)
+        Text(
+            "$seconds",
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color.White,
+            modifier = Modifier.offset(y = 1.5.dp)
+        )
+    }
+}
+
 /**
  * Thanh tua dưới video, đo theo YouTube: dày 2dp, nền xám đặc #444444. Lớp nút đang hiện ([active]): phần đã xem đỏ #FF0033 + chấm đỏ.
  * Lớp nút ẩn: phần đã xem xám trắng #CCCCCC, không chấm. Chạm hoặc kéo để tua.
@@ -2099,7 +2150,9 @@ private fun WatchSeekBar(
     bufferedMs: Long,
     onSeek: (Long) -> Unit,
     modifier: Modifier = Modifier,
-    active: Boolean = true
+    active: Boolean = true,
+    /** Báo đang kéo / thả thanh, để lớp nút điều khiển không tự ẩn giữa lúc kéo. */
+    onDragging: (Boolean) -> Unit = {}
 ) {
     var drag by remember { mutableStateOf<Float?>(null) }
     // Chấm phồng theo tốc độ kéo, xẹp lại sau 120ms không di chuyển (cùng cách với thanh tua của Short).
@@ -2110,12 +2163,16 @@ private fun WatchSeekBar(
         knobBoost = 0f
     }
     val dragging = drag != null
+    val onDraggingNow by rememberUpdatedState(onDragging)
+    LaunchedEffect(dragging) { onDraggingNow(dragging) }
+    DisposableEffect(Unit) { onDispose { onDraggingNow(false) } }
     val knobScale by animateFloatAsState(1f + knobBoost * 1.2f, label = "watchKnob")
     val thumbAmount by animateFloatAsState(if (active || dragging) 1f else 0f, tween(160), label = "watchThumb")
     val trackHeight by animateDpAsState(if (dragging) 3.dp else 2.dp, tween(120), label = "watchTrack")
     val accent by animateColorAsState(if (active || dragging) Color(0xFFFF0033) else Color(0xFFCCCCCC), tween(180), label = "watchAccent")
     val played = if (durationMs > 0) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
     val frac = drag ?: played
+    val playedNow by rememberUpdatedState(played)
     val buffered = if (durationMs > 0) (bufferedMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
     Box(modifier.fillMaxWidth()) {
         drag?.let { f ->
@@ -2136,27 +2193,44 @@ private fun WatchSeekBar(
                 .fillMaxWidth()
                 // Vùng chạm cao 30dp (vạch vẫn mảnh 2dp nằm sát đáy) để dễ chạm / kéo bằng ngón tay, không phải nhắm đúng vạch.
                 .height(30.dp)
-                .pointerInput(durationMs) {
-                    detectTapGestures { o ->
-                        if (durationMs > 0) onSeek((o.x / size.width * durationMs).toLong().coerceIn(0L, durationMs))
-                    }
-                }
-                .pointerInput(durationMs) {
-                    detectHorizontalDragGestures(
-                        onDragStart = { o -> drag = (o.x / size.width).coerceIn(0f, 1f) },
-                        onDragEnd = {
-                            drag?.let { if (durationMs > 0) onSeek((it * durationMs).toLong()) }
+                // Chỉ kéo được khi chạm trúng chấm tròn (và nút đang hiện): chạm vào thanh không tua, tránh tua nhầm chỗ.
+                // Nút đang ẩn thì không gắn cử chỉ, chạm xuống đây rơi xuống video để hiện lại nút.
+                .then(
+                    if (!active) Modifier else Modifier.pointerInput(durationMs) {
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            if (durationMs <= 0L || size.width <= 0) return@awaitEachGesture
+                            val width = size.width.toFloat()
+                            // Vùng bắt chấm rộng 24dp mỗi bên (chấm chỉ bán kính 6dp) cho vừa ngón tay.
+                            if (kotlin.math.abs(down.position.x - width * playedNow) > 24.dp.toPx()) return@awaitEachGesture
+                            down.consume()
+                            var frac = playedNow
+                            var moved = false
+                            drag = frac
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                if (!change.pressed) {
+                                    change.consume()
+                                    break
+                                }
+                                // Kéo theo độ dịch của ngón tay, không nhảy chấm về chỗ ngón tay chạm.
+                                val dx = change.position.x - change.previousPosition.x
+                                if (dx != 0f) {
+                                    moved = true
+                                    frac = (frac + dx / width).coerceIn(0f, 1f)
+                                    drag = frac
+                                    val dt = (change.uptimeMillis - change.previousUptimeMillis).coerceAtLeast(1L)
+                                    knobBoost = (kotlin.math.abs(dx) / dt / 2f).coerceIn(0f, 1f)
+                                    lastMove = change.uptimeMillis
+                                    change.consume()
+                                }
+                            }
+                            if (moved) onSeek((frac * durationMs).toLong().coerceIn(0L, durationMs))
                             drag = null
-                        },
-                        onDragCancel = { drag = null },
-                        onHorizontalDrag = { change, dx ->
-                            drag = (change.position.x / size.width).coerceIn(0f, 1f)
-                            val dt = (change.uptimeMillis - change.previousUptimeMillis).coerceAtLeast(1L)
-                            knobBoost = (kotlin.math.abs(dx) / dt / 2f).coerceIn(0f, 1f)
-                            lastMove = change.uptimeMillis
                         }
-                    )
-                }
+                    }
+                )
         ) {
             Canvas(Modifier.fillMaxSize()) {
                 val track = trackHeight.toPx()

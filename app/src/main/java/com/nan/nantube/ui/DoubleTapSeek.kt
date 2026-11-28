@@ -100,7 +100,7 @@ class DoubleTapSeek(private val scope: CoroutineScope) {
     }
 
     private companion object {
-        const val COMBO_MS = 800L
+        const val COMBO_MS = 500L
     }
 }
 

@@ -27,6 +27,12 @@ object WatchPrefs {
     private const val FEATURE = "watch_settings"
     val SEEK_STEPS = listOf(10, 15, 20, 25, 30)
 
+    /** Các mức tự ẩn nút của trình phát hỗ trợ tiếp cận; 0 = không bao giờ. */
+    val HIDE_STEPS = listOf(0, 3, 5, 10)
+
+    /** Các mức tự tắt trình phát hỗ trợ tiếp cận (ngày); 0 = không bao giờ. */
+    val AUTO_OFF_DAYS = listOf(0, 1, 3, 7, 30)
+
     var autoplay by mutableStateOf(true)
         private set
     var ambient by mutableStateOf(true)
@@ -35,6 +41,23 @@ object WatchPrefs {
         private set
     var seekSeconds by mutableIntStateOf(SEEK_STEPS.first())
         private set
+    /**
+     * Trình phát hỗ trợ tiếp cận (Cài đặt → Hỗ trợ tiếp cận): bật thì tua bằng hai nút ±[seekSeconds] giây ở giữa trình phát
+     * (không còn nhấn đúp), chạm vào video không ẩn được nút, chỉ nút X ở góc trên mới ẩn.
+     */
+    var a11yPlayer by mutableStateOf(false)
+        private set
+
+    /** Số giây rồi các nút tự ẩn khi đang phát và [a11yPlayer] bật; 0 = không bao giờ (chỉ ẩn bằng nút X). */
+    var hideControlsSeconds by mutableIntStateOf(0)
+        private set
+
+    /** Số ngày rồi [a11yPlayer] tự tắt kể từ lúc bật; 0 = không bao giờ. */
+    var a11yAutoOffDays by mutableIntStateOf(0)
+        private set
+
+    /** Lúc bật [a11yPlayer] (ms), để tính hạn tự tắt. 0 = chưa biết. */
+    private var a11yEnabledAt = 0L
     var captionKey by mutableStateOf<String?>(null)
         private set
     var captionLast by mutableStateOf<String?>(null)
@@ -69,8 +92,14 @@ object WatchPrefs {
             ambient = json?.optBoolean("ambient", true) ?: true
             stableVolume = json?.optBoolean("stableVolume", true) ?: true
             seekSeconds = json?.optInt("seekSeconds", SEEK_STEPS.first())?.takeIf { it in SEEK_STEPS } ?: SEEK_STEPS.first()
+            a11yPlayer = json?.optBoolean("a11yPlayer", false) ?: false
+            hideControlsSeconds = json?.optInt("hideControlsSeconds", 0)?.takeIf { it in HIDE_STEPS } ?: 0
+            a11yAutoOffDays = json?.optInt("a11yAutoOffDays", 0)?.takeIf { it in AUTO_OFF_DAYS } ?: 0
+            a11yEnabledAt = json?.optLong("a11yEnabledAt", 0L) ?: 0L
             captionKey = json?.optString("captionKey")?.ifBlank { null }
             captionLast = json?.optString("captionLast")?.ifBlank { null } ?: captionKey
+            // Sau cùng, khi mọi trường đã nạp xong: checkA11yExpiry có thể ghi lại cả tệp.
+            checkA11yExpiry()
         }
     }
 
@@ -94,6 +123,43 @@ object WatchPrefs {
         save()
     }
 
+    fun updateA11yPlayer(on: Boolean) {
+        a11yPlayer = on
+        a11yEnabledAt = if (on) System.currentTimeMillis() else 0L
+        save()
+    }
+
+    /** Đổi hạn tự tắt: tính lại từ bây giờ nếu trình phát hỗ trợ tiếp cận đang bật. */
+    fun updateA11yAutoOffDays(days: Int) {
+        a11yAutoOffDays = days
+        if (a11yPlayer) a11yEnabledAt = System.currentTimeMillis()
+        save()
+    }
+
+    /**
+     * Đã quá hạn tự tắt thì tắt trình phát hỗ trợ tiếp cận và lưu. Gọi khi nạp cài đặt, khi mở màn Hỗ trợ tiếp cận
+     * và khi trình phát dựng lên. Bản lưu cũ chưa có mốc bật thì lấy bây giờ làm mốc.
+     */
+    fun checkA11yExpiry() {
+        if (!a11yPlayer || a11yAutoOffDays <= 0) return
+        val now = System.currentTimeMillis()
+        if (a11yEnabledAt <= 0L) {
+            a11yEnabledAt = now
+            save()
+            return
+        }
+        if (now - a11yEnabledAt >= a11yAutoOffDays * 86_400_000L) {
+            a11yPlayer = false
+            a11yEnabledAt = 0L
+            save()
+        }
+    }
+
+    fun updateHideControlsSeconds(seconds: Int) {
+        hideControlsSeconds = seconds
+        save()
+    }
+
     /** [key] null = tắt phụ đề; còn lại là bản được chọn (cũng thành bản "gần nhất"). */
     fun setCaption(key: String?) {
         captionKey = key
@@ -108,6 +174,10 @@ object WatchPrefs {
             .put("ambient", ambient)
             .put("stableVolume", stableVolume)
             .put("seekSeconds", seekSeconds)
+            .put("a11yPlayer", a11yPlayer)
+            .put("hideControlsSeconds", hideControlsSeconds)
+            .put("a11yAutoOffDays", a11yAutoOffDays)
+            .put("a11yEnabledAt", a11yEnabledAt)
             .put("captionKey", captionKey ?: "")
             .put("captionLast", captionLast ?: "")
         scope.launch(Dispatchers.IO) { NanStorage.writeJson(FEATURE, owner, json) }

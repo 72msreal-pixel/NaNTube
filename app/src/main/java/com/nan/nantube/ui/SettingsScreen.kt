@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -63,8 +64,10 @@ private const val QUALITY = "Chất lượng"
 private const val PLAYBACK = "Phát"
 private const val CAPTIONS = "Phụ đề"
 private const val DATA_SAVER = "Tiết kiệm dữ liệu"
+private const val DOWNLOADS = "Nội dung tải xuống"
+private const val ACCESSIBILITY = "Hỗ trợ tiếp cận"
 private const val TV = "Xem trên TV"
-private val OPENABLE_PAGES = setOf(EXPERIMENTS, QUALITY, PLAYBACK, DATA_SAVER)
+private val OPENABLE_PAGES = setOf(EXPERIMENTS, QUALITY, PLAYBACK, DATA_SAVER, DOWNLOADS, ACCESSIBILITY)
 
 private data class SettingItem(val icon: ImageVector, val title: String)
 
@@ -89,9 +92,9 @@ private val videoItems = listOf(
     SettingItem(Lucide.Play, "Phát"),
     SettingItem(Lucide.MessageSquare, "Phụ đề"),
     SettingItem(Lucide.SlidersHorizontal, "Tiết kiệm dữ liệu"),
-    SettingItem(Lucide.Download, "Nội dung tải xuống"),
+    SettingItem(Lucide.Download, DOWNLOADS),
     SettingItem(Lucide.Radio, "Trò chuyện trực tiếp"),
-    SettingItem(Lucide.Accessibility, "Hỗ trợ tiếp cận"),
+    SettingItem(Lucide.Accessibility, ACCESSIBILITY),
     SettingItem(Lucide.Tv, "Xem trên TV")
 )
 
@@ -99,6 +102,9 @@ private val videoItems = listOf(
 fun SettingsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     var page by remember { mutableStateOf<String?>(null) }
+    // Trạng thái cuộn phải nằm ở đây, trên các lệnh return bên dưới: mở trang con thì LazyColumn bị gỡ khỏi cây,
+    // nếu state nằm trong nó thì quay lại sẽ mất vị trí và nhảy lên đầu.
+    val listState = rememberLazyListState()
     LaunchedEffect(PipState.openExperiments) {
         if (PipState.openExperiments) {
             page = EXPERIMENTS
@@ -121,6 +127,14 @@ fun SettingsScreen(onBack: () -> Unit) {
         DataSaverSettingsScreen(onBack = { page = null })
         return
     }
+    if (page == ACCESSIBILITY) {
+        AccessibilitySettingsScreen(onBack = { page = null })
+        return
+    }
+    if (page == DOWNLOADS) {
+        DownloadSettingsScreen(onBack = { page = null })
+        return
+    }
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 8.dp, vertical = 8.dp),
@@ -134,7 +148,7 @@ fun SettingsScreen(onBack: () -> Unit) {
             Spacer(Modifier.width(12.dp))
             Text("Cài đặt", fontSize = 22.sp)
         }
-        LazyColumn(Modifier.fillMaxSize()) {
+        LazyColumn(Modifier.fillMaxSize(), state = listState) {
             item { SectionHeader("Tài khoản") }
             items(accountItems) { item ->
                 SettingRow(item.title, onClick = { if (item.title in OPENABLE_PAGES) page = item.title }) { Icon(item.icon, null, Modifier.size(24.dp)) }
