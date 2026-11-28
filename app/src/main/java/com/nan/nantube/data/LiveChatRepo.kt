@@ -9,6 +9,24 @@ import org.json.JSONTokener
 class ChatSendException(message: String, val restricted: Boolean) : Exception(message)
 
 private val RESTRICTION_TEXT = Regex("(?i)subscriber|member|đăng ký|thành viên")
+private const val NO_WEB_SESSION =
+    "Tài khoản đăng nhập bằng mã không gửi được trong chat live (YouTube TV không cho). Hãy đăng nhập thêm tài khoản web cùng email để chat."
+private val SUBSCRIBER_ONLY_EN = Regex("(?i)subscribers?[- ]?only")
+private val MEMBER_ONLY_EN = Regex("(?i)members?[- ]?only")
+private val MEMBER_TEXT = Regex("(?i)member|thành viên")
+
+/**
+ * YouTube trả dòng thông báo theo ngôn ngữ của phiên đọc: đọc ẩn danh / tài khoản mã hay ra tiếng Anh ("Subscribers-only mode").
+ * Dịch các câu đã biết về tiếng Việt cho đồng nhất; câu lạ thì giữ nguyên.
+ */
+internal fun localizeRestriction(text: String): String = when {
+    SUBSCRIBER_ONLY_EN.containsMatchIn(text) -> "Chế độ chỉ dành cho người đăng ký"
+    MEMBER_ONLY_EN.containsMatchIn(text) -> "Chế độ chỉ dành cho thành viên"
+    else -> text
+}
+
+/** Chế độ hạn chế dành riêng cho thành viên (đăng ký kênh không đủ để chat). */
+internal fun isMemberOnlyRestriction(text: String): Boolean = MEMBER_TEXT.containsMatchIn(text)
 
 /** Một biểu tượng cảm xúc của YouTube hoặc của chủ kênh (ảnh + mã gõ như ":ten:"). */
 data class ChatEmoji(val id: String, val shortcut: String, val url: String, val custom: Boolean)
@@ -98,7 +116,9 @@ class ChatStart(
     /** Emoji theo nhóm (tên nhóm → emoji); rỗng nếu trang không trả. */
     val emojiGroups: List<Pair<String, List<ChatEmoji>>>,
     /** Đã đọc bằng phiên đăng nhập của tài khoản (nên ô nhập / chế độ hạn chế / bảng chọn đúng theo tài khoản). */
-    val authed: Boolean = false
+    val authed: Boolean = false,
+    /** Khung hành động lấy từ lượt đọc ẩn danh (tài khoản mã: `next` không kèm khung), nên "chỉ người đăng ký" chưa tính theo tài khoản. */
+    val anonymousPanel: Boolean = false
 )
 
 /**
@@ -116,10 +136,12 @@ object LiveChatRepo {
      * - Tài khoản web: trang `live_chat` kèm cookie của WebView.
      * - Tài khoản mã: lấy khung chat từ `next` (Bearer), vì token TV không dùng được cho trang web.
      */
-    suspend fun start(videoId: String, account: Account? = null): ChatStart {
+    suspend fun start(videoId: String, requested: Account? = null): ChatStart {
+        val account = requested?.let { webTwin(it) ?: it }
         if (account != null) {
             try {
-                return startFrom(authedChat(videoId, account), authed = true)
+                val start = startFrom(authedChat(videoId, account), authed = true)
+                return if (account.kind == LoginKind.CODE) withAccountPanel(start, videoId, account) else start
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -127,6 +149,59 @@ object LiveChatRepo {
             }
         }
         return startFrom(anonymousChat(videoId), authed = false)
+    }
+
+    /**
+     * Tài khoản web "song sinh" của tài khoản mã (cùng email / handle / tên, và máy có phiên web): chat đi bằng phiên web này
+     * (đọc emoji, ô nhập, chế độ hạn chế, gửi tin, bình chọn) vì token TV không làm được các việc đó. Null nếu không có.
+     */
+    internal fun webTwin(account: Account): Account? {
+        if (account.kind != LoginKind.CODE || !InnerTube.hasWebSession()) return null
+        fun same(a: String?, b: String?) = !a.isNullOrBlank() && !b.isNullOrBlank() && a.trim().equals(b.trim(), ignoreCase = true)
+        val web = AccountStore.accounts.filter { it.kind == LoginKind.WEB }
+        return web.firstOrNull { same(it.email, account.email) }
+            ?: web.firstOrNull { same(it.handle, account.handle) }
+            ?: web.firstOrNull { same(it.name, account.name) }
+    }
+
+    /**
+     * Tài khoản mã thuần (không có phiên web): `next` TV không kèm emoji / khung hành động đáng tin, nên bổ sung từ trang chat ẩn danh:
+     * - "chỉ dành cho người đăng ký" lấy từ khung ẩn danh (ai cũng thấy chế độ này); giao diện tự mở khóa nếu đã đăng ký kênh;
+     * - emoji của YouTube / chủ kênh lấy từ danh sách của trang ẩn danh;
+     * - không có chế độ hạn chế thì thử khung theo tài khoản (`next` WEB + Bearer, rồi get_live_chat + Bearer).
+     */
+    private suspend fun withAccountPanel(start: ChatStart, videoId: String, account: Account): ChatStart {
+        val b = start.batch
+        suspend fun <T> attempt(block: suspend () -> T?): T? = try {
+            block()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+        val anon = attempt { anonymousChat(videoId) }
+        val groups = if (start.emojiGroups.isEmpty() && anon != null) emojiGroups(anon, parseEmojis(anon)) else start.emojiGroups
+        fun result(ev: ChatPanelEvent?, anonymous: Boolean) = ChatStart(
+            ChatBatch(
+                b.messages, b.removedIds, b.pinned, b.continuation, b.waitMs,
+                if (ev == null) b.panelEvents else b.panelEvents.filterNot { it is ChatPanelEvent.Restricted || it is ChatPanelEvent.Input } + ev
+            ),
+            groups, start.authed, anonymousPanel = anonymous
+        )
+        val anonRestricted = anon?.let { parseBatch(null, null, it.optJSONObject("actionPanel")).panelEvents.filterIsInstance<ChatPanelEvent.Restricted>().firstOrNull() }
+        if (anonRestricted != null) return result(anonRestricted, true)
+        if (b.panelEvents.any { it is ChatPanelEvent.Restricted || it is ChatPanelEvent.Input }) return result(null, false)
+        attempt {
+            val root = InnerTube.commentRequest("next", JSONObject().put("videoId", videoId), account, tv = false)
+            panelEvent(findKey(root, "liveChatRenderer")?.optJSONObject("actionPanel"))
+        }?.let { return result(it, false) }
+        b.continuation?.let { cont ->
+            attempt {
+                val json = accountCall("live_chat/get_live_chat", JSONObject().put("continuation", cont), account)
+                panelEvent((json.dig("continuationContents", "liveChatContinuation") as? JSONObject)?.optJSONObject("actionPanel"))
+            }?.let { return result(it, false) }
+        }
+        return result(null, false)
     }
 
     private suspend fun authedChat(videoId: String, account: Account): JSONObject {
@@ -137,7 +212,7 @@ object LiveChatRepo {
                 "Cookie" to cookies, "Accept-Language" to "vi-VN,vi;q=0.9"
             )
             val authUser = if (account.authUser > 0) "&authuser=${account.authUser}" else ""
-            val res = Http.get("https://www.youtube.com/live_chat?is_popout=1&v=$videoId$authUser", headers, timeoutMs = 12_000)
+            val res = Http.get("https://www.youtube.com/live_chat?is_popout=1&v=$videoId$authUser&hl=vi&gl=VN", headers, timeoutMs = 12_000)
             if (res.code !in 200..299) throw Exception("Không mở được khung chat (HTTP ${res.code})")
             return chatFromPage(res.body)
         }
@@ -148,8 +223,8 @@ object LiveChatRepo {
 
     private suspend fun anonymousChat(videoId: String): JSONObject {
         val res = Http.get(
-            "https://www.youtube.com/live_chat?is_popout=1&v=$videoId",
-            mapOf("User-Agent" to DESKTOP_UA, "Referer" to "https://www.youtube.com/watch?v=$videoId"),
+            "https://www.youtube.com/live_chat?is_popout=1&v=$videoId&hl=vi&gl=VN",
+            mapOf("User-Agent" to DESKTOP_UA, "Referer" to "https://www.youtube.com/watch?v=$videoId", "Accept-Language" to "vi-VN,vi;q=0.9"),
             timeoutMs = 12_000
         )
         if (res.code !in 200..299) throw Exception("Không mở được khung chat (HTTP ${res.code})")
@@ -194,11 +269,12 @@ object LiveChatRepo {
     }
 
     /** Lượt đọc kế. [account] != null và [authed] = tiếp tục đọc bằng phiên tài khoản (phải cùng kiểu với lượt [start]). */
-    suspend fun poll(continuation: String, account: Account? = null, authed: Boolean = false): ChatBatch {
+    suspend fun poll(continuation: String, requested: Account? = null, authed: Boolean = false): ChatBatch {
+        val account = requested?.let { webTwin(it) ?: it }
         val json = if (authed && account != null) {
             accountCall("live_chat/get_live_chat", JSONObject().put("continuation", continuation), account)
         } else {
-            val client = JSONObject().put("clientName", "WEB").put("clientVersion", WEB_VERSION)
+            val client = JSONObject().put("clientName", "WEB").put("clientVersion", WEB_VERSION).put("hl", "vi").put("gl", "VN")
                 .put("acceptLanguage", "vi").put("acceptRegion", "VN")
                 .put("utcOffsetMinutes", InnerTube.utcOffsetMinutes().toString())
             val body = JSONObject().put("context", JSONObject().put("client", client).put("user", InnerTube.safetyUser()))
@@ -220,7 +296,10 @@ object LiveChatRepo {
      * mã đầu hỏng vì lỗi mạng / HTTP thì thử mã kia. Mã emoji dạng ":ten:" đổi thành đoạn emoji thật nếu có trong [emojis].
      * YouTube từ chối có lý do (vd chỉ dành cho người đăng ký) thì ném [ChatSendException] (restricted = true nếu là chế độ hạn chế).
      */
-    suspend fun send(account: Account, sendParams: String?, fallbackParams: String?, text: String, emojis: Map<String, ChatEmoji>): ChatBatch {
+    suspend fun send(requested: Account, sendParams: String?, fallbackParams: String?, text: String, emojis: Map<String, ChatEmoji>): ChatBatch {
+        val account = webTwin(requested) ?: requested
+        // Token TV không ghi được chat: đừng giả vờ gửi (trước đây hiện tin "ảo" mà không ai thấy).
+        if (account.kind == LoginKind.CODE) throw Exception(NO_WEB_SESSION)
         if (text.isBlank() || text.length > 200) throw Exception("Tin nhắn trống hoặc dài quá 200 ký tự")
         val segments = JSONArray()
         var last = 0
@@ -240,7 +319,7 @@ object LiveChatRepo {
                 .put("richMessage", JSONObject().put("textSegments", segments))
             try {
                 val json = chatWrite("live_chat/send_message", body, account)
-                actionError(json)?.let { throw ChatSendException(it, RESTRICTION_TEXT.containsMatchIn(it)) }
+                actionError(json)?.let { throw ChatSendException(localizeRestriction(it), RESTRICTION_TEXT.containsMatchIn(it)) }
                 if (json.has("error")) throw Exception("YouTube không nhận tin nhắn này")
                 val batch = parseBatch(json.optJSONArray("actions"), null)
                 if (batch.messages.isNotEmpty()) return batch
@@ -303,7 +382,9 @@ object LiveChatRepo {
             ?.let { ytText(it.opt("errorText")) ?: "YouTube không nhận yêu cầu này" }
 
     /** Bình chọn (live_chat/send_live_chat_vote) bằng mã [voteParams] của lựa chọn; trả về cập nhật kết quả nếu YouTube echo. */
-    suspend fun vote(account: Account, voteParams: String): ChatBatch {
+    suspend fun vote(requested: Account, voteParams: String): ChatBatch {
+        val account = webTwin(requested) ?: requested
+        if (account.kind == LoginKind.CODE) throw Exception(NO_WEB_SESSION)
         val json = chatWrite("live_chat/send_live_chat_vote", JSONObject().put("params", voteParams), account)
         actionError(json)?.let { throw Exception(it) }
         val actions = json.optJSONArray("actions")
@@ -319,7 +400,7 @@ object LiveChatRepo {
             return parsePoll(r, panelId)?.let { ChatPanelEvent.ShowPoll(it) }
         }
         findKey(panel, "liveChatRestrictedParticipationRenderer")?.let { r ->
-            return ChatPanelEvent.Restricted(ytText(r.opt("message")) ?: "Bạn không thể trò chuyện lúc này")
+            return ChatPanelEvent.Restricted(localizeRestriction(ytText(r.opt("message")) ?: "Bạn không thể trò chuyện lúc này"))
         }
         if (findKey(panel, "liveChatMessageInputRenderer") != null) {
             // Có mã gửi (sendLiveChatMessageEndpoint) = tài khoản này chat được; ẩn danh thì không có (lúc gửi sẽ tự dựng mã như meetube).

@@ -78,6 +78,14 @@ fun AppRoot() {
     var addStep by remember { mutableStateOf(AddStep.None) }
     var homeChip by remember { mutableStateOf(0) }
     var webHint by remember { mutableStateOf<String?>(null) }
+    // Nơi khác (khung chat live của tài khoản mã) xin mở đăng nhập web: mở thẳng bước tự nhập Gmail, gợi ý email của tài khoản mã.
+    LaunchedEffect(WebSignInRequest.requested) {
+        if (WebSignInRequest.requested) {
+            webHint = WebSignInRequest.hint
+            addStep = AddStep.Web
+            WebSignInRequest.requested = false
+        }
+    }
 
 
     val account = AccountStore.selected

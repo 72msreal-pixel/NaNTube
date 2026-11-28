@@ -80,6 +80,17 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 // Bảng chọn khi bấm nút "+": tự nhập hoặc dùng mã
 // ------------------------------------------------------------------------------------------
 
+/** Yêu cầu mở màn đăng nhập web (tự nhập Gmail) từ chỗ khác trong app, vd khung chat live của tài khoản mã. AppRoot lắng nghe và mở. */
+object WebSignInRequest {
+    var requested by mutableStateOf(false)
+    var hint: String? = null
+
+    fun open(hint: String?) {
+        this.hint = hint
+        requested = true
+    }
+}
+
 @Composable
 fun AddAccountChooser(onDismiss: () -> Unit, onManual: () -> Unit, onCode: () -> Unit) {
     BackHandler(onBack = onDismiss)

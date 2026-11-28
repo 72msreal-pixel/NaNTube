@@ -137,6 +137,7 @@ import androidx.compose.ui.unit.IntOffset
 import kotlin.math.roundToInt
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import com.nan.nantube.LiveReminders
 import com.nan.nantube.R
 import com.nan.nantube.data.Account
 import com.nan.nantube.data.ChannelAvatars
@@ -149,6 +150,8 @@ import com.nan.nantube.data.relativePublished
 import com.nan.nantube.data.LikeCounts
 import com.nan.nantube.data.ShortDescription
 import com.nan.nantube.data.ShortInfo
+import com.nan.nantube.data.UpcomingEvent
+import com.nan.nantube.data.ChannelNotify
 import com.nan.nantube.data.ShortsMedia
 import com.nan.nantube.data.ShortsPlayback
 import com.nan.nantube.data.VideoItem
@@ -284,6 +287,19 @@ internal class WatchPlayback(
     var live by mutableStateOf(video.live)
         private set
 
+    /** Buổi live chưa bắt đầu: không cố tải nữa, giao diện hiện ảnh nền + đếm ngược; tới giờ mới thử phát lại. */
+    var waiting by mutableStateOf(false)
+        private set
+
+    /** Giao diện đã biết đây là buổi sắp live (từ `next` / thẻ video): dừng tải ngay, khỏi cố phát rồi báo lỗi. */
+    fun holdForLive() {
+        if (released || live) return
+        job?.cancel()
+        waiting = true
+        failed = false
+        buffering = false
+    }
+
     /** Đã nạp nguồn phát ít nhất một lần: bộ phát nhận lại từ thẻ nổi thì không nạp lại từ đầu. */
     var started = false
         private set
@@ -418,6 +434,7 @@ internal class WatchPlayback(
                 val plan = ShortsPlayback.plan(context, account, video, refused, picked).await()
                 source = plan.source
                 live = plan.hlsUrl != null
+                waiting = false
                 if (plan.durationMs > 0) durationMs = plan.durationMs
                 // Live: phụ đề bị vô hiệu nên không nạp danh sách phụ đề.
                 tracks = if (live) emptyList() else ShortsPlayback.meta(video.id)?.captionTracks.orEmpty()
@@ -430,8 +447,18 @@ internal class WatchPlayback(
                 player.prepare()
             } catch (e: CancellationException) {
                 throw e
-            } catch (_: Exception) {
-                recover()
+            } catch (e: Exception) {
+                // Buổi live chưa bắt đầu thì không phải lỗi: đứng chờ, không thử lại dồn dập.
+                var cause: Throwable? = e
+                var upcoming = false
+                while (cause != null && !upcoming) {
+                    upcoming = cause.message?.contains("chưa bắt đầu") == true
+                    cause = cause.cause
+                }
+                if (upcoming) {
+                    waiting = true
+                    buffering = false
+                } else recover()
             }
         }
     }
@@ -748,6 +775,14 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
     var info by remember { mutableStateOf<ShortInfo?>(stash?.info) }
     var desc by remember { mutableStateOf<ShortDescription?>(stash?.desc ?: ShortsPlayback.cachedDescription(video.id)) }
     var comments by remember { mutableStateOf<CommentPage?>(stash?.comments) }
+    // Buổi live sắp diễn ra: chưa phát được nhưng đã có khung chat live (như YouTube), không phải bình luận thường.
+    val upcoming: UpcomingEvent? = if (pb.live) null
+        else info?.upcoming ?: video.upcoming?.let { UpcomingEvent(null, it) } ?: if (pb.waiting) UpcomingEvent(null, null) else null
+    val chatLive = pb.live || upcoming != null
+    // Biết là buổi sắp live thì dừng tải, chỉ hiện ảnh nền chờ.
+    LaunchedEffect(upcoming != null, pb.live) { if (upcoming != null && !pb.live) pb.holdForLive() }
+    var reminderOn by remember(video.id) { mutableStateOf(LiveReminders.isOn(context, video.id)) }
+    val remindNow = reminderOn
     var liked by remember { mutableStateOf(stash?.liked ?: false) }
     var disliked by remember { mutableStateOf(stash?.disliked ?: false) }
     // Phần nào đã có sẵn từ thẻ nổi thì lần chạy đầu của hiệu ứng nạp bỏ qua (đổi tài khoản về sau vẫn nạp lại).
@@ -764,6 +799,18 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
     val panelSheet = remember { PanelSheet(scope, 1f, 1f) }
     var panel by remember { mutableStateOf<WatchPanel?>(null) }
     var panelAreaHeight by remember { mutableIntStateOf(0) }
+    // "Thông báo cho tôi": app tự theo dõi buổi live này (WorkManager) và tự đăng thông báo khi bắt đầu, không nhờ YouTube báo.
+    fun toggleReminder() {
+        val want = !remindNow
+        reminderOn = want
+        if (want) {
+            LiveReminders.add(context, video, upcoming?.startMs)
+            toast(context, "Đã bật: app sẽ báo khi buổi phát bắt đầu")
+        } else {
+            LiveReminders.remove(context, video.id)
+            toast(context, "Đã tắt thông báo")
+        }
+    }
     fun openPanel(kind: WatchPanel) {
         panel = kind
         panelSheet.open()
@@ -794,8 +841,8 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
             null
         }
     }
-    LaunchedEffect(video.id, account?.id, pb.live) {
-        if (pb.live) return@LaunchedEffect // Live: khung chat tạm chưa có tin nhắn, khỏi tải bình luận thường.
+    LaunchedEffect(video.id, account?.id, chatLive) {
+        if (chatLive) return@LaunchedEffect // Live: khung chat tạm chưa có tin nhắn, khỏi tải bình luận thường.
         if (commentsReady) { commentsReady = false; return@LaunchedEffect }
         comments = try {
             CommentsRepository.first(video.id, account)
@@ -1201,6 +1248,9 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
                 WatchPlayerArea(
                     pb = pb,
                     video = video,
+                    upcoming = upcoming,
+                    reminderOn = remindNow,
+                    onUpcomingNotify = { toggleReminder() },
                     hasNext = next != null,
                     hasPrev = WatchViewer.canGoBack,
                     onPrev = { WatchViewer.back() },
@@ -1333,7 +1383,7 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
                         }
                     }
                     item(key = "comments") {
-                        if (pb.live) LiveChatCard(account, onClick = { openPanel(WatchPanel.Comments) })
+                        if (chatLive) LiveChatCard(account, onClick = { openPanel(WatchPanel.Comments) })
                         else CommentsCard(comments, onClick = { openPanel(WatchPanel.Comments) })
                     }
                     items(related.items, key = { it.id }) { VideoCard(it, account, onSave) }
@@ -1346,7 +1396,7 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
                         onRelease = { panelSheet.settle(it) { panel = null } },
                         // Chat live tự nâng riêng thanh nhập (LiveChatContent), khung giữ nguyên chỗ; các bảng khác vẫn nâng cả bảng theo bàn phím.
                         modifier = Modifier.align(Alignment.BottomCenter)
-                            .then(if (open == WatchPanel.Comments && pb.live) Modifier else Modifier.imePadding()),
+                            .then(if (open == WatchPanel.Comments && chatLive) Modifier else Modifier.imePadding()),
                         handleHeight = 20.dp
                     ) {
                         when (open) {
@@ -1389,7 +1439,7 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
                                 onClose = ::closePanel
                             )
                             WatchPanel.Comments ->
-                                if (pb.live) LiveChatContent(video = video, account = account, channelId = info?.channelId ?: video.channelId, onClose = ::closePanel)
+                                if (chatLive) LiveChatContent(video = video, account = account, channelId = info?.channelId ?: video.channelId, subscribed = subscribed, onClose = ::closePanel)
                                 else VideoChatContent(video = video, account = account, onSave = onSave, onClose = ::closePanel)
                         }
                     }
@@ -1421,10 +1471,10 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
                     .offset { IntOffset(((1f - fsPanelFraction) * fsPanelWidth.toPx()).roundToInt(), 0) }
                     .background(Color(0xFF0F0F0F))
                     .draggable(state = chatDragState, orientation = Orientation.Horizontal, onDragStopped = { chatSettle(it) })
-                    .then(if (pb.live) Modifier else Modifier.imePadding())
+                    .then(if (chatLive) Modifier else Modifier.imePadding())
             ) {
                 Column(Modifier.fillMaxSize()) {
-                    if (pb.live) LiveChatContent(video = video, account = account, channelId = info?.channelId ?: video.channelId, onClose = { fsComments = false })
+                    if (chatLive) LiveChatContent(video = video, account = account, channelId = info?.channelId ?: video.channelId, subscribed = subscribed, onClose = { fsComments = false })
                     else VideoChatContent(video = video, account = account, onSave = onSave, onClose = { fsComments = false })
                 }
                 Box(
@@ -1496,6 +1546,54 @@ private fun WatchContent(video: VideoItem, account: Account?, onSave: (VideoItem
     }
 }
 
+/** Thẻ "Sự kiện trực tiếp này sẽ bắt đầu sau mm:ss, lúc 21:00 28 tháng 11" + nút "Thông báo cho tôi", đè lên đáy khung video. */
+@Composable
+private fun UpcomingBanner(event: UpcomingEvent, notifyOn: Boolean, onNotify: () -> Unit, onStart: () -> Unit, modifier: Modifier = Modifier) {
+    val now by androidx.compose.runtime.produceState(System.currentTimeMillis()) {
+        while (true) { value = System.currentTimeMillis(); delay(1_000) }
+    }
+    val start = event.startMs
+    val left = start?.let { ((it - now) / 1000).coerceAtLeast(0) }
+    // Tới giờ thì thử phát lại đều đặn cho tới khi YouTube cho phát.
+    LaunchedEffect(left == 0L, start == null) {
+        if (left == 0L) {
+            delay(4_000)
+            while (true) { onStart(); delay(8_000) }
+        } else if (start == null) {
+            // Không biết giờ bắt đầu: thỉnh thoảng thử phát lại.
+            while (true) { delay(30_000); onStart() }
+        }
+    }
+    val title = when {
+        left == null -> event.text ?: "Sự kiện trực tiếp sắp diễn ra"
+        left == 0L -> "Sự kiện trực tiếp sắp bắt đầu…"
+        else -> "Sự kiện trực tiếp này sẽ bắt đầu sau " +
+            (if (left >= 3600) "%d:%02d:%02d".format(left / 3600, left % 3600 / 60, left % 60) else "%02d:%02d".format(left / 60, left % 60))
+    }
+    val sub = start?.let { "lúc " + java.text.SimpleDateFormat("HH:mm d 'tháng' M", java.util.Locale.forLanguageTag("vi")).format(java.util.Date(it)) }
+    Row(
+        modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp)
+            .clip(RoundedCornerShape(14.dp)).background(Color(0xB3212121))
+            .padding(start = 16.dp, end = 12.dp, top = 12.dp, bottom = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (sub != null) Text(sub, fontSize = 13.sp, color = Color(0xFFCCCCCC), maxLines = 1)
+        }
+        Spacer(Modifier.width(10.dp))
+        Row(
+            Modifier.clip(RoundedCornerShape(50)).background(Color(0x40FFFFFF)).clickable(onClick = onNotify)
+                .padding(horizontal = 14.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(if (notifyOn) BellRingIcon else BellOffIcon, null, Modifier.size(20.dp), tint = Color.White)
+            Spacer(Modifier.width(8.dp))
+            Text(if (notifyOn) "Đã bật thông báo" else "Thông báo cho tôi", fontSize = 14.sp, fontWeight = FontWeight.Medium, color = Color.White, maxLines = 1)
+        }
+    }
+}
+
 @Composable
 private fun WatchAction(icon: ImageVector, description: String, effect: TapEffectState? = null, onClick: () -> Unit) {
     // Lớp bấm được cắt tròn nằm riêng bên dưới để chấm confetti của tapEffect bay ra ngoài khung không bị cắt.
@@ -1546,6 +1644,9 @@ private fun CommentsCard(page: CommentPage?, onClick: () -> Unit) {
 private fun WatchPlayerArea(
     pb: WatchPlayback,
     video: VideoItem,
+    upcoming: UpcomingEvent?,
+    reminderOn: Boolean,
+    onUpcomingNotify: () -> Unit,
     hasNext: Boolean,
     hasPrev: Boolean,
     onPrev: () -> Unit,
@@ -1680,6 +1781,14 @@ private fun WatchPlayerArea(
             }
         }
         when {
+            // Buổi live sắp diễn ra: thay chữ "Không phát được" bằng thẻ đếm ngược + nút thông báo như YouTube.
+            (upcoming != null || pb.waiting) && !pb.live -> UpcomingBanner(
+                upcoming ?: UpcomingEvent(null, null),
+                notifyOn = reminderOn,
+                onNotify = onUpcomingNotify,
+                onStart = { pb.retry() },
+                modifier = Modifier.align(Alignment.BottomCenter)
+            )
             pb.failed -> Box(
                 Modifier.fillMaxSize().background(Color(0x99000000)).clickable { pb.retry() },
                 contentAlignment = Alignment.Center

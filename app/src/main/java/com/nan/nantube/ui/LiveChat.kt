@@ -107,7 +107,10 @@ import com.nan.nantube.data.ChatPollChoice
 import com.nan.nantube.data.ChatRole
 import com.nan.nantube.data.ChatRun
 import com.nan.nantube.data.ChatSendException
+import com.nan.nantube.data.isMemberOnlyRestriction
 import com.nan.nantube.data.LiveChatRepo
+import com.nan.nantube.data.LoginKind
+import com.nan.nantube.data.AccountStore
 import com.nan.nantube.data.InnerTube
 import com.nan.nantube.data.VideoItem
 import com.composables.icons.lucide.Check
@@ -164,7 +167,7 @@ internal fun LiveChatCard(account: Account?, onClick: () -> Unit) {
  * tin nhắn ghim, nút cuộn xuống, ô nhập kèm bộ chọn emoji, bảng chọn. Đọc / gửi / bình chọn theo tài khoản đang chọn (chưa đăng nhập thì chỉ đọc).
  */
 @Composable
-internal fun LiveChatContent(video: VideoItem, account: Account?, channelId: String? = video.channelId, onClose: () -> Unit) {
+internal fun LiveChatContent(video: VideoItem, account: Account?, channelId: String? = video.channelId, subscribed: Boolean = false, onClose: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val messages = remember(video.id) { mutableStateListOf<ChatMessage>() }
@@ -173,6 +176,10 @@ internal fun LiveChatContent(video: VideoItem, account: Account?, channelId: Str
     var restricted by remember(video.id) { mutableStateOf<String?>(null) }
     var poll by remember(video.id) { mutableStateOf<ChatPoll?>(null) }
     var status by remember(video.id) { mutableStateOf<String?>("Đang tải trò chuyện…") }
+    // Đọc lại khung chat khi đổi trạng thái đăng ký kênh hoặc khi người dùng chạm dòng "chỉ dành cho người đăng ký".
+    var reloadKey by remember(video.id) { mutableIntStateOf(0) }
+    // Gửi thử mà YouTube vẫn từ chối vì hạn chế (vd kênh đòi đăng ký đủ lâu): thôi tự mở khóa, tin YouTube.
+    var serverLocked by remember(video.id, account?.id) { mutableStateOf(false) }
 
     var sendParams by remember(video.id, account?.id) { mutableStateOf<String?>(null) }
     var sending by remember(video.id) { mutableStateOf(false) }
@@ -192,7 +199,10 @@ internal fun LiveChatContent(video: VideoItem, account: Account?, channelId: Str
         for (e in batch.panelEvents) when (e) {
             is ChatPanelEvent.ShowPoll -> poll = e.poll.after(poll)
             is ChatPanelEvent.ClosePanel -> poll?.let { p -> if (e.panelId == null || p.panelId == null || p.panelId == e.panelId) poll = null }
-            is ChatPanelEvent.Restricted -> restricted = e.text
+            // Tự kiểm tra thay YouTube: kênh đòi "chỉ người đăng ký" mà tài khoản này đã đăng ký kênh thì mở khóa luôn.
+            // Chỉ chế độ dành riêng cho thành viên (hoặc lần gửi trước bị YouTube từ chối) mới giữ khóa.
+            is ChatPanelEvent.Restricted ->
+                restricted = if (account != null && subscribed && !serverLocked && !isMemberOnlyRestriction(e.text)) null else e.text
             is ChatPanelEvent.Input -> {
                 restricted = null
                 if (e.sendParams != null) sendParams = e.sendParams
@@ -201,7 +211,11 @@ internal fun LiveChatContent(video: VideoItem, account: Account?, channelId: Str
         if (messages.isNotEmpty()) status = null
     }
 
-    LaunchedEffect(video.id, account?.id) {
+    // Tài khoản mã (YouTube TV) không chat live được: cần phiên web cùng email. Có rồi thì chat đi bằng phiên web đó.
+    val needsWeb = remember(account?.id, AccountStore.accounts.size, reloadKey) {
+        account != null && account.kind == LoginKind.CODE && LiveChatRepo.webTwin(account) == null
+    }
+    LaunchedEffect(video.id, account?.id, subscribed, reloadKey, needsWeb) {
         try {
             val start = LiveChatRepo.start(video.id, account)
             groups = start.emojiGroups
@@ -318,7 +332,7 @@ internal fun LiveChatContent(video: VideoItem, account: Account?, channelId: Str
                         throw e
                     } catch (e: ChatSendException) {
                         // Chủ kênh bật chế độ chỉ người đăng ký / thành viên: hiện dòng thông báo và ẩn thanh nhập.
-                        if (e.restricted) restricted = e.message
+                        if (e.restricted) { serverLocked = true; restricted = e.message }
                         toast(e.message ?: "Không gửi được tin nhắn")
                     } catch (e: Exception) {
                         toast(e.message ?: "Không gửi được tin nhắn")
@@ -488,12 +502,30 @@ internal fun LiveChatContent(video: VideoItem, account: Account?, channelId: Str
             ChatPollCard(activePoll, onChoose = ::vote)
         }
         val restrictedText = restricted
-        if (restrictedText != null) {
+        if (needsWeb && account != null) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(ChatInfoIcon, null, Modifier.size(24.dp), tint = NanColors.TextSecondary)
+                Spacer(Modifier.width(14.dp))
+                Text(
+                    "Tính năng này không hoạt động với tài khoản đăng nhập bằng mã. Bạn cần đăng nhập bằng cách tự nhập Gmail.",
+                    fontSize = 14.sp, lineHeight = 18.sp, modifier = Modifier.weight(1f)
+                )
+                Spacer(Modifier.width(10.dp))
+                Box(
+                    Modifier.clip(RoundedCornerShape(50)).background(Color.White)
+                        .clickable { WebSignInRequest.open(account.email) }
+                        .padding(horizontal = 14.dp, vertical = 8.dp)
+                ) { Text("Đăng nhập", fontSize = 14.sp, fontWeight = FontWeight.Medium, color = Color.Black) }
+            }
+        } else if (restrictedText != null) {
             // Chủ kênh chỉ cho một nhóm người chat (vd chỉ người đăng ký).
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(ChatInfoIcon, null, Modifier.size(24.dp), tint = NanColors.TextSecondary)
                 Spacer(Modifier.width(14.dp))
-                Text(restrictedText, fontSize = 15.sp, modifier = Modifier.weight(1f))
+                Text(
+                    restrictedText, fontSize = 15.sp,
+                    modifier = Modifier.weight(1f).clickable { serverLocked = false; restricted = null; reloadKey++ }
+                )
                 // Nút donate (Super Chat) đã bỏ.
             }
         } else {

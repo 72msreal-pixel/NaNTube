@@ -29,6 +29,16 @@ data class ShortMeta(
     val loudnessDb: Float? = null
 )
 
+/** Buổi phát trực tiếp / công chiếu chưa bắt đầu: giờ bắt đầu (ms, null = không biết) và dòng chữ YouTube ghi sẵn. */
+class UpcomingEvent(
+    val startMs: Long?,
+    val text: String?,
+    /** Mã của nút "Thông báo cho tôi" (nhắc đúng buổi này, không phải chuông kênh) + trạng thái đã bật chưa. */
+    val addParams: String? = null,
+    val removeParams: String? = null,
+    val reminderOn: Boolean = false
+)
+
 /**
  * Kênh của Short kèm trạng thái đăng ký thật của tài khoản (đọc từ nút đăng ký trong `next`), để nút Đăng ký / Đã đăng ký
  * đúng ngay từ đầu và có đủ mức thông báo cho bảng chuông.
@@ -46,7 +56,9 @@ class ShortInfo(
     val likes: String? = null,
     val comments: String? = null,
     /** Tài khoản đã thích video chưa, theo `next` (null = `next` không nói). */
-    val liked: Boolean? = null
+    val liked: Boolean? = null,
+    /** Có khi video là buổi live / công chiếu sắp diễn ra (chưa phát được): giao diện đếm ngược và dùng khung chat live. */
+    val upcoming: UpcomingEvent? = null
 ) {
     fun toChannel(): SearchResult.Channel? {
         val id = channelId ?: return null
@@ -611,6 +623,7 @@ object ShortsPlayback {
             title = ytText(findKey(root, "videoPrimaryInfoRenderer")?.opt("title"))?.ifBlank { null },
             likes = likeLabel(root),
             liked = likeStatus(root),
+            upcoming = upcomingOf(root),
             comments = ytText(findKey(root, "commentsEntryPointHeaderRenderer")?.opt("commentCount"))?.takeIf { c -> c.any(Char::isDigit) }
         )
     }
@@ -650,9 +663,43 @@ object ShortsPlayback {
         return null
     }
 
+    /** Buổi phát sắp diễn ra: theo upcomingEventData / màn chờ của live / isUpcoming, hoặc dòng "N người đang chờ". */
+    private fun upcomingOf(root: JSONObject): UpcomingEvent? {
+        val event = findKey(root, "upcomingEventData")
+        val slate = findKey(root, "liveStreamOfflineSlateRenderer")
+        val waiting = ytText(findKey(root, "videoViewCountRenderer")?.opt("viewCount"))
+            ?.let { Regex("(?i)đang chờ|waiting").containsMatchIn(it) } == true
+        val flagged = root.toString().contains("\"isUpcoming\":true")
+        val addParams = findKey(root, "addUpcomingEventReminderEndpoint")?.optString("params")?.ifBlank { null }
+        val removeParams = findKey(root, "removeUpcomingEventReminderEndpoint")?.optString("params")?.ifBlank { null }
+        val toggle = findAllKeys(root, "toggleButtonRenderer").firstOrNull { it.toString().contains("UpcomingEventReminderEndpoint") }
+        if (event == null && slate == null && !waiting && !flagged && addParams == null) return null
+        val reminderOn = if (event != null && event.has("isReminderSet")) event.optBoolean("isReminderSet") else toggle?.optBoolean("isToggled") == true
+        val start = (event?.optString("startTime")?.ifBlank { null } ?: slate?.optString("scheduledStartTime")?.ifBlank { null })
+            ?.toLongOrNull()?.times(1000)
+            // Dự phòng: giờ bắt đầu nằm đâu đó trong `next` dưới dạng scheduledStartTime (giây).
+            ?: Regex("\"scheduledStartTime\":\"(\\d{9,})\"").find(root.toString())?.groupValues?.get(1)?.toLongOrNull()?.times(1000)
+        return UpcomingEvent(
+            start, ytText(event?.opt("upcomingEventText"))?.takeUnless { it.contains("DATE_PLACEHOLDER") },
+            addParams, removeParams, reminderOn
+        )
+    }
+
+    /** Bật / tắt nhắc "Thông báo cho tôi" của buổi live sắp diễn ra (YouTube báo khi buổi phát bắt đầu). */
+    suspend fun setReminder(account: Account, on: Boolean, params: String) {
+        InnerTube.callAny(
+            if (on) "notification/add_upcoming_event_reminder" else "notification/remove_upcoming_event_reminder",
+            JSONObject().put("params", params), account
+        )
+    }
+
     private fun likeLabel(root: JSONObject): String? {
         val shown = findKey(root, "likeCountEntity")?.dig("likeCountIfIndifferent", "content") as? String
         if (shown != null && shown.any(Char::isDigit)) return shown
+        // Video sắp live: số thích nằm trong nút thích kiểu mới (tiêu đề nút) chứ không có likeCountEntity.
+        val vm = findKey(root, "likeButtonViewModel")
+        val button = vm?.let { findKey(it, "buttonViewModel") }
+        (button?.optString("title") ?: "").takeIf { t -> t.any(Char::isDigit) }?.let { return it }
         val raw = Regex("\"likeCount\":\"?(\\d+)").find(root.toString())?.groupValues?.get(1)?.toLongOrNull()
         return raw?.let { countLabel(it) }
     }
