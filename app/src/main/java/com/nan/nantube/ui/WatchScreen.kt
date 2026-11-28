@@ -2134,7 +2134,8 @@ private fun WatchSeekBar(
             Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .height(16.dp)
+                // Vùng chạm cao 30dp (vạch vẫn mảnh 2dp nằm sát đáy) để dễ chạm / kéo bằng ngón tay, không phải nhắm đúng vạch.
+                .height(30.dp)
                 .pointerInput(durationMs) {
                     detectTapGestures { o ->
                         if (durationMs > 0) onSeek((o.x / size.width * durationMs).toLong().coerceIn(0L, durationMs))

@@ -30,7 +30,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-/** Công tắc kiểu YouTube: đường ray mảnh, núm to hơn đường ray (tắt: xám, bật: xanh trên ray xanh đậm). */
+/** Công tắc kiểu YouTube (đo từ app thật): ray 25x14dp, núm 20dp nhô ra hai đầu ray, tổng rộng 40dp (tắt: xám, bật: xanh trên ray xanh đậm). */
 @Composable
 fun NanSwitch(checked: Boolean, onCheckedChange: (Boolean) -> Unit, modifier: Modifier = Modifier) {
     val t by animateFloatAsState(if (checked) 1f else 0f, tween(150), label = "nanSwitch")
@@ -45,12 +45,12 @@ fun NanSwitch(checked: Boolean, onCheckedChange: (Boolean) -> Unit, modifier: Mo
         contentAlignment = Alignment.CenterStart
     ) {
         Box(
-            Modifier.align(Alignment.Center).size(36.dp, 14.dp).clip(RoundedCornerShape(7.dp))
-                .background(lerp(Color(0xFF3F3F3F), Color(0xFF2A4A6E), t))
+            Modifier.align(Alignment.Center).size(25.dp, 14.dp).clip(RoundedCornerShape(7.dp))
+                .background(lerp(Color(0xFF565656), Color(0xFF1D3B55), t))
         )
         Box(
             Modifier.offset(x = 20.dp * t).size(20.dp).clip(CircleShape)
-                .background(lerp(Color(0xFFAAAAAA), NanColors.Blue, t))
+                .background(lerp(Color(0xFFB9B9B9), NanColors.Blue, t))
         )
     }
 }

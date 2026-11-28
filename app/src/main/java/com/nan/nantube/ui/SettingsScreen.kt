@@ -27,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -59,7 +60,11 @@ import com.nan.nantube.R
 
 private const val EXPERIMENTS = "Thử nghiệm các tính năng mới"
 private const val QUALITY = "Chất lượng"
-private val OPENABLE_PAGES = setOf(EXPERIMENTS, QUALITY)
+private const val PLAYBACK = "Phát"
+private const val CAPTIONS = "Phụ đề"
+private const val DATA_SAVER = "Tiết kiệm dữ liệu"
+private const val TV = "Xem trên TV"
+private val OPENABLE_PAGES = setOf(EXPERIMENTS, QUALITY, PLAYBACK, DATA_SAVER)
 
 private data class SettingItem(val icon: ImageVector, val title: String)
 
@@ -92,6 +97,7 @@ private val videoItems = listOf(
 
 @Composable
 fun SettingsScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
     var page by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(PipState.openExperiments) {
         if (PipState.openExperiments) {
@@ -105,6 +111,14 @@ fun SettingsScreen(onBack: () -> Unit) {
     }
     if (page == QUALITY) {
         QualitySettingsScreen(onBack = { page = null })
+        return
+    }
+    if (page == PLAYBACK) {
+        PlaybackSettingsScreen(onBack = { page = null })
+        return
+    }
+    if (page == DATA_SAVER) {
+        DataSaverSettingsScreen(onBack = { page = null })
         return
     }
     Column(Modifier.fillMaxSize()) {
@@ -128,7 +142,15 @@ fun SettingsScreen(onBack: () -> Unit) {
             item { HorizontalDivider(color = NanColors.Surface) }
             item { SectionHeader("Lựa chọn ưu tiên về video và âm thanh") }
             items(videoItems) { item ->
-                SettingRow(item.title, onClick = { if (item.title in OPENABLE_PAGES) page = item.title }) { Icon(item.icon, null, Modifier.size(24.dp)) }
+                SettingRow(item.title, onClick = {
+                    when (item.title) {
+                        // Như YouTube: "Phụ đề" mở thẳng trang "Tùy chọn phụ đề" của hệ thống (xem trước, bật/tắt, cỡ và kiểu, tùy chọn khác).
+                        CAPTIONS -> openSystemCaptionSettings(context)
+                        // Mở màn "Thêm thiết bị" có sẵn (nhập mã TV để ghép, đang ghép thì hiện tên TV + Ngắt kết nối).
+                        TV -> TvScreen.show()
+                        in OPENABLE_PAGES -> page = item.title
+                    }
+                }) { Icon(item.icon, null, Modifier.size(24.dp)) }
             }
             item { HorizontalDivider(color = NanColors.Surface) }
             item { SectionHeader("Giới thiệu") }
@@ -165,5 +187,15 @@ private fun SettingRow(title: String, subtitle: String? = null, onClick: () -> U
                 Text(subtitle, fontSize = 13.sp, color = NanColors.TextSecondary)
             }
         }
+    }
+}
+
+private fun openSystemCaptionSettings(context: android.content.Context) {
+    val intents = listOf(
+        android.content.Intent(android.provider.Settings.ACTION_CAPTIONING_SETTINGS),
+        android.content.Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)
+    )
+    for (intent in intents) {
+        if (runCatching { context.startActivity(intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) }.isSuccess) return
     }
 }
