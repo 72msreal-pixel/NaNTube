@@ -4,7 +4,13 @@ import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -51,6 +57,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -62,6 +69,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
@@ -80,6 +89,9 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.roundToInt
 import androidx.compose.foundation.text.InlineTextContent
 import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.ui.unit.dp
@@ -94,6 +106,7 @@ import com.nan.nantube.data.ChatPoll
 import com.nan.nantube.data.ChatPollChoice
 import com.nan.nantube.data.ChatRole
 import com.nan.nantube.data.ChatRun
+import com.nan.nantube.data.ChatSendException
 import com.nan.nantube.data.LiveChatRepo
 import com.nan.nantube.data.InnerTube
 import com.nan.nantube.data.VideoItem
@@ -108,6 +121,11 @@ private val MemberGreen = Color(0xFF2BA640)
 private val ModeratorBlue = Color(0xFF5E84F1)
 private val NameGray = Color(0xFFAAAAAA)
 private val HeartPink = Color(0xFFFF2D6F)
+
+// Tạm tắt 3 tính năng của khung chat trực tiếp; đổi thành true để bật lại.
+private const val SHOW_CHAT_XP = false      // viên thuốc "0 XP" ở đầu khung
+private const val SHOW_CHAT_HEART = false   // nút thả tim nổi góc dưới phải
+private const val SHOW_CHAT_POLL = false    // thẻ bình chọn của chủ kênh
 private val FALLBACK_EMOJI = listOf(
     "😀", "😂", "😍", "🥰", "😎", "🤔", "😭", "😡", "👍", "👏", "🙏", "🔥", "❤️", "💯", "🎉", "😮", "😴", "🤣", "👀", "💀", "✨"
 )
@@ -263,20 +281,28 @@ internal fun LiveChatContent(video: VideoItem, account: Account?, channelId: Str
     fun toast(message: String) = Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
     // Mã gõ emoji (":ten:") → emoji, để gửi đúng đoạn emoji thay vì chữ.
     val emojiByShortcut = remember(groups) { groups.flatMap { it.second }.associateBy { it.shortcut } }
+    // Vào chế độ hạn chế thì thanh nhập biến mất: hạ bàn phím, đóng bảng emoji.
+    LaunchedEffect(restricted != null) {
+        if (restricted != null) {
+            emojiOpen = false
+            keyboard?.hide()
+            focusManager.clearFocus()
+        }
+    }
     fun trySend() {
         val message = text.trim()
         if (message.isEmpty() || sending) return
         val me = account
-        // Như meetube: khung chat không kèm mã gửi (đọc ẩn danh) thì tự dựng từ kênh + video; YouTube cho hay không sẽ báo lỗi lúc gửi.
-        val params = sendParams ?: channelId?.let { LiveChatRepo.localSendParams(it, video.id) }
+        // Như meetube: mã tự dựng từ kênh + video luôn có sẵn làm dự phòng cho mã YouTube kèm trong ô nhập.
+        val localParams = channelId?.let { LiveChatRepo.localSendParams(it, video.id) }
         when {
             me == null -> toast("Đăng nhập để trò chuyện")
-            params == null -> toast("Chưa biết kênh của buổi phát này nên chưa gửi được")
+            sendParams == null && localParams == null -> toast("Chưa biết kênh của buổi phát này nên chưa gửi được")
             else -> {
                 sending = true
                 scope.launch {
                     try {
-                        val sent = LiveChatRepo.send(me, params, message, emojiByShortcut)
+                        val sent = LiveChatRepo.send(me, sendParams, localParams, message, emojiByShortcut)
                         apply(sent)
                         if (sent.messages.isEmpty()) {
                             val echo = ChatMessage(
@@ -290,6 +316,10 @@ internal fun LiveChatContent(video: VideoItem, account: Account?, channelId: Str
                         follow = true
                     } catch (e: CancellationException) {
                         throw e
+                    } catch (e: ChatSendException) {
+                        // Chủ kênh bật chế độ chỉ người đăng ký / thành viên: hiện dòng thông báo và ẩn thanh nhập.
+                        if (e.restricted) restricted = e.message
+                        toast(e.message ?: "Không gửi được tin nhắn")
                     } catch (e: Exception) {
                         toast(e.message ?: "Không gửi được tin nhắn")
                     } finally {
@@ -354,18 +384,18 @@ internal fun LiveChatContent(video: VideoItem, account: Account?, channelId: Str
         // Đầu khung: tiêu đề + "Tin nhắn hàng đầu · số người", điểm kinh nghiệm, bộ lọc, đóng.
         Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 2.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text("Trò chuyện trực tiếp", fontSize = 19.sp, lineHeight = 24.sp, fontWeight = FontWeight.Bold)
+                Text("Trò chuyện trực tiếp", fontSize = 18.sp, lineHeight = 23.sp, fontWeight = FontWeight.Bold)
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Tin nhắn hàng đầu", fontSize = 13.sp, color = NanColors.TextSecondary)
+                    Text("Tin nhắn hàng đầu", fontSize = 12.sp, color = NanColors.TextSecondary)
                     if (viewers != null) {
                         Spacer(Modifier.width(14.dp))
-                        Icon(ChatUserIcon, null, Modifier.size(16.dp), tint = NanColors.TextSecondary)
+                        Icon(ChatUserIcon, null, Modifier.size(15.dp), tint = NanColors.TextSecondary)
                         Spacer(Modifier.width(4.dp))
-                        Text(viewers, fontSize = 13.sp, color = NanColors.TextSecondary)
+                        Text(viewers, fontSize = 12.sp, color = NanColors.TextSecondary)
                     }
                 }
             }
-            if (account != null) {
+            if (SHOW_CHAT_XP && account != null) {
                 Row(
                     Modifier.clip(RoundedCornerShape(50)).background(NanColors.Surface).padding(horizontal = 12.dp, vertical = 7.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -376,11 +406,11 @@ internal fun LiveChatContent(video: VideoItem, account: Account?, channelId: Str
                 }
                 Spacer(Modifier.width(6.dp))
             }
-            Box(Modifier.size(40.dp).clip(CircleShape).clickable { }, contentAlignment = Alignment.Center) {
-                Icon(ChatSlidersIcon, "Cài đặt trò chuyện", Modifier.size(24.dp), tint = Color.White)
+            Box(Modifier.size(38.dp).clip(CircleShape).clickable { }, contentAlignment = Alignment.Center) {
+                Icon(ChatSlidersIcon, "Cài đặt trò chuyện", Modifier.size(21.dp), tint = Color.White)
             }
-            Box(Modifier.size(40.dp).clip(CircleShape).clickable(onClick = onClose), contentAlignment = Alignment.Center) {
-                Icon(IconClose, "Đóng", Modifier.size(26.dp), tint = Color.White)
+            Box(Modifier.size(38.dp).clip(CircleShape).clickable(onClick = onClose), contentAlignment = Alignment.Center) {
+                Icon(IconClose, "Đóng", Modifier.size(23.dp), tint = Color.White)
             }
         }
         HorizontalDivider(color = NanColors.Divider)
@@ -407,30 +437,54 @@ internal fun LiveChatContent(video: VideoItem, account: Account?, channelId: Str
                 ) { Icon(ChatArrowDownIcon, "Xuống cuối", Modifier.size(22.dp), tint = Color(0xFF0F0F0F)) }
             }
             // Nút thả tim (làm màu như YouTube, chưa gửi cảm xúc thật).
-            Box(
+            if (SHOW_CHAT_HEART) Box(
                 Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 8.dp).size(50.dp).clip(CircleShape)
                     .background(Color(0xFF0F0F0F)).border(BorderStroke(1.dp, Color(0x40FFFFFF)), CircleShape),
                 contentAlignment = Alignment.Center
             ) { Icon(ChatHeartIcon, "Thả tim", Modifier.size(30.dp), tint = HeartPink) }
         }
-
-        pinned?.let { p ->
+        // Thanh ghim: bấm để mở/thu; vuốt/ném xuống thì ẩn (không kéo cao hơn vị trí mặc định); mở lại khung chat thì hiện lại.
+        val pinnedMsg = pinned
+        var pinnedDismissed by remember(video.id, pinnedMsg?.id) { mutableStateOf(false) }
+        var pinnedExpanded by remember(video.id, pinnedMsg?.id) { mutableStateOf(false) }
+        val pinnedOffset = remember { Animatable(0f) }
+        LaunchedEffect(pinnedMsg?.id) { pinnedOffset.snapTo(0f) }
+        if (pinnedMsg != null && !pinnedDismissed) {
+            val dismissPx = with(density) { 36.dp.toPx() }
+            val flyPx = with(density) { 120.dp.toPx() }
+            val dragState = rememberDraggableState { d -> scope.launch { pinnedOffset.snapTo((pinnedOffset.value + d).coerceAtLeast(0f)) } }
+            // Khe ghim cố định chiều cao: thanh bị kéo xuống thì chui dưới vạch kẻ (cắt cứng), không đè lên ô nhập.
+            Box(Modifier.fillMaxWidth().clipToBounds()) {
             Row(
-                Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp).clip(RoundedCornerShape(50)).background(NanColors.Surface)
-                    .padding(start = 10.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
-                verticalAlignment = Alignment.CenterVertically
+                Modifier.offset { IntOffset(0, pinnedOffset.value.roundToInt()) }
+                    .fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp)
+                    .clip(RoundedCornerShape(if (pinnedExpanded) 18.dp else 24.dp)).background(NanColors.Surface)
+                    .draggable(
+                        state = dragState, orientation = Orientation.Vertical,
+                        onDragStopped = { v ->
+                            if (pinnedOffset.value > dismissPx || v > 1800f) {
+                                pinnedOffset.animateTo(pinnedOffset.value + flyPx)
+                                pinnedDismissed = true
+                            } else pinnedOffset.animateTo(0f)
+                        }
+                    )
+                    .clickable { pinnedExpanded = !pinnedExpanded }
+                    .animateContentSize()
+                    .padding(start = 12.dp, end = 10.dp, top = 8.dp, bottom = 8.dp),
+                verticalAlignment = if (pinnedExpanded) Alignment.Top else Alignment.CenterVertically
             ) {
-                PersonAvatar(p.photo, p.author, 24)
-                Spacer(Modifier.width(10.dp))
-                ChatText(p, Modifier.weight(1f), maxLines = 1, fontSize = 14.sp)
-                Icon(WatchMore, "Tin nhắn ghim", Modifier.size(24.dp), tint = Color.White)
+                PersonAvatar(pinnedMsg.photo, pinnedMsg.author, 24)
+                Spacer(Modifier.width(8.dp))
+                ChatText(pinnedMsg, Modifier.weight(1f), maxLines = if (pinnedExpanded) Int.MAX_VALUE else 1)
+                Icon(ChatMoreHorizontalIcon, "Tin nhắn ghim", Modifier.size(24.dp), tint = Color.White)
+            }
             }
         }
         HorizontalDivider(color = NanColors.Divider)
 
         // Bảng chọn của chủ kênh nằm ngay trên ô nhập như YouTube; ẩn khi đang gõ để dành chỗ cho tin nhắn.
         val activePoll = poll
-        if (activePoll != null && imeBottom == 0 && !emojiOpen) {
+        if (SHOW_CHAT_POLL && activePoll != null && imeBottom == 0 && !emojiOpen) {
             ChatPollCard(activePoll, onChoose = ::vote)
         }
         val restrictedText = restricted
@@ -439,20 +493,18 @@ internal fun LiveChatContent(video: VideoItem, account: Account?, channelId: Str
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(ChatInfoIcon, null, Modifier.size(24.dp), tint = NanColors.TextSecondary)
                 Spacer(Modifier.width(14.dp))
-                Text(restrictedText, fontSize = 14.sp, modifier = Modifier.weight(1f))
-                Box(Modifier.size(width = 52.dp, height = 40.dp).clip(RoundedCornerShape(14.dp)).background(NanColors.Surface), contentAlignment = Alignment.Center) {
-                    Icon(ChatBanknoteIcon, null, Modifier.size(24.dp), tint = Color.White)
-                }
+                Text(restrictedText, fontSize = 15.sp, modifier = Modifier.weight(1f))
+                // Nút donate (Super Chat) đã bỏ.
             }
         } else {
             val typing = focused || emojiOpen
-            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (typing) {
                     ChatAvatar(account, 30)
                     Spacer(Modifier.width(10.dp))
                 }
                 Box(
-                    Modifier.weight(1f).height(42.dp).clip(RoundedCornerShape(50)).background(NanColors.Surface)
+                    Modifier.weight(1f).height(35.dp).clip(RoundedCornerShape(50)).background(NanColors.Surface)
                         .padding(start = 16.dp, end = 4.dp),
                     contentAlignment = Alignment.CenterStart
                 ) {
@@ -461,20 +513,20 @@ internal fun LiveChatContent(video: VideoItem, account: Account?, channelId: Str
                             BasicTextField(
                                 value = text,
                                 onValueChange = { text = it },
-                                textStyle = TextStyle(color = Color.White, fontSize = 15.sp),
+                                textStyle = TextStyle(color = Color.White, fontSize = 14.sp),
                                 cursorBrush = SolidColor(Color.White),
                                 singleLine = true,
                                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                                 keyboardActions = KeyboardActions(onSend = { trySend() }),
                                 modifier = Modifier.fillMaxWidth().focusRequester(focus).onFocusChanged { focused = it.isFocused },
                                 decorationBox = { inner ->
-                                    if (text.isEmpty()) Text(if (typing) "Trò chuyện…" else "Nhập tin nhắn…", fontSize = 15.sp, color = NanColors.TextSecondary)
+                                    if (text.isEmpty()) Text(if (typing) "Trò chuyện…" else "Nhập tin nhắn…", fontSize = 14.sp, color = NanColors.TextSecondary)
                                     inner()
                                 }
                             )
                         }
-                        Box(Modifier.size(36.dp).clip(CircleShape).clickable { toggleEmoji() }, contentAlignment = Alignment.Center) {
-                            Icon(ChatSmileIcon, "Emoji", Modifier.size(26.dp), tint = Color.White)
+                        Box(Modifier.size(32.dp).clip(CircleShape).clickable { toggleEmoji() }, contentAlignment = Alignment.Center) {
+                            Icon(ChatSmileIcon, "Emoji", Modifier.size(22.dp), tint = Color.White)
                         }
                     }
                 }
@@ -569,9 +621,9 @@ private fun ChatPollCard(poll: ChatPoll, onChoose: (ChatPollChoice) -> Unit) {
 
 @Composable
 private fun ChatRow(m: ChatMessage) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 5.dp), verticalAlignment = Alignment.Top) {
-        PersonAvatar(m.photo, m.author, 26)
-        Spacer(Modifier.width(10.dp))
+    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.Top) {
+        PersonAvatar(m.photo, m.author, 24)
+        Spacer(Modifier.width(8.dp))
         ChatText(m, Modifier.weight(1f))
     }
 }
@@ -581,7 +633,9 @@ private fun ChatRow(m: ChatMessage) {
  * kèm huy hiệu điều hành / thành viên và nội dung có emoji chèn ngay trong dòng chữ.
  */
 @Composable
-private fun ChatText(m: ChatMessage, modifier: Modifier = Modifier, maxLines: Int = Int.MAX_VALUE, fontSize: androidx.compose.ui.unit.TextUnit = 15.sp) {
+private fun ChatText(m: ChatMessage, modifier: Modifier = Modifier, maxLines: Int = Int.MAX_VALUE, fontSize: androidx.compose.ui.unit.TextUnit = 13.5.sp) {
+    // Luôn hiện đủ tên (không cắt).
+    val author = m.author
     val emojiSize = (fontSize.value * 1.4f).sp
     val byOwner = m.role == ChatRole.OWNER
     // Cùng logic tích với bình luận: cờ VERIFIED của YouTube, hoặc tra kênh theo mã kênh (chủ kênh thường không kèm cờ).
@@ -591,23 +645,24 @@ private fun ChatText(m: ChatMessage, modifier: Modifier = Modifier, maxLines: In
         ChatRole.MEMBER -> MemberGreen
         else -> NameGray
     }
-    val tagSize = (fontSize.value * 0.87f).sp
+    val tagSize = fontSize
     val tagLine = (fontSize.value * 1.07f).sp
     val density = LocalDensity.current
+    val baseStyle = LocalTextStyle.current
     val measurer = rememberTextMeasurer()
     val built = remember(m.id, verified) {
         val inlines = HashMap<String, InlineTextContent>()
         // Placeholder phải biết trước bề rộng: đo tên rồi cộng phần đệm của viên sáng và tích.
         val nameStyle = TextStyle(fontSize = tagSize, lineHeight = tagLine, fontWeight = FontWeight.Medium)
-        val nameWidthPx = measurer.measure(m.author, nameStyle, maxLines = 1).size.width
-        val extraDp = (if (byOwner) 9 else 0) + (if (verified) 16 else 0)
+        val nameWidthPx = measurer.measure(author, baseStyle.merge(nameStyle), maxLines = 1).size.width
+        val extraDp = (if (byOwner) 9 else 0) + (if (verified) 16 else 0) + 3
         val width = with(density) { (nameWidthPx + (extraDp + 1).dp.toPx()).toSp() }
         val height = if (byOwner) with(density) { 17.dp.toSp() } else tagLine
         inlines["tag"] = InlineTextContent(Placeholder(width, height, PlaceholderVerticalAlign.Center)) {
-            ChatNameTag(m.author, byOwner, verified, color = nameColor, fontSize = tagSize, lineHeight = tagLine, fontWeight = FontWeight.Medium)
+            ChatNameTag(author, byOwner, verified, color = nameColor, fontSize = tagSize, lineHeight = tagLine, fontWeight = FontWeight.Medium, overflow = TextOverflow.Visible)
         }
         val line = buildAnnotatedString {
-            appendInlineContent("tag", m.author)
+            appendInlineContent("tag", author)
             if (m.role == ChatRole.MODERATOR) {
                 append(" ")
                 inlines["mod"] = badge { Icon(ChatShieldIcon, null, Modifier.fillMaxSize(), tint = ModeratorBlue) }
@@ -622,7 +677,19 @@ private fun ChatText(m: ChatMessage, modifier: Modifier = Modifier, maxLines: In
             m.amount?.let { withStyle(SpanStyle(color = Color(0xFFFFD54F), fontWeight = FontWeight.Bold)) { append("$it  ") } }
             m.runs.forEachIndexed { i, run ->
                 when (run) {
-                    is ChatRun.Text -> append(run.text)
+                    is ChatRun.Text -> {
+                        // Link xanh gạch chân, link dài rút gọn "…" như YouTube.
+                        var last = 0
+                        for (mt in UrlRegex.findAll(run.text)) {
+                            append(run.text.substring(last, mt.range.first))
+                            val u = mt.value
+                            withStyle(SpanStyle(color = Color(0xFF3EA6FF), textDecoration = TextDecoration.Underline)) {
+                                append(if (u.length > 38) u.take(37) + "…" else u)
+                            }
+                            last = mt.range.last + 1
+                        }
+                        append(run.text.substring(last))
+                    }
                     is ChatRun.Emoji -> {
                         inlines["e$i"] = InlineTextContent(Placeholder(emojiSize, emojiSize, PlaceholderVerticalAlign.TextCenter)) {
                             AsyncImage(run.emoji.url, run.emoji.shortcut, Modifier.fillMaxSize())
@@ -636,6 +703,8 @@ private fun ChatText(m: ChatMessage, modifier: Modifier = Modifier, maxLines: In
     }
     Text(built.first, modifier, fontSize = fontSize, lineHeight = (fontSize.value * 1.3f).sp, maxLines = maxLines, overflow = TextOverflow.Ellipsis, inlineContent = built.second)
 }
+
+private val UrlRegex = Regex("https?://\\S+")
 
 private fun badge(content: @Composable () -> Unit) =
     InlineTextContent(Placeholder(15.sp, 15.sp, PlaceholderVerticalAlign.TextCenter)) { content() }
@@ -705,6 +774,7 @@ private val ChatKeyboardIcon by lazy {
 private val ChatBackspaceIcon by lazy {
     chatIcon("ChatBackspace", false, "M10 5a2 2 0 0 0-1.344.519l-6.328 5.74a1 1 0 0 0 0 1.481l6.328 5.741A2 2 0 0 0 10 19h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2z", "m12 9 6 6", "m18 9-6 6")
 }
+private val ChatMoreHorizontalIcon by lazy { chatIcon("ChatMoreHorizontal", false, "M5 12h.01", "M12 12h.01", "M19 12h.01") }
 private val ChatMoreVerticalIcon by lazy { chatIcon("ChatMoreVertical", false, "M12 5h.01", "M12 12h.01", "M12 19h.01") }
 private val ChatShieldIcon by lazy {
     chatIcon("ChatShield", true, "M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5l-8-3z")

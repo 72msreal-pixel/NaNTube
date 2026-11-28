@@ -50,6 +50,38 @@ object InnerTube {
         return res.requireJson()
     }
 
+    /** Máy này có phiên web (cookie WebView đủ SAPISID) để ký như trình duyệt không; không phụ thuộc tài khoản đang chọn. */
+    internal fun hasWebSession(): Boolean =
+        rawCookies(ORIGIN)?.let { mtAuthorization(it, System.currentTimeMillis() / 1000, ORIGIN) != null } == true
+
+    /**
+     * Bê nguyên `WebSession.post` của meetube (MediaServiceCore) cho các lệnh ghi của chat trực tiếp: ngữ cảnh tối giản
+     * {clientName, clientVersion, hl, gl, visitorData} (không clientScreen / userAgent / user an toàn như mẫu browse),
+     * chữ ký đủ ba băm, cookie + X-Goog-AuthUser, và KHÔNG thêm query. Chỉ nhận đường dẫn tương đối của InnerTube.
+     */
+    internal suspend fun chatWebPost(endpoint: String, body: JSONObject, authUser: Int): JSONObject {
+        require(endpoint.matches(Regex("[a-z_]+(?:/[a-z_]+)*")))
+        val cookies = rawCookies(ORIGIN) ?: throw AuthRejected()
+        val auth = mtAuthorization(cookies, System.currentTimeMillis() / 1000, ORIGIN) ?: throw AuthRejected()
+        val visitor = visitorData()
+        val client = JSONObject().put("clientName", "WEB").put("clientVersion", MT_WEB_VERSION)
+            .put("hl", "vi").put("gl", "VN")
+        if (!visitor.isNullOrEmpty()) client.put("visitorData", visitor)
+        val payload = JSONObject(body.toString()).put("context", JSONObject().put("client", client))
+        val headers = mutableMapOf(
+            "Cookie" to cookies, "Authorization" to auth,
+            "Origin" to ORIGIN, "X-Origin" to ORIGIN, "Referer" to "$ORIGIN/",
+            "X-Goog-AuthUser" to authUser.toString(),
+            "X-Youtube-Client-Name" to "1", "X-Youtube-Client-Version" to MT_WEB_VERSION,
+            "User-Agent" to MT_WEB_UA
+        )
+        if (!visitor.isNullOrEmpty()) headers["X-Goog-Visitor-Id"] = visitor
+        val res = Http.postJson("$BASE$endpoint", payload, headers)
+        if (res.code == 401 || res.code == 403) throw AuthRejected()
+        if (res.code !in 200..299) throw Exception("YouTube trả lỗi HTTP ${res.code}")
+        return try { JSONObject(res.body) } catch (_: Exception) { throw Exception("Phản hồi chat không đọc được") }
+    }
+
     /**
      * Gọi InnerTube bằng phiên đăng nhập web (cookie), đúng như `WebSession.post` của meetube: mẫu WEB hiện tại + visitorData,
      * UA desktop, và chữ ký đủ ba băm (SAPISIDHASH + SAPISID1PHASH + SAPISID3PHASH). Trước đây app chỉ gửi SAPISIDHASH với

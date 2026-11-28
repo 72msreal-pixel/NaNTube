@@ -107,7 +107,8 @@ fun ChatNameTag(
     color: Color = NanColors.TextSecondary,
     fontSize: TextUnit = ChatMetaSize,
     lineHeight: TextUnit = ChatMetaLine,
-    fontWeight: androidx.compose.ui.text.font.FontWeight? = null
+    fontWeight: androidx.compose.ui.text.font.FontWeight? = null,
+    overflow: TextOverflow = TextOverflow.Ellipsis
 ) {
     Row(
         (if (byCreator) Modifier.height(17.dp).clip(RoundedCornerShape(50)).background(Color(0xFFF1F1F1)).padding(start = 5.dp, end = 4.dp) else Modifier)
@@ -115,7 +116,7 @@ fun ChatNameTag(
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
-            name, fontSize = fontSize, lineHeight = lineHeight, fontWeight = fontWeight, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            name, fontSize = fontSize, lineHeight = lineHeight, fontWeight = fontWeight, maxLines = 1, overflow = overflow, softWrap = overflow != TextOverflow.Visible,
             color = if (byCreator) Color(0xFF0F0F0F) else color,
             modifier = Modifier.weight(1f, fill = false)
         )

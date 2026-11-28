@@ -5,6 +5,11 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
 
+/** YouTube từ chối gửi tin kèm lý do; [restricted] = lý do là chế độ hạn chế (chỉ người đăng ký / thành viên). */
+class ChatSendException(message: String, val restricted: Boolean) : Exception(message)
+
+private val RESTRICTION_TEXT = Regex("(?i)subscriber|member|đăng ký|thành viên")
+
 /** Một biểu tượng cảm xúc của YouTube hoặc của chủ kênh (ảnh + mã gõ như ":ten:"). */
 data class ChatEmoji(val id: String, val shortcut: String, val url: String, val custom: Boolean)
 
@@ -209,11 +214,14 @@ object LiveChatRepo {
     }
 
     /**
-     * Gửi tin nhắn (live_chat/send_message). [sendParams] lấy từ ô nhập của khung chat (sendLiveChatMessageEndpoint.params).
-     * Mã emoji dạng ":ten:" được đổi thành đoạn emoji thật nếu có trong [emojis] (theo mã gõ), còn lại là chữ.
-     * Trả về hành động YouTube echo lại (tin nhắn của mình) để hiện ngay; YouTube từ chối (vd chỉ dành cho người đăng ký) thì ném lỗi kèm lý do.
+     * Gửi tin nhắn (live_chat/send_message), logic lấy từ `LiveChatMessageSender` + `WebSession.post` của meetube:
+     * thân {params, clientMessageId (UUID), richMessage.textSegments}, đi bằng phiên web (cookie + SAPISIDHASH, ngữ cảnh tối giản).
+     * [sendParams] là mã YouTube kèm trong ô nhập (nếu có), [fallbackParams] là mã tự dựng từ kênh + video (như meetube);
+     * mã đầu hỏng vì lỗi mạng / HTTP thì thử mã kia. Mã emoji dạng ":ten:" đổi thành đoạn emoji thật nếu có trong [emojis].
+     * YouTube từ chối có lý do (vd chỉ dành cho người đăng ký) thì ném [ChatSendException] (restricted = true nếu là chế độ hạn chế).
      */
-    suspend fun send(account: Account, sendParams: String, text: String, emojis: Map<String, ChatEmoji>): ChatBatch {
+    suspend fun send(account: Account, sendParams: String?, fallbackParams: String?, text: String, emojis: Map<String, ChatEmoji>): ChatBatch {
+        if (text.isBlank() || text.length > 200) throw Exception("Tin nhắn trống hoặc dài quá 200 ký tự")
         val segments = JSONArray()
         var last = 0
         for (m in Regex(":[^:\\s]+:").findAll(text)) {
@@ -223,13 +231,60 @@ object LiveChatRepo {
             last = m.range.last + 1
         }
         if (last < text.length) segments.put(JSONObject().put("text", text.substring(last)))
-        val body = JSONObject().put("params", sendParams)
-            .put("richMessage", JSONObject().put("textSegments", segments))
-            .put("clientMessageId", InnerTube.randomId(26))
-            .put("webClientInfo", JSONObject().put("isDocumentHidden", false))
-        val json = accountCall("live_chat/send_message", body, account)
-        actionError(json)?.let { throw Exception(it) }
-        return parseBatch(json.optJSONArray("actions"), null)
+        val candidates = listOfNotNull(sendParams, fallbackParams).distinct()
+        if (candidates.isEmpty()) throw Exception("Chưa biết kênh của buổi phát này nên chưa gửi được")
+        var failure: Exception? = null
+        for (params in candidates) {
+            val body = JSONObject().put("params", params)
+                .put("clientMessageId", java.util.UUID.randomUUID().toString())
+                .put("richMessage", JSONObject().put("textSegments", segments))
+            try {
+                val json = chatWrite("live_chat/send_message", body, account)
+                actionError(json)?.let { throw ChatSendException(it, RESTRICTION_TEXT.containsMatchIn(it)) }
+                if (json.has("error")) throw Exception("YouTube không nhận tin nhắn này")
+                val batch = parseBatch(json.optJSONArray("actions"), null)
+                if (batch.messages.isNotEmpty()) return batch
+                // Như meetube: YouTube hay trả lời không kèm tin nhắn, có thì nằm đâu đó trong phản hồi.
+                val echoed = findKey(json, "liveChatTextMessageRenderer")?.let { parseItem(JSONObject().put("liveChatTextMessageRenderer", it)) }
+                return if (echoed != null) ChatBatch(listOf(echoed), emptySet(), null, null, 5_000L) else batch
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: ChatSendException) {
+                throw e
+            } catch (e: Exception) {
+                failure = e
+            }
+        }
+        throw failure ?: Exception("Không gửi được tin nhắn")
+    }
+
+    /**
+     * Lệnh ghi của chat: có phiên web (tài khoản web, hoặc tài khoản mã nhưng máy có cookie web) thì đi đường web của meetube trước;
+     * hỏng / không có thì thử đường cũ theo tài khoản. Tài khoản mã không có phiên web: token TV không ghi được chat web,
+     * nên lỗi kèm gợi ý đăng nhập web.
+     */
+    private suspend fun chatWrite(endpoint: String, body: JSONObject, account: Account): JSONObject {
+        var first: Exception? = null
+        if (account.kind == LoginKind.WEB || InnerTube.hasWebSession()) {
+            try {
+                return InnerTube.chatWebPost(endpoint, body, if (account.kind == LoginKind.WEB) account.authUser else 0)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                first = e
+            }
+        }
+        try {
+            return accountCall(endpoint, body, account)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val cause = first ?: e
+            if (account.kind == LoginKind.CODE && first == null) {
+                throw Exception("Tài khoản đăng nhập bằng mã chưa chat được; hãy đăng nhập thêm bằng tài khoản web (như meetube). Chi tiết: ${cause.message}")
+            }
+            throw cause
+        }
     }
 
     /**
@@ -249,7 +304,7 @@ object LiveChatRepo {
 
     /** Bình chọn (live_chat/send_live_chat_vote) bằng mã [voteParams] của lựa chọn; trả về cập nhật kết quả nếu YouTube echo. */
     suspend fun vote(account: Account, voteParams: String): ChatBatch {
-        val json = accountCall("live_chat/send_live_chat_vote", JSONObject().put("params", voteParams), account)
+        val json = chatWrite("live_chat/send_live_chat_vote", JSONObject().put("params", voteParams), account)
         actionError(json)?.let { throw Exception(it) }
         val actions = json.optJSONArray("actions")
             ?: (json.dig("continuationContents", "liveChatContinuation") as? JSONObject)?.optJSONArray("actions")
